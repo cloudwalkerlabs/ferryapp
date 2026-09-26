@@ -84,7 +84,21 @@ include_dir = "0.7"
 # The identity's certificate and key in its stored JSON; already in the tree.
 base64 = "0.23"
 # The desktop UI (`gui` feature). Upgrading iced is its own change.
-iced = { version = "0.14", features = ["advanced", "image-without-codecs"], optional = true }
+# iced's default features minus `wgpu`: the app draws with tiny-skia on the
+# CPU. Once a window had opened, wgpu kept the GPU driver stack (Vulkan,
+# Mesa, LLVM) loaded after it closed: about 270 MB resident in the tray,
+# against 35 MB with tiny-skia.
+iced = { version = "0.14", default-features = false, features = [
+    "tiny-skia",
+    "crisp",
+    "web-colors",
+    "thread-pool",
+    "linux-theme-detection",
+    "x11",
+    "wayland",
+    "advanced",
+    "image-without-codecs",
+], optional = true }
 iced_fonts = { version = "0.3", features = ["lucide"], optional = true }
 opener = { version = "0.8", features = ["reveal"], optional = true }
 rfd = { version = "0.17", optional = true }

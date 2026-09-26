@@ -11,15 +11,13 @@ url='https://github.com/simophin/ferryapp'
 # No license chosen yet.
 license=(LicenseRef-unknown)
 # The .deb's Depends under Arch's names: glibc and libgcc from the ELF files,
-# and the libraries winit and display-info load at runtime. Without a GPU
-# driver the app draws in software.
+# and the libraries winit and display-info load at runtime. The app draws in
+# software, so it needs no GPU driver.
 depends=(
   glibc gcc-libs hicolor-icon-theme fontconfig ttf-font
   libxcb libxkbcommon libxkbcommon-x11 wayland libx11 libxcursor libxi libxrandr
 )
 optdepends=(
-  'vulkan-icd-loader: GPU rendering'
-  'libglvnd: GPU rendering through OpenGL'
   'xdg-desktop-portal: file pickers'
   'noto-fonts-cjk: Chinese, Japanese and Korean text'
 )

@@ -23,17 +23,13 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-24.04
-    env:
-      # No GPU on the runner: the UI's tests render in software.
-      ICED_BACKEND: tiny-skia
     steps:
       - uses: actions/checkout@v7
       - name: Install the native UI's Linux dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config libxkbcommon-dev libwayland-dev libvulkan1 \
-            mesa-vulkan-drivers libdbus-1-dev
+            pkg-config libxkbcommon-dev libwayland-dev libdbus-1-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

@@ -3,7 +3,7 @@
 # starts: under Xvfb and a private D-Bus session it must open its window,
 # with its app id as the window class and its icon, and serve the API the
 # installed CLI talks to. Only the package's Depends are installed, not its
-# Recommends, so it also checks the app draws with no GPU driver.
+# Recommends.
 #
 #   check_deb.sh PACKAGE
 #

@@ -80,8 +80,7 @@ cargo tree -p ferry -e normal --prefix none | grep -c '^iced'   # prints 0
 git diff --check
 ```
 
-Run `cargo test` under a private display and bus with
-`ICED_BACKEND=tiny-skia` (CLAUDE.md). With `SNAPSHOT_DIR` set, the UI's
+Run `cargo test` under a private display and bus (CLAUDE.md). With `SNAPSHOT_DIR` set, the UI's
 snapshot tests write light and dark PNGs of each page there, and PNGs in
 the en-XA pseudo-locale (`*-en-XA-light-*.png`: accented, longer, in
 brackets); look at them after a UI change. Plain English in an en-XA
@@ -306,10 +305,10 @@ in the real app".
   `src/ui/`.
 - **The tray is not a view.** It can't render an `Element`, which is why
   device actions are data. Don't add widget-returning tray APIs.
-- **No shadows under tiny-skia.** The software renderer repaints a shadow
+- **No shadows.** The app draws with tiny-skia, which repaints a shadow
   on every partial redraw, turning the widget black. Dialogs use a border
-  instead; check anything new under `ICED_BACKEND=tiny-skia` in the real
-  app, since snapshots render one frame and don't show it.
+  instead; check anything new in the real app, since snapshots render one
+  frame and don't show it.
 - **macOS loopback.** `--discovery-loopback` can't find peers on macOS
   (no `127.255.255.255`). Use `--demo` there, and do peer tests on Linux.
 - **Dialog titles are fixed text.** A name someone chose (a file, a
@@ -334,7 +333,7 @@ cargo run -- --api-port "$port" run --discovery-loopback --discovery-port "$udp"
   --data-dir "$dir/peer" --download-dir "$dir/peer-downloads" \
   --device-name "CLI Peer"
 # app (separate identity, loopback only), on a private display and bus
-env -u WAYLAND_DISPLAY ICED_BACKEND=tiny-skia \
+env -u WAYLAND_DISPLAY \
   dbus-run-session -- xvfb-run --auto-servernum \
   cargo run -p ferry-gui -- --discovery-loopback --discovery-port "$udp" \
     --data-dir "$dir/app" --download-dir "$dir/app-downloads" \
@@ -368,7 +367,7 @@ The README and the website share one set of screenshots,
 forces the light theme whatever the system's.
 
 - Launch the app under `env -u WAYLAND_DISPLAY DISPLAY=:NN
-  GDK_BACKEND=x11 ICED_BACKEND=tiny-skia dbus-run-session -- ...`, with
+  GDK_BACKEND=x11 dbus-run-session -- ...`, with
   `env` *outside* `dbus-run-session`. Services the private bus starts (the
   file chooser portal, notifications) inherit the bus daemon's
   environment; with `env` inside, they get the owner's

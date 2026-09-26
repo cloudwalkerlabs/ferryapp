@@ -511,8 +511,8 @@ cargo build -p ferry   # the CLI alone, without iced
 git diff --check
 ```
 
-Run `cargo test` under a private display and D-Bus session with
-`ICED_BACKEND=tiny-skia` (see `CLAUDE.md`).
+Run `cargo test` under a private display and D-Bus session (see
+`CLAUDE.md`).
 
 ## 11. Known gaps
 

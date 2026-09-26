@@ -50,13 +50,12 @@ collide with another run. Always:
   and exit). Run `cargo test` the same way: the
   `plugins::clipboard::backend::system` tests use the real clipboard, so
   on the owner's display they clobber it and fail when it changes under
-  them. Xvfb has no GPU, so set `ICED_BACKEND=tiny-skia` for the app and
-  its tests. The whole recipe:
+  them. The whole recipe:
 
   ```sh
   dir=$(mktemp -d -p "$scratchpad")
   udp=$(python3 -c 'import socket; s=socket.socket(type=socket.SOCK_DGRAM); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
-  env -u WAYLAND_DISPLAY ICED_BACKEND=tiny-skia \
+  env -u WAYLAND_DISPLAY \
     dbus-run-session -- xvfb-run --auto-servernum \
     cargo run -p ferry-gui -- --discovery-loopback --discovery-port "$udp" \
       --data-dir "$dir/data" --download-dir "$dir/downloads"
