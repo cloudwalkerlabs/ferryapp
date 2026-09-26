@@ -72,7 +72,9 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,wgpu=warn,naga=warn".into()),
+                // iced_winit logs each new window's attributes at info,
+                // the icon's pixels one byte per line.
+                .unwrap_or_else(|_| "info,iced_winit=warn".into()),
         )
         .init();
     let args = Args::parse();

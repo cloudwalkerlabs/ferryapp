@@ -102,7 +102,7 @@ UI:
 
 | Concern | Choice | Why |
 | --- | --- | --- |
-| UI toolkit | `iced` 0.14 | Pure Rust, Elm-style update/view that suits a snapshot-and-events store, multi-window `daemon` programs (a window can close while the app lives in the tray), and wgpu with a tiny-skia software fallback. Pinned; upgrading is its own change. `advanced` is on for the few custom widgets (the activity bar), and `image-without-codecs` for the file browser's preview (`image::viewer` pans and zooms; codecs come from the `image` row). |
+| UI toolkit | `iced` 0.14 | Pure Rust, Elm-style update/view that suits a snapshot-and-events store, multi-window `daemon` programs (a window can close while the app lives in the tray), drawn on the CPU with tiny-skia (`wgpu`, a default feature, is off: once a window had opened it kept the GPU driver stack loaded after the window closed, about 270 MB resident while the app sat in the tray, against 35 MB with tiny-skia). Pinned; upgrading is its own change. `advanced` is on for the few custom widgets (the activity bar), and `image-without-codecs` for the file browser's preview (`image::viewer` pans and zooms; codecs come from the `image` row). |
 | Decoding previews | `image` 0.25 | What iced renders images with. Only the preview's codecs are on (BMP, GIF, JPEG, PNG, WebP), not every format iced's `image` feature brings. The browser decodes previews itself, off the UI thread, so an undecodable image says so ("This image can’t be shown."); iced decodes at draw time and drops the error. |
 | Local time | `chrono` 0.4 | Already in the tree through `russh-sftp`, with `clock` for the local time zone (`iana-time-zone`). `time` reads the local offset only in a single-threaded process on Unix, and `jiff` would be a second time crate. |
 | Icons | `iced_fonts` 0.3 (Lucide) | The Lucide icon font with typed helpers; the version matching iced 0.14. |
@@ -257,7 +257,7 @@ Decisions for steps 11 and 13:
   `about.hbs` by hand.
 - The `.deb` is built on Debian 12 and checked by
   `packaging/linux/check_deb.sh` on a clean Debian 12: it installs with
-  its Depends only (no GPU driver, so the app draws with tiny-skia), opens
+  its Depends only (no GPU driver; the app draws with tiny-skia), opens
   its window with its class and icon, and the CLI reaches its API.
 
 ## Deliberate differences from the Flutter app
@@ -300,7 +300,7 @@ These differ on purpose (owner's decisions). Don't "fix" them back.
   so the UI and the CLI can't drift apart.
 - A plain workspace build compiles the UI (feature unification); the CLI
   alone still builds without it.
-- Linux builds need iced's system libraries (xkbcommon, Wayland, Vulkan or
-  Mesa); tests run headless with `ICED_BACKEND=tiny-skia`.
+- Linux builds need iced's system libraries (xkbcommon, Wayland); tests
+  run headless.
 - The app always embeds its daemon; to test against another instance,
   run a CLI peer.

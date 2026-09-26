@@ -13,8 +13,7 @@
 //!
 //! Linux only: loopback discovery needs `127.255.255.255`. The tests need
 //! no display or session bus (the tray, notifications, windows, pickers and
-//! file openers are fakes), and render in software with
-//! `ICED_BACKEND=tiny-skia`. The scenarios run one at a time.
+//! file openers are fakes). The scenarios run one at a time.
 
 #![cfg(target_os = "linux")]
 

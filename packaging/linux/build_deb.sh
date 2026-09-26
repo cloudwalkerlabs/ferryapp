@@ -68,13 +68,13 @@ depends=$(
 test -n "$depends"
 # Loaded at runtime (dlopen), so dpkg-shlibdeps can't see them: winit's
 # keyboard, Wayland and X11 libraries, and the libxcb `display-info` lists
-# the monitors with. Without a GPU driver the app draws in software, so the
-# GPU's are only recommended. The app bundles its Latin font, but a system
+# the monitors with. The app draws in software, so it needs no GPU
+# driver. The app bundles its Latin font, but a system
 # font is needed for the monospace pairing code and for other scripts:
 # Noto CJK for Chinese, Japanese and Korean (device and file names, and
 # the zh-CN translation), which DejaVu lacks.
 depends="$depends, libxcb1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2, fontconfig, fonts-dejavu-core | fonts-freefont-ttf | fonts-liberation"
-recommends="libvulkan1, mesa-vulkan-drivers | vulkan-icd, libegl1, xdg-desktop-portal, fonts-noto-cjk"
+recommends="xdg-desktop-portal, fonts-noto-cjk"
 
 cat >"$root/DEBIAN/control" <<CONTROL
 Package: ferry
