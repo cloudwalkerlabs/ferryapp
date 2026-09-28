@@ -30,6 +30,9 @@ pub const CLOSE_TO_TRAY: ConfigKey<bool> = ConfigKey::new("ui.closeToTray");
 /// the system. Owned by the UI, which knows the translations; the daemon
 /// only checks that it looks like a tag.
 pub const LANGUAGE: ConfigKey<String> = ConfigKey::new("ui.language");
+/// Whether the app is light or dark; unset follows the system. Owned by
+/// the UI.
+pub const APPEARANCE: ConfigKey<Appearance> = ConfigKey::new("ui.appearance");
 /// Each plugin's settings section, by plugin id: only the fields the user
 /// set (see [`super::PluginSettings`]).
 pub const PLUGIN_SETTINGS: ConfigKey<Map<String, Value>, PerPlugin> =
@@ -58,6 +61,14 @@ fn looks_like_language_tag(tag: &str) -> bool {
         })
 }
 
+/// The app's light or dark look, when the user chose one over the system's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    Light,
+    Dark,
+}
+
 /// A value per plugin, by plugin id.
 pub enum PerPlugin {}
 
@@ -75,6 +86,7 @@ pub(crate) struct StoredSettings {
     pub download_dir: Option<PathBuf>,
     pub close_to_tray: Option<bool>,
     pub language: Option<String>,
+    pub appearance: Option<Appearance>,
     /// Plugins' sections, by plugin id. Each holds only the fields the user
     /// set, and none is empty.
     pub plugins: BTreeMap<String, Map<String, Value>>,
@@ -100,6 +112,10 @@ pub struct SettingsSnapshot {
     /// by the UI, like `close_to_tray`.
     #[serde(default)]
     pub language: Option<String>,
+    /// Light or dark; `None` follows the system. Owned by the UI, like
+    /// `close_to_tray`.
+    #[serde(default)]
+    pub appearance: Option<Appearance>,
     /// Every plugin's settings section, keyed by plugin id, with defaults
     /// filled in.
     #[serde(default)]
@@ -121,6 +137,8 @@ pub struct SettingsPatch {
     pub close_to_tray: Option<Option<bool>>,
     #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     pub language: Option<Option<String>>,
+    #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<Option<Appearance>>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub plugins: BTreeMap<String, Value>,
 }
@@ -198,6 +216,7 @@ impl Settings {
             download_dir: read(store.get(&DOWNLOAD_DIR)),
             close_to_tray: read(store.get(&CLOSE_TO_TRAY)),
             language: read(store.get(&LANGUAGE)),
+            appearance: read(store.get(&APPEARANCE)),
             plugins: self
                 .sections
                 .iter()
@@ -236,6 +255,7 @@ impl Settings {
                 .language
                 .clone()
                 .or_else(|| stored.language.clone()),
+            appearance: overrides.appearance.or(stored.appearance),
             plugins: self
                 .sections
                 .iter()
@@ -305,6 +325,10 @@ impl Settings {
             stored.language = value;
             overrides.language = None;
         }
+        if let Some(value) = patch.appearance {
+            stored.appearance = value;
+            overrides.appearance = None;
+        }
         for (id, change) in patch.plugins {
             let section = self
                 .sections
@@ -365,6 +389,7 @@ impl Settings {
         put(transaction, &DOWNLOAD_DIR, stored.download_dir.as_ref())?;
         put(transaction, &CLOSE_TO_TRAY, stored.close_to_tray.as_ref())?;
         put(transaction, &LANGUAGE, stored.language.as_ref())?;
+        put(transaction, &APPEARANCE, stored.appearance.as_ref())?;
         for section in &self.sections {
             put(
                 transaction,
@@ -452,6 +477,26 @@ mod tests {
         let snapshot = settings.update(patch(r#"{"language": null}"#)).unwrap();
         assert_eq!(snapshot.language, None);
         assert_eq!(store.get(&LANGUAGE).unwrap(), None);
+    }
+
+    #[test]
+    fn the_appearance_is_light_dark_or_unset_for_the_systems() {
+        let store = Store::open_in_memory().unwrap();
+        let mut settings = Settings::new(defaults()).with_store(store.clone());
+        assert_eq!(
+            settings.snapshot().appearance,
+            None,
+            "the system's by default"
+        );
+
+        let snapshot = settings.update(patch(r#"{"appearance": "dark"}"#)).unwrap();
+        assert_eq!(snapshot.appearance, Some(Appearance::Dark));
+        assert_eq!(store.get(&APPEARANCE).unwrap(), Some(Appearance::Dark));
+        assert!(serde_json::from_str::<SettingsPatch>(r#"{"appearance": "blue"}"#).is_err());
+
+        let snapshot = settings.update(patch(r#"{"appearance": null}"#)).unwrap();
+        assert_eq!(snapshot.appearance, None);
+        assert_eq!(store.get(&APPEARANCE).unwrap(), None);
     }
 
     #[test]

@@ -324,13 +324,15 @@ States: `queued → connecting → transferring → completed | cancelled | fail
 
 User preferences live in the daemon's store (`ferry.db` in the data
 directory), never in a client. Core fields: `deviceName`, `downloadDir`,
-and the UI's `closeToTray` and `language` (the daemon stores them
-without interpreting them, apart from checking that `language` looks like
-a BCP 47 tag), under the config keys `core.deviceName`, `core.downloadDir`,
-`ui.closeToTray` and `ui.language` (`core::settings`). Unset fields use
-their defaults: the host name (first label, trimmed to a valid KDE
-Connect name, else "Ferry"), the platform download directory, `true`,
-and `null` (the system's language, §13).
+and the UI's `closeToTray`, `language` and `appearance` (the daemon
+stores them without interpreting them, apart from checking that
+`language` looks like a BCP 47 tag and `appearance` is `"light"` or
+`"dark"`), under the config keys `core.deviceName`, `core.downloadDir`,
+`ui.closeToTray`, `ui.language` and `ui.appearance` (`core::settings`).
+Unset fields use their defaults: the host name (first label, trimmed to
+a valid KDE Connect name, else "Ferry"), the platform download
+directory, `true`, `null` (the system's language, §13) and `null` (the
+system's light or dark mode, followed as it changes).
 
 - **Starting on login** is the app's alone, not a daemon setting: the
   switch on the Settings page reads and writes the system's login item
@@ -424,7 +426,7 @@ the event stream.
 | `GET` | `/clipboard` | Current synchronized text and metadata. |
 | `PUT` | `/clipboard` | Set text and send to eligible paired devices. |
 | `POST` | `/devices/{deviceId}/clipboard` | Send this machine's clipboard text to one paired, connected device now; `202`. `409 clipboard_empty` when there is no text, `409 unsupported_by_peer` without `kdeconnect.clipboard`. §6. |
-| `GET` | `/settings` | The settings in effect (§7): `deviceName`, `downloadDir`, `closeToTray`, `language` (the app's, a BCP 47 tag such as `"de"`, or `null` for the system's), and `plugins`, an object keyed by plugin id holding each plugin's section (so far `{"clipboard": {"syncEnabled": bool}}`). |
+| `GET` | `/settings` | The settings in effect (§7): `deviceName`, `downloadDir`, `closeToTray`, `language` (the app's, a BCP 47 tag such as `"de"`, or `null` for the system's), `appearance` (the app's, `"light"` or `"dark"`, or `null` for the system's), and `plugins`, an object keyed by plugin id holding each plugin's section (so far `{"clipboard": {"syncEnabled": bool}}`). |
 | `PATCH` | `/settings` | Change the fields present in the JSON body; `null` resets one to its default, unknown fields are rejected. A plugin's fields go under `plugins.<id>`, e.g. `{"plugins": {"clipboard": {"syncEnabled": false}}}`. `400 invalid_device_name` / `invalid_download_dir` / `invalid_settings` (a plugin section, or a `language` that isn't a tag) for bad values. Returns the new settings. |
 | `GET` | `/events` | Server-Sent Events: `device.discovered/connected/updated/disconnected/forgotten`, `pairing.requested/updated`, `transfer.started/progress/completed/failed`, `clipboard.changed`, `settings.changed`, `notification.posted` (`{deviceId, deviceName, notification, alert}`: a notification posted or changed, including its icon arriving; `alert` is set for news, i.e. new or with new text, and not marked as already shown by the device) and `notification.removed` (`{deviceId, id}`), `ping.received` (`{deviceId, deviceName, message?}` from a paired device; a one-off with no snapshot endpoint, so one missed during a gap is lost). Not durable: clients refetch a snapshot after a gap or reconnect. |
 

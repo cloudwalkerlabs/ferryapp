@@ -32,7 +32,7 @@ use super::{
     i18n::{self, fl},
     overlay::{dialog::Dialogs, drop::Drag, toast::Toasts},
     route::Route,
-    theme, widgets,
+    widgets,
 };
 use crate::{
     config,
@@ -134,7 +134,7 @@ pub fn program(
     let program = iced::daemon(boot, App::update, App::view)
         .title(|_: &App, _window| fl!("app-window-title"))
         .subscription(App::subscription)
-        .theme(|app: &App, _window| app.theme.clone())
+        .theme(|app: &App, _window| app.theme())
         .default_font(widgets::FONT)
         .font(iced_fonts::LUCIDE_FONT_BYTES);
     let program = widgets::FONT_FACES
@@ -222,7 +222,7 @@ impl App {
             tray_dropped: None,
             start_on_login: desktop_login_enabled,
             cli_path: installed_cli(),
-            theme: theme::for_mode(iced::theme::Mode::None),
+            system_mode: iced::theme::Mode::None,
         };
         // Hidden if it was quit from the tray or started at login, unless
         // there is no tray to bring it back.
@@ -242,7 +242,7 @@ impl App {
         app.update_tray();
         // A message, so the tray starts once the event loop runs.
         let tray = Task::done(Message::StartTray);
-        let theme = iced::system::theme().map(Message::SystemTheme);
+        let theme = desktop::appearance::watch().map(Message::SystemTheme);
         (app, Task::batch([open, start, login, tray, theme]))
     }
 

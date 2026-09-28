@@ -288,6 +288,13 @@ settings-language-system = System default
 # This file's language, named in itself, as Settings' list of languages
 # shows it to someone looking for their own: "Deutsch", "简体中文".
 settings-language-own-name = English
+# The appearance setting: its title, the line under it, and its list's
+# choices: follow the system's light or dark mode, always light, always dark.
+settings-appearance = Appearance
+settings-appearance-detail = Light or dark, or the same as your system
+settings-appearance-system = System default
+settings-appearance-light = Light
+settings-appearance-dark = Dark
 settings-cli = Command line access
 settings-cli-detail = Let ferry-cli control this app
 settings-cli-setup-hint = ferry-cli on this computer finds the app by itself. Elsewhere, such as a script run as another user, paste this into its shell first:

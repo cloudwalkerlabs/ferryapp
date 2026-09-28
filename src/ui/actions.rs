@@ -427,8 +427,8 @@ mod tests {
     use super::*;
     use crate::{
         core::{
-            LanCommand, PairingDirection, PairingSnapshot, PairingStatus, SettingsSnapshot,
-            TransferDirection, testing::handle,
+            Appearance, LanCommand, PairingDirection, PairingSnapshot, PairingStatus,
+            SettingsSnapshot, TransferDirection, testing::handle,
         },
         plugins::{browse::BrowsePlugin, notifications::NotificationsPlugin},
         ui::{
@@ -990,6 +990,20 @@ mod tests {
         assert_eq!(settings(&app).language.as_deref(), Some("de"));
         settle(&mut app, Message::SetLanguage(None)).await;
         assert_eq!(core.settings().unwrap().language, None);
+
+        // The appearance, kept by the daemon, over the system's mode.
+        let dark = |app: &App| app.theme().extended_palette().is_dark;
+        settle(&mut app, Message::SystemTheme(iced::theme::Mode::Dark)).await;
+        assert!(dark(&app), "the system's by default");
+        settle(&mut app, Message::SetAppearance(Some(Appearance::Light))).await;
+        assert_eq!(core.settings().unwrap().appearance, Some(Appearance::Light));
+        assert!(!dark(&app));
+        settle(&mut app, Message::SystemTheme(iced::theme::Mode::Light)).await;
+        settle(&mut app, Message::SetAppearance(Some(Appearance::Dark))).await;
+        assert!(dark(&app), "over a light system");
+        settle(&mut app, Message::SetAppearance(None)).await;
+        assert_eq!(core.settings().unwrap().appearance, None);
+        assert!(!dark(&app), "the system's again");
         assert!(app.toasts.is_empty());
     }
 

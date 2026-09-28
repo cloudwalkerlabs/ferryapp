@@ -1,7 +1,8 @@
 //! The Settings page: the daemon's settings, which are where every user
 //! preference lives, each saved as soon as it changes, starting on
 //! login, which the system keeps, the app's language (which the daemon
-//! keeps too, and [`i18n::follow_setting`] applies), and command line access (the daemon's
+//! keeps too, and [`i18n::follow_setting`] applies), its appearance, and
+//! command line access (the daemon's
 //! HTTP API, [`ApiSwitch`](crate::daemon::ApiSwitch)). Features add their
 //! own sections (clipboard: "Sync clipboard") through
 //! [`settings_sections`](crate::ui::features::Features::settings_sections).
@@ -16,7 +17,7 @@ use iced_fonts::lucide;
 
 use crate::{
     client::{API_TOKEN_ENV, API_URL_ENV},
-    core::SettingsSnapshot,
+    core::{Appearance, SettingsSnapshot},
     daemon::ApiStatus,
     ui::{
         i18n::{self, Language, fl},
@@ -66,6 +67,8 @@ pub struct Actions<M> {
     pub set_start_on_login: fn(bool) -> M,
     /// Show the app in a language (its tag), or `None` in the system's.
     pub set_language: fn(Option<String>) -> M,
+    /// Make the app light or dark, or `None` follow the system.
+    pub set_appearance: fn(Option<Appearance>) -> M,
     /// Turn command line access on or off.
     pub set_api_enabled: fn(bool) -> M,
     /// Copy [`cli_setup`], token and all.
@@ -153,6 +156,7 @@ fn list<'a, M: Clone + 'a>(
             actions.set_start_on_login,
         ))
         .push(language(settings.language.as_deref(), actions.set_language))
+        .push(appearance(settings.appearance, actions.set_appearance))
         .push(command_line)
         .push(widgets::setting(
             lucide::info,
@@ -224,23 +228,77 @@ fn language<'a, M: Clone + 'a>(
     let list = pick_list(choices, selected, move |choice| {
         set_language(choice.setting())
     })
-    .placeholder(setting.unwrap_or_default())
-    .text_size(14)
-    .padding([6, 10])
-    .style(|theme: &Theme, status| {
-        let style = pick_list::default(theme, status);
-        pick_list::Style {
-            border: style.border.rounded(8),
-            ..style
-        }
-    });
+    .placeholder(setting.unwrap_or_default());
     widgets::setting(
         lucide::languages,
         fl!("settings-language"),
         fl!("settings-language-detail"),
-        Some(list.into()),
+        Some(styled(list).into()),
         None,
     )
+}
+
+/// A choice in the appearance list: light, dark, or `None` for the
+/// system's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AppearanceChoice(Option<Appearance>);
+
+impl AppearanceChoice {
+    const ALL: [Self; 3] = [
+        Self(None),
+        Self(Some(Appearance::Light)),
+        Self(Some(Appearance::Dark)),
+    ];
+}
+
+impl std::fmt::Display for AppearanceChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&match self.0 {
+            None => fl!("settings-appearance-system"),
+            Some(Appearance::Light) => fl!("settings-appearance-light"),
+            Some(Appearance::Dark) => fl!("settings-appearance-dark"),
+        })
+    }
+}
+
+/// The appearance setting: a list of the system's, light and dark.
+fn appearance<'a, M: Clone + 'a>(
+    setting: Option<Appearance>,
+    set_appearance: fn(Option<Appearance>) -> M,
+) -> Element<'a, M> {
+    let list = pick_list(
+        AppearanceChoice::ALL,
+        Some(AppearanceChoice(setting)),
+        move |choice| set_appearance(choice.0),
+    );
+    widgets::setting(
+        lucide::sun_moon,
+        fl!("settings-appearance"),
+        fl!("settings-appearance-detail"),
+        Some(styled(list).into()),
+        None,
+    )
+}
+
+/// A settings list's look: rounded, and as small as the rows' text.
+fn styled<'a, T, L, V, M>(
+    list: pick_list::PickList<'a, T, L, V, M>,
+) -> pick_list::PickList<'a, T, L, V, M>
+where
+    T: ToString + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
+    V: std::borrow::Borrow<T> + 'a,
+    M: Clone,
+{
+    list.text_size(14)
+        .padding([6, 10])
+        .style(|theme: &Theme, status| {
+            let style = pick_list::default(theme, status);
+            pick_list::Style {
+                border: style.border.rounded(8),
+                ..style
+            }
+        })
 }
 
 /// The switch, and while it is on, how to set up `ferry-cli`: what to paste
@@ -333,6 +391,7 @@ mod tests {
         CloseToTray(bool),
         StartOnLogin(bool),
         Language(Option<String>),
+        Appearance(Option<Appearance>),
         Api(bool),
         CopySetup,
         CopyToken,
@@ -350,6 +409,7 @@ mod tests {
             set_close_to_tray: Message::CloseToTray,
             set_start_on_login: Message::StartOnLogin,
             set_language: Message::Language,
+            set_appearance: Message::Appearance,
             set_api_enabled: Message::Api,
             copy_cli_setup: Message::CopySetup,
             copy_api_token: Message::CopyToken,
@@ -394,7 +454,12 @@ mod tests {
             status: Some(&status),
             cli_path: None,
         };
-        let mut ui = Simulator::new(view(store, sections, "1.2.3 (dev)", false, cli, actions()));
+        // Tall enough that every setting is on screen.
+        let mut ui = Simulator::with_size(
+            iced::Settings::default(),
+            (1024.0, 1200.0),
+            view(store, sections, "1.2.3 (dev)", false, cli, actions()),
+        );
         ui.click(target).unwrap();
         ui.into_messages().collect()
     }
@@ -419,6 +484,7 @@ mod tests {
             "Keep running when the window is closed",
             "Start when you log in",
             "Language",
+            "Appearance",
             "Command line access",
             "About Ferry",
             "Version 1.2.3 (dev)",

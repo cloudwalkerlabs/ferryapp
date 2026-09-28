@@ -53,8 +53,8 @@ pub use plugin::{
     PluginSettings, SettingsSection,
 };
 pub use settings::{
-    CLOSE_TO_TRAY, DEVICE_NAME, DOWNLOAD_DIR, LANGUAGE, PLUGIN_SETTINGS, PerPlugin,
-    SettingsDefaults, SettingsPatch, SettingsSnapshot,
+    APPEARANCE, Appearance, CLOSE_TO_TRAY, DEVICE_NAME, DOWNLOAD_DIR, LANGUAGE, PLUGIN_SETTINGS,
+    PerPlugin, SettingsDefaults, SettingsPatch, SettingsSnapshot,
 };
 pub use transfers::{
     DEFAULT_MAX_TRANSFER_BYTES, FileNameError, PROGRESS_EVENT_INTERVAL, Transfer, TransferConfig,
