@@ -461,6 +461,7 @@ async fn settings_can_be_read_changed_and_are_announced() {
     );
     assert_eq!(initial["closeToTray"], true);
     assert_eq!(initial["language"], serde_json::Value::Null);
+    assert_eq!(initial["appearance"], serde_json::Value::Null);
 
     let patched = request_with_body(
         &server,
@@ -509,7 +510,11 @@ async fn settings_can_be_read_changed_and_are_announced() {
         );
         assert!(body(&response).contains(code));
     }
-    for unknown in [r#"{"nope":1}"#, r#"{"clipboardSyncEnabled":true}"#] {
+    for unknown in [
+        r#"{"nope":1}"#,
+        r#"{"clipboardSyncEnabled":true}"#,
+        r#"{"appearance":"blue"}"#,
+    ] {
         let response = request_with_body(&server, "PATCH", "/api/v1/settings", unknown).await;
         assert!(!response.starts_with("HTTP/1.1 200"), "{response}");
     }
@@ -524,6 +529,16 @@ async fn settings_can_be_read_changed_and_are_announced() {
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         let settings: serde_json::Value = serde_json::from_str(body(&response)).unwrap();
         assert_eq!(settings["language"], language);
+    }
+    // Light or dark, or `null` for the system's.
+    for (patch, appearance) in [
+        (r#"{"appearance":"dark"}"#, serde_json::json!("dark")),
+        (r#"{"appearance":null}"#, serde_json::Value::Null),
+    ] {
+        let response = request_with_body(&server, "PATCH", "/api/v1/settings", patch).await;
+        assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        let settings: serde_json::Value = serde_json::from_str(body(&response)).unwrap();
+        assert_eq!(settings["appearance"], appearance);
     }
 
     server.server.shutdown().await.unwrap();

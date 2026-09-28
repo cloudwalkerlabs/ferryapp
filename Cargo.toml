@@ -29,6 +29,7 @@ gui = [
     "dep:ksni",
     "dep:libc",
     "dep:mac-usernotifications",
+    "dep:mundy",
     "dep:objc2",
     "dep:objc2-app-kit",
     "dep:objc2-foundation",
@@ -148,6 +149,10 @@ xcb = { version = "1.7", features = ["dl"], optional = true }
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 # The tray (`gui`), with `muda` menus (re-exported as `tray_icon::menu`).
 tray-icon = { version = "0.25", default-features = false, optional = true }
+# The system's light or dark mode (`gui`), as it changes: iced hears of a
+# change only through the window, whose appearance it pins to the app's
+# theme. iced uses it on Linux; there iced's own detection works.
+mundy = { version = "0.2", default-features = false, features = ["color-scheme"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Notifications (`gui`), through `UNUserNotificationCenter`: the crate

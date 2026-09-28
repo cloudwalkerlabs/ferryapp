@@ -59,7 +59,7 @@ use iced_fonts::lucide;
 use uuid::Uuid;
 
 use crate::{
-    core::{PairingSnapshot, SettingsPatch, SettingsSnapshot},
+    core::{Appearance, PairingSnapshot, SettingsPatch, SettingsSnapshot},
     daemon::{ApiStatus, ApiSwitch},
 };
 use context::UiContext;
@@ -241,6 +241,8 @@ pub(crate) enum Message {
     SetCloseToTray(bool),
     /// Show the app in a language (a tag), or `None` in the system's.
     SetLanguage(Option<String>),
+    /// Make the app light or dark, or `None` follow the system.
+    SetAppearance(Option<Appearance>),
     SetStartOnLogin(bool),
     /// A start-on-login change finished: whether it's on now, and why the
     /// change failed, if it did.
@@ -334,8 +336,8 @@ struct App {
     tray_dropped: Option<Vec<PathBuf>>,
     /// The system starts the app at login ([`desktop::autostart`]).
     start_on_login: bool,
-    /// Light or dark, following the system.
-    theme: iced::Theme,
+    /// The system's light or dark mode, for when the settings don't choose.
+    system_mode: iced::theme::Mode,
     /// Where `ferry-cli` is, when it was installed next to the app.
     cli_path: Option<PathBuf>,
 }
@@ -404,6 +406,20 @@ impl App {
             Some(settings) => i18n::follow_setting(settings.language.as_deref()),
             None => false,
         }
+    }
+
+    /// Light or dark, as the settings ask, or else as the system is.
+    fn theme(&self) -> iced::Theme {
+        let appearance = match &self.phase {
+            Phase::Running(running) => running
+                .ctx
+                .store()
+                .settings()
+                .loaded()
+                .and_then(|settings| settings.appearance),
+            _ => None,
+        };
+        theme::pick(appearance, self.system_mode)
     }
 
     fn react(&mut self, message: Message) -> Task<Message> {
@@ -650,6 +666,10 @@ impl App {
                 language: Some(language),
                 ..SettingsPatch::default()
             }),
+            Message::SetAppearance(appearance) => self.update_settings(SettingsPatch {
+                appearance: Some(appearance),
+                ..SettingsPatch::default()
+            }),
             Message::SetStartOnLogin(enabled) => self.set_start_on_login(enabled),
             Message::StartOnLoginSet(enabled, error) => {
                 self.start_on_login = enabled;
@@ -707,7 +727,7 @@ impl App {
             }
             Message::WindowOpened => Task::none(),
             Message::SystemTheme(mode) => {
-                self.theme = theme::for_mode(mode);
+                self.system_mode = mode;
                 Task::none()
             }
             Message::Window(id, event) if Some(id) == self.window => match event {
@@ -890,6 +910,7 @@ impl App {
                     set_close_to_tray: Message::SetCloseToTray,
                     set_start_on_login: Message::SetStartOnLogin,
                     set_language: Message::SetLanguage,
+                    set_appearance: Message::SetAppearance,
                     set_api_enabled: Message::SetApiEnabled,
                     copy_cli_setup: Message::CopyCli(CliCopy::Setup),
                     copy_api_token: Message::CopyCli(CliCopy::Token),

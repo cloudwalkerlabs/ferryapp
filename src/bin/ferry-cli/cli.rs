@@ -13,8 +13,8 @@ use ferry::{
     },
     config::{ApiToken, StoredApi, default_config_dir},
     core::{
-        CoreEvent, DeviceSnapshot, EventData, PairingSnapshot, SettingsPatch, SettingsSnapshot,
-        TransferSnapshot,
+        Appearance, CoreEvent, DeviceSnapshot, EventData, PairingSnapshot, SettingsPatch,
+        SettingsSnapshot, TransferSnapshot,
     },
     daemon::{ApiMode, RunRequest},
     plugins::{
@@ -176,6 +176,10 @@ enum Command {
         /// `zh-CN`, or `system` to follow the system's.
         #[arg(long, value_name = "TAG")]
         language: Option<String>,
+        /// Whether the desktop app is light or dark, or `system` to follow
+        /// the system's.
+        #[arg(long, value_name = "MODE", value_parser = ["light", "dark", SYSTEM_APPEARANCE])]
+        appearance: Option<String>,
     },
 }
 
@@ -539,12 +543,18 @@ impl Cli {
                 clipboard_sync,
                 close_to_tray,
                 language,
+                appearance,
             } => {
                 let patch = SettingsPatch {
                     device_name: device_name.map(Some),
                     download_dir: download_dir.map(Some),
                     close_to_tray: close_to_tray.map(Some),
                     language: language.map(|tag| Some(tag).filter(|tag| tag != SYSTEM_LANGUAGE)),
+                    appearance: appearance.map(|mode| match mode.as_str() {
+                        "light" => Some(Appearance::Light),
+                        "dark" => Some(Appearance::Dark),
+                        _ => None,
+                    }),
                     ..clipboard_sync
                         .map(ClipboardSettings::sync_enabled_patch)
                         .unwrap_or_default()
@@ -733,6 +743,8 @@ fn print_clipboard(clipboard: &ClipboardSnapshot, json_output: bool) {
 
 /// What `settings --language` takes, and prints, for the system's language.
 const SYSTEM_LANGUAGE: &str = "system";
+/// What `settings --appearance` takes, and prints, for the system's.
+const SYSTEM_APPEARANCE: &str = "system";
 
 fn print_settings(settings: &SettingsSnapshot, json_output: bool) {
     if json_output {
@@ -751,6 +763,14 @@ fn print_settings(settings: &SettingsSnapshot, json_output: bool) {
         println!(
             "Language: {}",
             settings.language.as_deref().unwrap_or(SYSTEM_LANGUAGE)
+        );
+        println!(
+            "Appearance: {}",
+            match settings.appearance {
+                Some(Appearance::Light) => "light",
+                Some(Appearance::Dark) => "dark",
+                None => SYSTEM_APPEARANCE,
+            }
         );
     }
 }

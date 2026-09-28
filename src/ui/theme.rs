@@ -11,6 +11,8 @@ use iced::{
     },
 };
 
+use crate::core::Appearance;
+
 /// The icon's tile blue: 4.9:1 against white, for white text on buttons.
 /// Its softer shade (tonal buttons, selections) is mixed in sRGB rather
 /// than iced's linear light, which turns it lavender, and its stronger
@@ -80,17 +82,22 @@ pub fn dark() -> Theme {
     DARK.clone()
 }
 
-/// The theme for the system's light or dark mode; light when it has none.
-/// `ICED_THEME=Light` or `Dark`, iced's own override, wins over the system,
+/// The theme the `appearance` setting asks for, or with none the one for
+/// the system's light or dark `mode`; light when it has none.
+/// `ICED_THEME=Light` or `Dark`, iced's own override, wins over both,
 /// e.g. to take screenshots in both.
-pub fn for_mode(mode: Mode) -> Theme {
+pub fn pick(appearance: Option<Appearance>, mode: Mode) -> Theme {
     static FORCED: LazyLock<Option<Mode>> =
         LazyLock::new(|| match std::env::var("ICED_THEME").as_deref() {
             Ok("Light") => Some(Mode::Light),
             Ok("Dark") => Some(Mode::Dark),
             _ => None,
         });
-    match FORCED.unwrap_or(mode) {
+    let chosen = appearance.map(|appearance| match appearance {
+        Appearance::Light => Mode::Light,
+        Appearance::Dark => Mode::Dark,
+    });
+    match FORCED.or(chosen).unwrap_or(mode) {
         Mode::Dark => dark(),
         Mode::Light | Mode::None => light(),
     }
