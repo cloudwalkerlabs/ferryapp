@@ -85,8 +85,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn plugin_settings_sections_become_the_clipboards_key() {
+    #[tokio::test]
+    async fn plugin_settings_sections_become_the_clipboards_key() {
         use crate::store::ConfigKey;
 
         const SYNC_ENABLED: ConfigKey<bool> = ConfigKey::new("clipboard.syncEnabled");
@@ -132,8 +132,8 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        let store = Store::open(directory.path()).unwrap();
-        assert_eq!(store.get(&SYNC_ENABLED).unwrap(), Some(false));
+        let store = Store::open(directory.path()).await.unwrap();
+        assert_eq!(store.get(&SYNC_ENABLED).await.unwrap(), Some(false));
         drop(store);
         let connection = Connection::open(&path).unwrap();
         assert_eq!(
@@ -155,8 +155,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn processes_opening_a_new_database_together_both_succeed() {
+    #[tokio::test]
+    async fn processes_opening_a_new_database_together_both_succeed() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(FILE_NAME);
         let threads = 4;
@@ -180,6 +180,8 @@ mod tests {
                 .unwrap()
                 .expect("every opener migrates or waits");
         }
-        Store::open(directory.path()).expect("the database is usable");
+        Store::open(directory.path())
+            .await
+            .expect("the database is usable");
     }
 }

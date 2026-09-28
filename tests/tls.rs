@@ -11,8 +11,10 @@ use ferry::{
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use tokio::{net::TcpListener, time::timeout};
 
-fn identity() -> LocalIdentity {
-    LocalIdentity::load_or_create(&Store::open_in_memory().unwrap()).unwrap()
+async fn identity() -> LocalIdentity {
+    LocalIdentity::load_or_create(&Store::open_in_memory().await.unwrap())
+        .await
+        .unwrap()
 }
 
 async fn loopback_pair() -> (tokio::net::TcpStream, tokio::net::TcpStream) {
@@ -26,8 +28,8 @@ async fn loopback_pair() -> (tokio::net::TcpStream, tokio::net::TcpStream) {
 
 #[tokio::test]
 async fn valid_peers_complete_a_real_mutually_authenticated_handshake() {
-    let a = identity();
-    let b = identity();
+    let a = identity().await;
+    let b = identity().await;
     let a_material = TlsMaterial::new(a.certificate_der(), a.private_key_der());
     let b_material = TlsMaterial::new(b.certificate_der(), b.private_key_der());
     let (client_stream, server_stream) = loopback_pair().await;
@@ -51,9 +53,9 @@ async fn valid_peers_complete_a_real_mutually_authenticated_handshake() {
 
 #[tokio::test]
 async fn pinned_certificate_change_is_rejected() {
-    let a = identity();
-    let b = identity();
-    let impostor = identity(); // different key and certificate, same role
+    let a = identity().await;
+    let b = identity().await;
+    let impostor = identity().await; // different key and certificate, same role
     let a_material = TlsMaterial::new(a.certificate_der(), a.private_key_der());
     let impostor_material =
         TlsMaterial::new(impostor.certificate_der(), impostor.private_key_der());
@@ -84,8 +86,8 @@ async fn pinned_certificate_change_is_rejected() {
 
 #[tokio::test]
 async fn certificate_not_matching_the_expected_device_id_is_rejected() {
-    let a = identity();
-    let b = identity();
+    let a = identity().await;
+    let b = identity().await;
     let (client_stream, server_stream) = loopback_pair().await;
     let a_material = TlsMaterial::new(a.certificate_der(), a.private_key_der());
     let b_material = TlsMaterial::new(b.certificate_der(), b.private_key_der());
@@ -112,13 +114,13 @@ async fn signature_from_a_mismatched_private_key_is_rejected() {
     // the handshake signature cannot validate against the certificate's
     // public key, even though the certificate's Common Name is exactly
     // right and would otherwise be trusted.
-    let legitimate = identity();
-    let other_key_source = identity();
+    let legitimate = identity().await;
+    let other_key_source = identity().await;
     let mismatched_material = TlsMaterial::new(
         legitimate.certificate_der(),
         other_key_source.private_key_der(),
     );
-    let peer = identity();
+    let peer = identity().await;
     let peer_material = TlsMaterial::new(peer.certificate_der(), peer.private_key_der());
     let (client_stream, server_stream) = loopback_pair().await;
 
@@ -156,7 +158,7 @@ async fn arbitrary_certificates_without_a_pin_still_require_a_matching_common_na
         .push(DnType::CommonName, "not-the-expected-device-id");
     let certificate = params.self_signed(&key).unwrap();
     let forged_material = TlsMaterial::new(certificate.der(), &key.serialize_der());
-    let peer = identity();
+    let peer = identity().await;
     let peer_material = TlsMaterial::new(peer.certificate_der(), peer.private_key_der());
     let (client_stream, server_stream) = loopback_pair().await;
 
@@ -183,7 +185,7 @@ async fn arbitrary_certificates_without_a_pin_still_require_a_matching_common_na
 
 #[tokio::test]
 async fn subject_public_key_info_round_trips_for_a_real_certificate() {
-    let device = identity();
+    let device = identity().await;
     let spki = subject_public_key_info(device.certificate_der()).unwrap();
     assert!(!spki.is_empty());
     // Re-parsing the same certificate must be deterministic.
@@ -195,7 +197,7 @@ async fn subject_public_key_info_round_trips_for_a_real_certificate() {
 
 #[tokio::test]
 async fn handshake_does_not_hang_when_peer_never_speaks_tls() {
-    let identity = identity();
+    let identity = identity().await;
     let material = TlsMaterial::new(identity.certificate_der(), identity.private_key_der());
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();

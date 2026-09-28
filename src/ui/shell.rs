@@ -284,7 +284,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_feature_can_toast_and_navigate() {
-        let mut app = running();
+        let mut app = running().await;
         settle(
             &mut app,
             Message::Toast {
@@ -314,7 +314,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_toast_button_goes_to_its_page_and_dismisses_it() {
-        let mut app = running();
+        let mut app = running().await;
         let _ = app.toast(
             "Downloading holiday.jpg".into(),
             Some(("Transfers".into(), Route::Transfers)),
@@ -327,12 +327,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_feature_confirm_sends_its_message_only_when_confirmed() {
-        let (core, _commands) = handle();
+        let (core, _commands) = handle().await;
         let (peer, mut sent) = testing::connect_peer(
             &core,
             testing::PEER_ID,
             &[crate::plugins::ping::PACKET_TYPE],
-        );
+        )
+        .await;
         let mut app = running_on(core);
         let confirm = || Message::Confirm {
             title: "Ping it?".into(),

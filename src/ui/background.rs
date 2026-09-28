@@ -454,8 +454,8 @@ mod tests {
     // `background_host_test.dart`.
 
     /// An app on `fakes`.
-    fn background(fakes: &Fakes) -> App {
-        let (core, _commands) = handle();
+    async fn background(fakes: &Fakes) -> App {
+        let (core, _commands) = handle().await;
         running_on_desktop(core, fakes)
     }
 
@@ -465,7 +465,7 @@ mod tests {
         app: &mut App,
         capabilities: &[&str],
     ) -> tokio::sync::mpsc::Receiver<crate::protocol::Packet> {
-        let (_, sent) = testing::connect_peer(&core(app), testing::PEER_ID, capabilities);
+        let (_, sent) = testing::connect_peer(&core(app), testing::PEER_ID, capabilities).await;
         settle(app, Message::Reload).await;
         sent
     }
@@ -547,7 +547,7 @@ mod tests {
             placements: Some(placements(&dir)),
             ..Fakes::default()
         };
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         settle(&mut app, Message::Reload).await;
 
         close(&mut app).await;
@@ -584,12 +584,13 @@ mod tests {
             placements: Some(placements(&dir)),
             ..Fakes::default()
         };
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         core(&app)
             .update_settings(SettingsPatch {
                 close_to_tray: Some(Some(false)),
                 ..SettingsPatch::default()
             })
+            .await
             .unwrap();
         settle(&mut app, Message::Reload).await;
 
@@ -618,7 +619,7 @@ mod tests {
             no_tray: true,
             ..Fakes::default()
         };
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         settle(&mut app, Message::Reload).await;
         assert!(app.window.is_some(), "shown, though it was hidden");
 
@@ -629,7 +630,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_tray_host_going_away_brings_the_window_back() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         settle(&mut app, Message::Reload).await;
         close(&mut app).await;
         assert!(app.window.is_none());
@@ -651,7 +652,7 @@ mod tests {
             placements: Some(placements(&dir)),
             ..Fakes::default()
         };
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         settle(&mut app, Message::Reload).await;
         close(&mut app).await;
 
@@ -698,7 +699,7 @@ mod tests {
             placements: Some(placements(&dir)),
             ..Fakes::default()
         };
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         let id = app.window.unwrap();
         let moved = step(
             &mut app,
@@ -732,13 +733,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_pairing_request_notifies_while_the_window_is_closed() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         settle(&mut app, Message::Reload).await;
         close(&mut app).await;
 
         let core = core(&app);
-        let (_, _sent) = testing::connect_unpaired_peer(&core, testing::PEER_ID);
-        testing::request_pairing(&core, testing::PEER_ID);
+        let (_, _sent) = testing::connect_unpaired_peer(&core, testing::PEER_ID).await;
+        testing::request_pairing(&core, testing::PEER_ID).await;
         settle(&mut app, Message::Reload).await;
         assert_eq!(fakes.notified(), ["Peer wants to pair with this computer."]);
 
@@ -752,7 +753,7 @@ mod tests {
 
         // Resolved elsewhere: the notification goes with the prompt.
         let pairing = store(&app).pending_incoming_pairings()[0].id;
-        core.cancel_pairing(pairing).unwrap();
+        core.cancel_pairing(pairing).await.unwrap();
         settle(&mut app, Message::Reload).await;
         assert!(fakes.notified().is_empty());
     }
@@ -763,18 +764,19 @@ mod tests {
 
         let fakes = Fakes::default();
         let (core, _plugin, _commands) =
-            crate::core::testing::handle_with_plugin(TelephonyPlugin::default());
+            crate::core::testing::handle_with_plugin(TelephonyPlugin::default()).await;
         let mut app = running_on_desktop(core.clone(), &fakes);
         let mut sent = peer(&mut app, &[MUTE_PACKET_TYPE]).await;
-        let call = |body: serde_json::Value| {
+        let call = async |body: serde_json::Value| {
             core.handle_peer_packet(
                 testing::PEER_ID,
                 crate::protocol::Packet::from_body(1_u64, PACKET_TYPE, &body).unwrap(),
-            );
+            )
+            .await;
         };
 
         // Shown over the focused window too: the phone is still ringing.
-        call(serde_json::json!({"event": "ringing", "contactName": "Ana"}));
+        call(serde_json::json!({"event": "ringing", "contactName": "Ana"})).await;
         settle(&mut app, Message::Reload).await;
         assert_eq!(fakes.notified(), ["Incoming call from Ana"]);
         let (id, labels) = fakes.notifier.actions.lock().unwrap().pop_first().unwrap();
@@ -789,7 +791,7 @@ mod tests {
         // Muted quietly, as from the tray.
         assert_eq!(fakes.notified(), ["Incoming call from Ana"]);
 
-        call(serde_json::json!({"event": "talking", "contactName": "Ana"}));
+        call(serde_json::json!({"event": "talking", "contactName": "Ana"})).await;
         settle(&mut app, Message::Reload).await;
         assert!(fakes.notified().is_empty());
         // A stale button does nothing.
@@ -804,11 +806,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_pairing_request_does_not_notify_over_a_focused_window() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         settle(&mut app, Message::Reload).await;
         let core = core(&app);
-        let (_, _first) = testing::connect_unpaired_peer(&core, testing::PEER_ID);
-        testing::request_pairing(&core, testing::PEER_ID);
+        let (_, _first) = testing::connect_unpaired_peer(&core, testing::PEER_ID).await;
+        testing::request_pairing(&core, testing::PEER_ID).await;
         settle(&mut app, Message::Reload).await;
         assert!(shows(&app, "Pairing request"));
         assert!(fakes.notified().is_empty());
@@ -817,8 +819,8 @@ mod tests {
         let id = app.window.unwrap();
         settle(&mut app, Message::Window(id, window::Event::Unfocused)).await;
         let other = "0123456789abcdef0123456789abcdef";
-        let (_, _second) = testing::connect_unpaired_peer(&core, other);
-        testing::request_pairing(&core, other);
+        let (_, _second) = testing::connect_unpaired_peer(&core, other).await;
+        testing::request_pairing(&core, other).await;
         settle(&mut app, Message::Reload).await;
         assert_eq!(fakes.notified().len(), 1);
     }
@@ -826,9 +828,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_received_file_notifies_while_the_window_is_closed() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         let core = core(&app);
-        let (peer, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[]);
+        let (peer, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[]).await;
         // Transferring, since only a transfer under way can complete.
         let begin = |direction, name: &str| {
             let transfer = core.transfers().begin(&peer, direction, name.into(), 1);
@@ -850,7 +852,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_ping_notifies_while_closed_and_toasts_otherwise() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         let ping = |message: Option<&str>| {
             Message::Sync(sync::Update::Event(Box::new(crate::core::CoreEvent {
                 sequence: 1,
@@ -879,7 +881,8 @@ mod tests {
         let fakes = Fakes::default();
         let (core, _plugin, _commands) = crate::core::testing::handle_with_plugin(
             crate::plugins::battery::BatteryPlugin::default(),
-        );
+        )
+        .await;
         let mut app = running_on_desktop(core.clone(), &fakes);
         // Paired, but away; and connected, but not paired.
         core.discover_device(
@@ -889,7 +892,7 @@ mod tests {
         )
         .unwrap();
         let (_, _unpaired) =
-            testing::connect_unpaired_peer(&core, "fedcba9876543210fedcba9876543210");
+            testing::connect_unpaired_peer(&core, "fedcba9876543210fedcba9876543210").await;
         let _sent = peer(
             &mut app,
             &[
@@ -900,7 +903,7 @@ mod tests {
         .await;
         // The demo phone's first report: 82%.
         for packet in crate::ui::features::battery::demo_packets(&testing::device("Phone"), 0) {
-            core.handle_peer_packet(testing::PEER_ID, packet);
+            core.handle_peer_packet(testing::PEER_ID, packet).await;
         }
         settle(&mut app, Message::Reload).await;
 
@@ -926,7 +929,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_tray_lists_ring_only_for_a_device_that_can() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         let _sent = peer(&mut app, &[crate::plugins::ping::PACKET_TYPE]).await;
         assert!(tray_enabled(&fakes, &["Peer", "Ping"]));
         assert!(tray_item(&fakes, &["Peer", "Ring"]).is_none());
@@ -935,7 +938,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_tray_says_when_nothing_is_paired_or_connected() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         assert_eq!(
             tray_labels(&fakes),
             ["Open Ferry", "-", "Settings", "About Ferry", "-", "Quit"],
@@ -959,7 +962,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_tray_menu_is_sent_only_when_it_changes() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         let _sent = peer(&mut app, &[]).await;
         let sent = fakes.tray.updates.load(Ordering::SeqCst);
         settle(&mut app, Message::Reload).await;
@@ -974,7 +977,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_tray_opens_a_device_settings_or_about_in_the_window() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         let _sent = peer(&mut app, &[]).await;
         close(&mut app).await;
 
@@ -997,7 +1000,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_tray_action_that_opens_a_page_shows_the_window() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         let _sent = peer(&mut app, &[crate::plugins::browse::REQUEST_PACKET_TYPE]).await;
         close(&mut app).await;
 
@@ -1027,7 +1030,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn pinging_from_the_tray_reports_only_a_failure() {
         let fakes = Fakes::default();
-        let mut app = background(&fakes);
+        let mut app = background(&fakes).await;
         let mut sent = peer(&mut app, &[crate::plugins::ping::PACKET_TYPE]).await;
         close(&mut app).await;
 
@@ -1047,7 +1050,7 @@ mod tests {
         else {
             panic!("a ping item");
         };
-        core(&app).forget_device(testing::PEER_ID).unwrap();
+        core(&app).forget_device(testing::PEER_ID).await.unwrap();
         settle(&mut app, Message::Desktop(DesktopEvent::TrayChose(ping))).await;
         assert!(app.window.is_none());
         assert_eq!(
@@ -1070,7 +1073,7 @@ mod tests {
     async fn sending_files_from_the_tray_rechecks_the_device_after_the_picker() {
         let fakes = Fakes::default();
         let (core, _plugin, _commands) =
-            crate::core::testing::handle_with_plugin(crate::plugins::share::SharePlugin);
+            crate::core::testing::handle_with_plugin(crate::plugins::share::SharePlugin).await;
         let mut app = running_on_desktop(core.clone(), &fakes);
         let files = tempfile::tempdir().unwrap();
         let photo = files.path().join("photo.jpg");
@@ -1095,7 +1098,7 @@ mod tests {
         else {
             panic!("a send item");
         };
-        core.forget_device(testing::PEER_ID).unwrap();
+        core.forget_device(testing::PEER_ID).await.unwrap();
         settle(&mut app, Message::Desktop(DesktopEvent::TrayChose(send))).await;
         assert_eq!(
             *fakes

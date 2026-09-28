@@ -34,93 +34,102 @@ const COLUMNS: &str = "device_id, certificate_der, protocol_version, name, devic
 
 impl Store {
     /// The paired device `device_id`, if it is one.
-    pub fn device(&self, device_id: &str) -> Result<Option<TrustedDevice>, StoreError> {
-        let state = self.lock();
-        state
-            .connection
-            .query_row(
-                &format!("SELECT {COLUMNS} FROM devices WHERE device_id = ?1"),
-                [device_id],
-                StoredDevice::read,
-            )
-            .optional()?
-            .map(StoredDevice::decode)
-            .transpose()
+    pub async fn device(&self, device_id: &str) -> Result<Option<TrustedDevice>, StoreError> {
+        let device_id = device_id.to_owned();
+        self.read(move |connection| {
+            connection
+                .query_row(
+                    &format!("SELECT {COLUMNS} FROM devices WHERE device_id = ?1"),
+                    [device_id],
+                    StoredDevice::read,
+                )
+                .optional()?
+                .map(StoredDevice::decode)
+                .transpose()
+        })
+        .await
     }
 
     /// Every paired device, by id. A record that doesn't decode is left
     /// out, and logged.
-    pub fn devices(&self) -> Result<Vec<TrustedDevice>, StoreError> {
-        let state = self.lock();
-        let mut statement = state
-            .connection
-            .prepare(&format!("SELECT {COLUMNS} FROM devices ORDER BY device_id"))?;
-        let rows = statement.query_map([], StoredDevice::read)?;
-        let mut devices = Vec::new();
-        for row in rows {
-            let row = row?;
-            let device_id = row.device_id.clone();
-            match row.decode() {
-                Ok(device) => devices.push(device),
-                Err(error) => tracing::warn!(device_id, %error, "ignoring a paired device"),
+    pub async fn devices(&self) -> Result<Vec<TrustedDevice>, StoreError> {
+        self.read(move |connection| {
+            let mut statement =
+                connection.prepare(&format!("SELECT {COLUMNS} FROM devices ORDER BY device_id"))?;
+            let rows = statement.query_map([], StoredDevice::read)?;
+            let mut devices = Vec::new();
+            for row in rows {
+                let row = row?;
+                let device_id = row.device_id.clone();
+                match row.decode() {
+                    Ok(device) => devices.push(device),
+                    Err(error) => tracing::warn!(device_id, %error, "ignoring a paired device"),
+                }
             }
-        }
-        Ok(devices)
+            Ok(devices)
+        })
+        .await
     }
 
     /// Add or replace a paired device's record. When it was first paired
     /// is kept.
-    pub fn put_device(&self, device: &TrustedDevice) -> Result<(), StoreError> {
+    pub async fn put_device(&self, device: &TrustedDevice) -> Result<(), StoreError> {
         validate(device)?;
-        let identity = device.last_identity.as_ref();
-        let capabilities = |list: fn(&TrustedIdentity) -> &Vec<String>| {
-            identity
-                .map(|identity| serde_json::to_string(list(identity)))
-                .transpose()
-                .map_err(StoreError::Encoding)
-        };
-        let incoming = capabilities(|identity| &identity.incoming_capabilities)?;
-        let outgoing = capabilities(|identity| &identity.outgoing_capabilities)?;
-        let device_type = identity
-            .map(|identity| device_type_name(identity.device_type))
-            .transpose()?;
-        let now = now_millis();
-        self.lock().connection.execute(
-            "INSERT INTO devices (device_id, certificate_der, protocol_version, name, device_type,
-                                  incoming_capabilities, outgoing_capabilities, paired_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
-             ON CONFLICT (device_id) DO UPDATE SET
-               certificate_der = excluded.certificate_der,
-               protocol_version = excluded.protocol_version,
-               name = excluded.name,
-               device_type = excluded.device_type,
-               incoming_capabilities = excluded.incoming_capabilities,
-               outgoing_capabilities = excluded.outgoing_capabilities,
-               updated_at = excluded.updated_at",
-            params![
-                device.device_id,
-                device.certificate_der,
-                device.last_trusted_protocol_version,
-                identity.map(|identity| &identity.device_name),
-                device_type,
-                incoming,
-                outgoing,
-                now,
-            ],
-        )?;
-        Ok(())
+        let device = device.clone();
+        self.transaction(move |transaction| {
+            let identity = device.last_identity.as_ref();
+            let capabilities = |list: fn(&TrustedIdentity) -> &Vec<String>| {
+                identity
+                    .map(|identity| serde_json::to_string(list(identity)))
+                    .transpose()
+                    .map_err(StoreError::Encoding)
+            };
+            let incoming = capabilities(|identity| &identity.incoming_capabilities)?;
+            let outgoing = capabilities(|identity| &identity.outgoing_capabilities)?;
+            let device_type = identity
+                .map(|identity| device_type_name(identity.device_type))
+                .transpose()?;
+            let now = now_millis();
+            transaction.inner.execute(
+                "INSERT INTO devices (device_id, certificate_der, protocol_version, name, device_type,
+                                      incoming_capabilities, outgoing_capabilities, paired_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                 ON CONFLICT (device_id) DO UPDATE SET
+                   certificate_der = excluded.certificate_der,
+                   protocol_version = excluded.protocol_version,
+                   name = excluded.name,
+                   device_type = excluded.device_type,
+                   incoming_capabilities = excluded.incoming_capabilities,
+                   outgoing_capabilities = excluded.outgoing_capabilities,
+                   updated_at = excluded.updated_at",
+                params![
+                    device.device_id,
+                    device.certificate_der,
+                    device.last_trusted_protocol_version,
+                    identity.map(|identity| &identity.device_name),
+                    device_type,
+                    incoming,
+                    outgoing,
+                    now,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     /// Remove a paired device, and its [`PerDevice`] configs with it;
     /// whether it was paired.
-    pub fn remove_device(&self, device_id: &str) -> Result<bool, StoreError> {
-        self.transaction(|transaction| {
+    pub async fn remove_device(&self, device_id: &str) -> Result<bool, StoreError> {
+        let device_id = device_id.to_owned();
+        self.transaction(move |transaction| {
             let removed = transaction
                 .inner
-                .execute("DELETE FROM devices WHERE device_id = ?1", [device_id])?;
-            transaction.remove_scope::<PerDevice>(device_id)?;
+                .execute("DELETE FROM devices WHERE device_id = ?1", [&device_id])?;
+            transaction.remove_scope::<PerDevice>(&device_id)?;
             Ok(removed > 0)
         })
+        .await
     }
 }
 
@@ -243,117 +252,123 @@ mod tests {
     const PHONE: &str = "740bd4b9b4184ee497d6caf1da8151be";
     const LAPTOP: &str = "2c1f3a9e0b7d4c5e8f6a1b2c3d4e5f60";
 
-    #[test]
-    fn records_round_trip_and_can_be_removed() {
-        let store = Store::open_in_memory().unwrap();
+    #[tokio::test]
+    async fn records_round_trip_and_can_be_removed() {
+        let store = Store::open_in_memory().await.unwrap();
         let device = trusted_device(PHONE);
 
-        store.put_device(&device).unwrap();
-        assert!(store.device(PHONE).unwrap() == Some(device.clone()));
-        assert!(store.devices().unwrap() == vec![device]);
-        assert!(store.remove_device(PHONE).unwrap());
-        assert!(store.device(PHONE).unwrap().is_none());
-        assert!(!store.remove_device(PHONE).unwrap());
+        store.put_device(&device).await.unwrap();
+        assert!(store.device(PHONE).await.unwrap() == Some(device.clone()));
+        assert!(store.devices().await.unwrap() == vec![device]);
+        assert!(store.remove_device(PHONE).await.unwrap());
+        assert!(store.device(PHONE).await.unwrap().is_none());
+        assert!(!store.remove_device(PHONE).await.unwrap());
     }
 
-    #[test]
-    fn records_persist_across_opens() {
+    #[tokio::test]
+    async fn records_persist_across_opens() {
         let directory = tempfile::tempdir().unwrap();
         let device = trusted_device(PHONE);
         Store::open(directory.path())
+            .await
             .unwrap()
             .put_device(&device)
+            .await
             .unwrap();
-        let store = Store::open(directory.path()).unwrap();
-        assert!(store.devices().unwrap() == vec![device]);
+        let store = Store::open(directory.path()).await.unwrap();
+        assert!(store.devices().await.unwrap() == vec![device]);
     }
 
-    #[test]
-    fn a_record_is_replaced_and_keeps_when_it_was_paired() {
-        let store = Store::open_in_memory().unwrap();
+    #[tokio::test]
+    async fn a_record_is_replaced_and_keeps_when_it_was_paired() {
+        let store = Store::open_in_memory().await.unwrap();
         let mut device = trusted_device(PHONE);
-        store.put_device(&device).unwrap();
-        let paired_at = |store: &Store| -> i64 {
+        store.put_device(&device).await.unwrap();
+        async fn paired_at(store: &Store) -> i64 {
             store
-                .lock()
-                .connection
-                .query_row(
-                    "SELECT paired_at FROM devices WHERE device_id = ?1",
-                    [PHONE],
-                    |row| row.get(0),
-                )
+                .read(|connection| {
+                    Ok(connection.query_row(
+                        "SELECT paired_at FROM devices WHERE device_id = ?1",
+                        [PHONE],
+                        |row| row.get(0),
+                    )?)
+                })
+                .await
                 .unwrap()
-        };
-        let first = paired_at(&store);
+        }
+        let first = paired_at(&store).await;
 
         device.last_identity.as_mut().unwrap().device_name = "Renamed".into();
-        store.put_device(&device).unwrap();
-        assert!(store.device(PHONE).unwrap() == Some(device));
-        assert_eq!(paired_at(&store), first);
+        store.put_device(&device).await.unwrap();
+        assert!(store.device(PHONE).await.unwrap() == Some(device));
+        assert_eq!(paired_at(&store).await, first);
     }
 
-    #[test]
-    fn records_without_an_identity_still_load() {
-        let store = Store::open_in_memory().unwrap();
+    #[tokio::test]
+    async fn records_without_an_identity_still_load() {
+        let store = Store::open_in_memory().await.unwrap();
         let mut device = trusted_device(PHONE);
         device.last_identity = None;
-        store.put_device(&device).unwrap();
-        assert!(store.device(PHONE).unwrap() == Some(device));
+        store.put_device(&device).await.unwrap();
+        assert!(store.device(PHONE).await.unwrap() == Some(device));
     }
 
-    #[test]
-    fn devices_are_listed_by_id_and_a_bad_record_is_left_out() {
-        let store = Store::open_in_memory().unwrap();
-        store.put_device(&trusted_device(PHONE)).unwrap();
-        store.put_device(&trusted_device(LAPTOP)).unwrap();
+    #[tokio::test]
+    async fn devices_are_listed_by_id_and_a_bad_record_is_left_out() {
+        let store = Store::open_in_memory().await.unwrap();
+        store.put_device(&trusted_device(PHONE)).await.unwrap();
+        store.put_device(&trusted_device(LAPTOP)).await.unwrap();
         store
-            .lock()
-            .connection
-            .execute(
-                "UPDATE devices SET certificate_der = x'00' WHERE device_id = ?1",
-                [PHONE],
-            )
+            .transaction(|transaction| {
+                transaction.inner.execute(
+                    "UPDATE devices SET certificate_der = x'00' WHERE device_id = ?1",
+                    [PHONE],
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
             .unwrap();
 
         let listed: Vec<_> = store
             .devices()
+            .await
             .unwrap()
             .into_iter()
             .map(|device| device.device_id)
             .collect();
         assert_eq!(listed, [LAPTOP]);
         assert!(matches!(
-            store.device(PHONE),
+            store.device(PHONE).await,
             Err(StoreError::InvalidCertificate)
         ));
     }
 
-    #[test]
-    fn invalid_records_are_refused() {
-        let store = Store::open_in_memory().unwrap();
+    #[tokio::test]
+    async fn invalid_records_are_refused() {
+        let store = Store::open_in_memory().await.unwrap();
         let mut device = trusted_device("../../not-a-device");
         assert!(matches!(
-            store.put_device(&device),
+            store.put_device(&device).await,
             Err(StoreError::InvalidDeviceId)
         ));
         device.device_id = PHONE.into();
         device.last_trusted_protocol_version = 6;
         assert!(matches!(
-            store.put_device(&device),
+            store.put_device(&device).await,
             Err(StoreError::UnsupportedProtocolVersion)
         ));
     }
 
-    #[test]
-    fn removing_a_device_removes_its_configs() {
+    #[tokio::test]
+    async fn removing_a_device_removes_its_configs() {
         const MUTED: ConfigKey<bool, PerDevice> = ConfigKey::new("test.muted");
-        let store = Store::open_in_memory().unwrap();
-        store.put_device(&trusted_device(PHONE)).unwrap();
-        store.set(&MUTED.of(PHONE), &true).unwrap();
-        store.set(&MUTED.of(LAPTOP), &true).unwrap();
+        let store = Store::open_in_memory().await.unwrap();
+        store.put_device(&trusted_device(PHONE)).await.unwrap();
+        store.set(&MUTED.of(PHONE), &true).await.unwrap();
+        store.set(&MUTED.of(LAPTOP), &true).await.unwrap();
 
-        store.remove_device(PHONE).unwrap();
-        assert_eq!(store.get(&MUTED.of(PHONE)).unwrap(), None);
-        assert_eq!(store.get(&MUTED.of(LAPTOP)).unwrap(), Some(true));
+        store.remove_device(PHONE).await.unwrap();
+        assert_eq!(store.get(&MUTED.of(PHONE)).await.unwrap(), None);
+        assert_eq!(store.get(&MUTED.of(LAPTOP)).await.unwrap(), Some(true));
     }
 }

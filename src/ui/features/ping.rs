@@ -104,8 +104,9 @@ mod tests {
 
     #[tokio::test]
     async fn pinging_sends_a_ping_and_says_so() {
-        let (core, _commands) = handle();
-        let (device, mut sent) = testing::connect_peer(&core, testing::PEER_ID, &[PACKET_TYPE]);
+        let (core, _commands) = handle().await;
+        let (device, mut sent) =
+            testing::connect_peer(&core, testing::PEER_ID, &[PACKET_TYPE]).await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         let message = ping_message(&device);
         let outcomes = testing::outputs(update(&ctx, message, Origin::Window)).await;
@@ -125,7 +126,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_ping_to_a_device_that_is_gone_says_why() {
-        let (core, _commands) = handle();
+        let (core, _commands) = handle().await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         let message = ping_message(&testing::device("Pixel"));
         let outcomes = testing::outputs(update(&ctx, message, Origin::Tray)).await;

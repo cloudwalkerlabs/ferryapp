@@ -41,10 +41,10 @@ struct Peer {
     _directory: tempfile::TempDir,
 }
 
-fn peer(name: &str) -> Peer {
+async fn peer(name: &str) -> Peer {
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path()).unwrap();
-    let identity = Arc::new(LocalIdentity::load_or_create(&store).unwrap());
+    let store = Store::open(directory.path()).await.unwrap();
+    let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
     let public_key_der = subject_public_key_info(identity.certificate_der()).unwrap();
     let (application, commands) = Core::new(
         LocalDeviceSnapshot {
@@ -61,6 +61,7 @@ fn peer(name: &str) -> Peer {
         ferry::core::TransferConfig::new(directory.path().join("downloads"))
             .with_payload_bind_ip(Ipv4Addr::LOCALHOST),
     )
+    .await
     .unwrap();
     Peer {
         identity,
@@ -133,7 +134,7 @@ async fn wait_for_paired(application: &Core, device_id: &str, expected: bool) {
 }
 
 async fn pair(a: &Core, b: &Core, a_id: &str, b_id: &str) {
-    let pairing = a.start_outgoing_pairing(b_id).unwrap();
+    let pairing = a.start_outgoing_pairing(b_id).await.unwrap();
     let mut b_events = b.subscribe();
     let incoming = timeout(Duration::from_secs(2), async {
         loop {
@@ -146,7 +147,7 @@ async fn pair(a: &Core, b: &Core, a_id: &str, b_id: &str) {
     .await
     .unwrap();
     assert_eq!(incoming.verification_code, pairing.verification_code);
-    b.accept_pairing(incoming.id).unwrap();
+    b.accept_pairing(incoming.id).await.unwrap();
     wait_for_paired(a, b_id, true).await;
     wait_for_paired(b, a_id, true).await;
 }
@@ -189,9 +190,9 @@ async fn read_line<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> String 
 
 #[tokio::test]
 async fn ping_reaches_a_paired_kde_connect_peer_over_tls() {
-    let local_peer = peer("Local");
+    let local_peer = peer("Local").await;
     let local_id = local_peer.identity.device_id().to_owned();
-    let kde = peer("KDE Connect");
+    let kde = peer("KDE Connect").await;
     let kde_id = kde.identity.device_id().to_owned();
 
     // The KDE Connect peer is already paired: its certificate is pinned in
@@ -204,6 +205,7 @@ async fn ping_reaches_a_paired_kde_connect_peer_over_tls() {
             last_trusted_protocol_version: 8,
             last_identity: None,
         })
+        .await
         .unwrap();
 
     let kde_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -294,8 +296,8 @@ async fn ping_reaches_a_paired_kde_connect_peer_over_tls() {
 
 #[tokio::test]
 async fn paired_ferry_peers_ping_each_other() {
-    let a = peer("Peer A");
-    let b = peer("Peer B");
+    let a = peer("Peer A").await;
+    let b = peer("Peer B").await;
     let a_id = a.identity.device_id().to_owned();
     let b_id = b.identity.device_id().to_owned();
     let a_udp = free_udp_addr();

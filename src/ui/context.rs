@@ -114,7 +114,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawned_work_runs_on_the_daemon_runtime() {
-        let (core, _commands) = handle();
+        let (core, _commands) = handle().await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         let task = ctx.spawn(
             async {

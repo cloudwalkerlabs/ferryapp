@@ -72,18 +72,19 @@ mod tests {
         testing::{handle, make_identity},
     };
 
-    fn rename(core: &Core, name: &str) {
+    async fn rename(core: &Core, name: &str) {
         core.update_settings(SettingsPatch {
             device_name: Some(Some(name.into())),
             ..SettingsPatch::default()
         })
+        .await
         .unwrap();
     }
 
-    #[test]
-    fn sends_a_snapshot_then_events_and_a_fresh_snapshot_after_a_lag() {
+    #[tokio::test]
+    async fn sends_a_snapshot_then_events_and_a_fresh_snapshot_after_a_lag() {
         // The test core's event bus holds one event.
-        let (core, _commands) = handle();
+        let (core, _commands) = handle().await;
         let mut updates = Box::pin(stream(&Watched(core.clone())));
 
         let Some(Update::Snapshot(first)) = block_on(updates.next()) else {
@@ -91,7 +92,7 @@ mod tests {
         };
         assert_eq!(first.devices, Ok(vec![]));
 
-        rename(&core, "Renamed");
+        rename(&core, "Renamed").await;
         let Some(Update::Event(event)) = block_on(updates.next()) else {
             panic!("expected an event");
         };
@@ -103,7 +104,7 @@ mod tests {
         // Two changes overflow the bus: the stream starts over.
         core.discover_device(&make_identity(&"a".repeat(32), vec![]), true, 1)
             .unwrap();
-        rename(&core, "Renamed again");
+        rename(&core, "Renamed again").await;
         let Some(Update::Snapshot(fresh)) = block_on(updates.next()) else {
             panic!("expected a fresh snapshot");
         };

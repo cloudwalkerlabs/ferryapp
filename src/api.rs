@@ -403,7 +403,7 @@ async fn delete_device(
     State(state): State<ApiState>,
     Path(device_id): Path<String>,
 ) -> Result<StatusCode, ApiProblem> {
-    state.core.forget_device(&device_id)?;
+    state.core.forget_device(&device_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -417,7 +417,10 @@ async fn post_pairing(
     State(state): State<ApiState>,
     Json(request): Json<StartPairingRequest>,
 ) -> Result<(StatusCode, Json<PairingSnapshot>), ApiProblem> {
-    let pairing = state.core.start_outgoing_pairing(&request.device_id)?;
+    let pairing = state
+        .core
+        .start_outgoing_pairing(&request.device_id)
+        .await?;
     Ok((StatusCode::ACCEPTED, Json(pairing)))
 }
 
@@ -445,7 +448,7 @@ async fn post_pairing_accept(
     State(state): State<ApiState>,
     Path(pairing_id): Path<Uuid>,
 ) -> Result<Json<PairingSnapshot>, ApiProblem> {
-    let pairing = state.core.accept_pairing(pairing_id)?;
+    let pairing = state.core.accept_pairing(pairing_id).await?;
     Ok(Json(pairing))
 }
 
@@ -453,7 +456,7 @@ async fn delete_pairing(
     State(state): State<ApiState>,
     Path(pairing_id): Path<Uuid>,
 ) -> Result<Json<PairingSnapshot>, ApiProblem> {
-    let pairing = state.core.cancel_pairing(pairing_id)?;
+    let pairing = state.core.cancel_pairing(pairing_id).await?;
     Ok(Json(pairing))
 }
 
@@ -494,7 +497,7 @@ async fn patch_settings(
     State(state): State<ApiState>,
     Json(patch): Json<SettingsPatch>,
 ) -> Result<Json<SettingsSnapshot>, ApiProblem> {
-    let settings = state.core.update_settings(patch)?;
+    let settings = state.core.update_settings(patch).await?;
     Ok(Json(settings))
 }
 

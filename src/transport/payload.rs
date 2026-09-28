@@ -281,9 +281,11 @@ mod tests {
         assert!(matches!(error, PayloadError::Cancelled));
     }
 
-    fn identity() -> crate::config::LocalIdentity {
-        let store = crate::store::Store::open_in_memory().unwrap();
-        crate::config::LocalIdentity::load_or_create(&store).unwrap()
+    async fn identity() -> crate::config::LocalIdentity {
+        let store = crate::store::Store::open_in_memory().await.unwrap();
+        crate::config::LocalIdentity::load_or_create(&store)
+            .await
+            .unwrap()
     }
 
     fn material(identity: &crate::config::LocalIdentity) -> TlsMaterial {
@@ -292,9 +294,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_payload_listener_waits_past_stray_connections_for_its_device() {
-        let sender = identity();
-        let device = identity();
-        let stranger = identity();
+        let sender = identity().await;
+        let device = identity().await;
+        let stranger = identity().await;
         let (listener, port) = bind_payload_listener(Ipv4Addr::LOCALHOST, 0..=0)
             .await
             .unwrap();
@@ -345,9 +347,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_payload_listener_reports_why_the_only_dial_failed() {
-        let sender = identity();
-        let device = identity();
-        let stranger = identity();
+        let sender = identity().await;
+        let device = identity().await;
+        let stranger = identity().await;
         let (listener, port) = bind_payload_listener(Ipv4Addr::LOCALHOST, 0..=0)
             .await
             .unwrap();

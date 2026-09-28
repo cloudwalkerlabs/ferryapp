@@ -70,6 +70,7 @@ pub struct BrowsePlugin {
     sessions: Sessions,
 }
 
+#[async_trait::async_trait]
 impl Plugin for BrowsePlugin {
     fn id(&self) -> &'static str {
         ID
@@ -83,7 +84,7 @@ impl Plugin for BrowsePlugin {
         &[REQUEST_PACKET_TYPE]
     }
 
-    fn handle_packet(&self, _ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
+    async fn handle_packet(&self, _ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
         let device_id = device.device_id.as_str();
         match packet
             .body_as::<SftpBody>()
@@ -103,11 +104,11 @@ impl Plugin for BrowsePlugin {
         http::streaming_routes(self, ctx)
     }
 
-    fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
+    async fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
         self.sessions.close(device_id);
     }
 
-    fn unpaired(&self, _ctx: &PluginContext, device_id: &str) {
+    async fn unpaired(&self, _ctx: &PluginContext, device_id: &str) {
         self.sessions.close(device_id);
     }
 
@@ -702,7 +703,7 @@ mod tests {
 
     /// A paired, connected device advertising `capabilities`; its packets
     /// arrive on the returned receiver.
-    fn phone(handle: &Core, capabilities: &[&str]) -> mpsc::Receiver<Packet> {
+    async fn phone(handle: &Core, capabilities: &[&str]) -> mpsc::Receiver<Packet> {
         let identity = make_identity(
             PHONE,
             capabilities.iter().map(|value| value.to_string()).collect(),
@@ -711,19 +712,20 @@ mod tests {
         let (tx, rx) = mpsc::channel(4);
         handle
             .register_connection(PHONE, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
         rx
     }
 
     #[tokio::test]
     async fn only_devices_that_serve_files_are_asked() {
-        let (handle, plugin, _commands) = handle_with_plugin(BrowsePlugin::default());
+        let (handle, plugin, _commands) = handle_with_plugin(BrowsePlugin::default()).await;
         let ctx = handle.plugin_context();
         assert!(matches!(
             plugin.list_files(&ctx, PHONE, None).await,
             Err(BrowseError::Core(CoreError::UnknownDevice))
         ));
-        let mut packets = phone(&handle, &["kdeconnect.ping"]);
+        let mut packets = phone(&handle, &["kdeconnect.ping"]).await;
         assert!(matches!(
             plugin.list_files(&ctx, PHONE, None).await,
             Err(BrowseError::Core(CoreError::UnsupportedByPeer))
@@ -733,9 +735,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_device_that_cannot_serve_says_why() {
-        let (handle, plugin, _commands) = handle_with_plugin(BrowsePlugin::default());
+        let (handle, plugin, _commands) = handle_with_plugin(BrowsePlugin::default()).await;
         let ctx = handle.plugin_context();
-        let mut packets = phone(&handle, &[REQUEST_PACKET_TYPE]);
+        let mut packets = phone(&handle, &[REQUEST_PACKET_TYPE]).await;
 
         let listing = tokio::spawn({
             let plugin = plugin.clone();
@@ -750,7 +752,7 @@ mod tests {
             &json!({"errorMessage": "No storage permission"}),
         )
         .unwrap();
-        handle.handle_peer_packet(PHONE, reply);
+        handle.handle_peer_packet(PHONE, reply).await;
 
         match listing.await.unwrap() {
             Err(BrowseError::Unavailable { reason }) => {
@@ -762,9 +764,9 @@ mod tests {
 
     #[tokio::test]
     async fn waiting_for_an_offer_ends_when_the_device_disconnects() {
-        let (handle, plugin, _commands) = handle_with_plugin(BrowsePlugin::default());
+        let (handle, plugin, _commands) = handle_with_plugin(BrowsePlugin::default()).await;
         let ctx = handle.plugin_context();
-        let mut packets = phone(&handle, &[REQUEST_PACKET_TYPE]);
+        let mut packets = phone(&handle, &[REQUEST_PACKET_TYPE]).await;
 
         let listing = tokio::spawn({
             let plugin = plugin.clone();
@@ -772,7 +774,7 @@ mod tests {
             async move { plugin.list_files(&ctx, PHONE, None).await }
         });
         packets.recv().await.unwrap();
-        handle.unregister_connection(PHONE);
+        handle.unregister_connection(PHONE).await;
 
         assert!(matches!(
             listing.await.unwrap(),

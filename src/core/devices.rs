@@ -277,7 +277,26 @@ impl Core {
     }
 
     /// Remove trust, disconnect, and forget a device entirely.
-    pub fn forget_device(&self, device_id: &str) -> Result<(), CoreError> {
+    pub async fn forget_device(&self, device_id: &str) -> Result<(), CoreError> {
+        let core = self.clone();
+        let device_id = device_id.to_owned();
+        self.mutations
+            .spawn(async move { core.forget_device_inner(&device_id).await })
+            .await
+            .map_err(|_| CoreError::StateUnavailable)?
+    }
+
+    async fn forget_device_inner(&self, device_id: &str) -> Result<(), CoreError> {
+        let operation = self.device_operation(device_id);
+        let _operation = operation.lock().await;
+
+        if self.device(device_id).is_none() {
+            return Err(CoreError::UnknownDevice);
+        }
+        self.store
+            .remove_device(device_id)
+            .await
+            .map_err(CoreError::Store)?;
         let (forgotten, cancellation, failed_pairing) = {
             let mut state = self
                 .state
@@ -307,15 +326,12 @@ impl Core {
         let Some(forgotten) = forgotten else {
             return Err(CoreError::UnknownDevice);
         };
-        self.store
-            .remove_device(device_id)
-            .map_err(CoreError::Store)?;
         let ctx = self.plugin_context();
         if let Some(cancellation) = cancellation {
             cancellation.cancel();
-            self.plugins.disconnected(&ctx, device_id);
+            self.plugins.disconnected(&ctx, device_id).await;
         }
-        self.plugins.unpaired(&ctx, device_id);
+        self.plugins.unpaired(&ctx, device_id).await;
         if let Some(snapshot) = failed_pairing {
             let _ = self.events.publish(EventData::PairingUpdated(snapshot));
         }
@@ -359,11 +375,11 @@ impl Core {
     /// itself now, so it is listed that way while offline. Called once a
     /// connection is authenticated, never from an unauthenticated
     /// discovery announcement.
-    pub(super) fn refresh_trusted_identity(&self, device: &DeviceSnapshot) {
+    pub(super) async fn refresh_trusted_identity(&self, device: &DeviceSnapshot) {
         if !device.paired {
             return;
         }
-        let Ok(Some(mut trusted)) = self.store.device(&device.device_id) else {
+        let Ok(Some(mut trusted)) = self.store.device(&device.device_id).await else {
             return;
         };
         let identity = trusted_identity(device);
@@ -371,16 +387,16 @@ impl Core {
             return;
         }
         trusted.last_identity = Some(identity);
-        if let Err(error) = self.store.put_device(&trusted) {
+        if let Err(error) = self.store.put_device(&trusted).await {
             tracing::debug!(device_id = device.device_id, %error, "could not update trust record");
         }
     }
 }
 
 /// The paired peers in `store`, as unreachable until they are seen.
-pub(super) fn paired_devices(store: &Store) -> DeviceRegistry {
+pub(super) async fn paired_devices(store: &Store) -> DeviceRegistry {
     let mut registry = DeviceRegistry::new();
-    match store.devices() {
+    match store.devices().await {
         Ok(devices) => {
             for device in devices {
                 registry.restore(paired_device_snapshot(device));
@@ -510,8 +526,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn paired_devices_are_listed_offline_and_keep_their_latest_identity() {
+    #[tokio::test]
+    async fn paired_devices_are_listed_offline_and_keep_their_latest_identity() {
         let described = "740bd4b9b4184ee497d6caf1da8151be";
         let undescribed = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         let trusted = |device_id: &str, last_identity| TrustedDevice {
@@ -529,7 +545,8 @@ mod tests {
                 }),
             ),
             trusted(undescribed, None),
-        ]);
+        ])
+        .await;
 
         let devices = handle.devices().unwrap();
         let names: Vec<_> = devices.iter().map(|d| d.device_name.as_str()).collect();
@@ -553,8 +570,9 @@ mod tests {
                 CancellationToken::new(),
                 5,
             )
+            .await
             .unwrap();
-        let stored = handle.store.device(undescribed).unwrap().unwrap();
+        let stored = handle.store.device(undescribed).await.unwrap().unwrap();
         assert_eq!(
             stored.last_identity,
             Some(TrustedIdentity {
@@ -565,15 +583,15 @@ mod tests {
             })
         );
 
-        handle.unregister_connection(undescribed);
+        handle.unregister_connection(undescribed).await;
         let device = handle.device(undescribed).expect("the device");
         assert_eq!(device.device_name, "Laptop");
         assert_eq!(device.reachability, DeviceReachability::Unavailable);
     }
 
-    #[test]
-    fn forgetting_a_connected_device_tells_the_peer_before_disconnecting() {
-        let (handle, _commands) = handle();
+    #[tokio::test]
+    async fn forgetting_a_connected_device_tells_the_peer_before_disconnecting() {
+        let (handle, _commands) = handle().await;
         let device_id = "740bd4b9b4184ee497d6caf1da8151be";
         handle
             .discover_device(&make_identity(device_id, Vec::new()), true, 1)
@@ -582,9 +600,10 @@ mod tests {
         let cancellation = CancellationToken::new();
         handle
             .register_connection(device_id, vec![1, 2, 3], 8, tx, cancellation.clone(), 1)
+            .await
             .unwrap();
 
-        handle.forget_device(device_id).unwrap();
+        handle.forget_device(device_id).await.unwrap();
 
         let sent = rx.try_recv().unwrap();
         assert_eq!(sent.packet_type, "kdeconnect.pair");

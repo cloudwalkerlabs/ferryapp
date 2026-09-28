@@ -59,6 +59,7 @@ pub const ID: &str = "share";
 
 pub struct SharePlugin;
 
+#[async_trait::async_trait]
 impl Plugin for SharePlugin {
     fn id(&self) -> &'static str {
         ID
@@ -72,7 +73,7 @@ impl Plugin for SharePlugin {
         &[PACKET_TYPE]
     }
 
-    fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
+    async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
         // KDE Connect checks for a file first, then text, then a link.
         if packet.body.contains_key("filename") || packet.payload_size.is_some() {
             receive(ctx, device, packet);
@@ -431,25 +432,26 @@ mod tests {
 
     /// A paired, connected peer that accepts share requests; its packets
     /// arrive on the returned receiver.
-    fn paired_peer(handle: &Core) -> mpsc::Receiver<Packet> {
+    async fn paired_peer(handle: &Core) -> mpsc::Receiver<Packet> {
         let identity = make_identity(PEER, vec![PACKET_TYPE.into()]);
         handle.discover_device(&identity, true, 1).unwrap();
         let (tx, rx) = mpsc::channel(4);
         handle
             .register_connection(PEER, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
         rx
     }
 
-    #[test]
-    fn sending_is_refused_before_a_transfer_is_recorded() {
-        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin);
+    #[tokio::test]
+    async fn sending_is_refused_before_a_transfer_is_recorded() {
+        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin).await;
         let ctx = handle.plugin_context();
         assert!(matches!(
             send_file(&ctx, PEER, "a.txt".into(), 1, None),
             Err(CoreError::UnknownDevice)
         ));
-        let _packets = paired_peer(&handle);
+        let _packets = paired_peer(&handle).await;
         assert!(matches!(
             send_file(&ctx, PEER, " ".into(), 1, None),
             Err(CoreError::InvalidFileName)
@@ -463,8 +465,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_path_that_is_not_a_readable_file_is_refused_before_a_transfer() {
-        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin);
-        let _packets = paired_peer(&handle);
+        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin).await;
+        let _packets = paired_peer(&handle).await;
         let ctx = handle.plugin_context();
         let folder = tempfile::tempdir().unwrap();
 
@@ -488,8 +490,8 @@ mod tests {
 
     #[tokio::test]
     async fn sending_offers_the_file_on_a_payload_port() {
-        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin);
-        let mut packets = paired_peer(&handle);
+        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin).await;
+        let mut packets = paired_peer(&handle).await;
         let ctx = handle.plugin_context();
 
         let (started, _sender) = send_file(&ctx, PEER, "notes.txt".into(), 5, None).unwrap();
@@ -524,16 +526,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn requests_that_cannot_be_saved_safely_are_recorded_as_failed() {
-        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin);
-        let _packets = paired_peer(&handle);
+    #[tokio::test]
+    async fn requests_that_cannot_be_saved_safely_are_recorded_as_failed() {
+        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin).await;
+        let _packets = paired_peer(&handle).await;
 
         let traversal = build_request_packet(1_u64, "..".into(), None, 10, 1741).unwrap();
-        handle.handle_peer_packet(PEER, traversal);
+        handle.handle_peer_packet(PEER, traversal).await;
         let too_large =
             build_request_packet(2_u64, "big.bin".into(), None, u64::MAX, 1741).unwrap();
-        handle.handle_peer_packet(PEER, too_large);
+        handle.handle_peer_packet(PEER, too_large).await;
 
         let transfers = handle.transfers().list();
         let mut codes: Vec<_> = transfers
@@ -579,10 +581,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn text_and_links_are_sent_without_a_payload() {
-        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin);
-        let mut packets = paired_peer(&handle);
+    #[tokio::test]
+    async fn text_and_links_are_sent_without_a_payload() {
+        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin).await;
+        let mut packets = paired_peer(&handle).await;
         let ctx = handle.plugin_context();
 
         send_text(&ctx, PEER, "hello".into()).unwrap();
@@ -600,15 +602,15 @@ mod tests {
         assert!(!sent.body.contains_key("text"));
     }
 
-    #[test]
-    fn blank_oversized_or_undeliverable_shares_are_refused() {
-        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin);
+    #[tokio::test]
+    async fn blank_oversized_or_undeliverable_shares_are_refused() {
+        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin).await;
         let ctx = handle.plugin_context();
         assert!(matches!(
             send_text(&ctx, PEER, "hi".into()),
             Err(ShareTextError::Core(CoreError::UnknownDevice))
         ));
-        let mut packets = paired_peer(&handle);
+        let mut packets = paired_peer(&handle).await;
         assert!(matches!(
             send_text(&ctx, PEER, " \n".into()),
             Err(ShareTextError::Empty)
@@ -627,13 +629,13 @@ mod tests {
         assert!(packets.try_recv().is_err());
     }
 
-    #[test]
-    fn shared_text_and_web_links_are_published_and_other_links_become_text() {
-        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin);
-        let _packets = paired_peer(&handle);
+    #[tokio::test]
+    async fn shared_text_and_web_links_are_published_and_other_links_become_text() {
+        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin).await;
+        let _packets = paired_peer(&handle).await;
         let mut events = handle.event_bus().subscribe();
-        let mut received = |packet: Packet| {
-            handle.handle_peer_packet(PEER, packet);
+        let mut received = async |packet: Packet| {
+            handle.handle_peer_packet(PEER, packet).await;
             // The test bus holds one event, so check each as it lands.
             match events.try_recv() {
                 Ok(event) => match event.event {
@@ -652,25 +654,25 @@ mod tests {
         let text = |text: &str| SharedContent::Text { text: text.into() };
 
         assert_eq!(
-            received(build_text_packet(1_u64, "hello\nworld".into()).unwrap()),
+            received(build_text_packet(1_u64, "hello\nworld".into()).unwrap()).await,
             Some(text("hello\nworld"))
         );
         assert_eq!(
-            received(build_url_packet(2_u64, "https://kde.org/ ".into()).unwrap()),
+            received(build_url_packet(2_u64, "https://kde.org/ ".into()).unwrap()).await,
             Some(SharedContent::Link {
                 url: "https://kde.org/".into()
             })
         );
         assert_eq!(
-            received(build_url_packet(3_u64, "file:///etc/passwd".into()).unwrap()),
+            received(build_url_packet(3_u64, "file:///etc/passwd".into()).unwrap()).await,
             Some(text("file:///etc/passwd"))
         );
         assert_eq!(
-            received(build_text_packet(4_u64, " ".into()).unwrap()),
+            received(build_text_packet(4_u64, " ".into()).unwrap()).await,
             None
         );
         let empty = Packet::from_body(5_u64, PACKET_TYPE, &serde_json::json!({})).unwrap();
-        assert_eq!(received(empty), None);
+        assert_eq!(received(empty).await, None);
         assert!(handle.transfers().list().is_empty());
     }
 

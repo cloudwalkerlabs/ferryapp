@@ -338,9 +338,9 @@ mod tests {
 
     #[tokio::test]
     async fn muting_sends_the_request_or_says_why_not() {
-        let (core, _plugin, _commands) = handle_with_plugin(TelephonyPlugin::default());
+        let (core, _plugin, _commands) = handle_with_plugin(TelephonyPlugin::default()).await;
         let (device, mut sent) =
-            testing::connect_peer(&core, testing::PEER_ID, &[MUTE_PACKET_TYPE]);
+            testing::connect_peer(&core, testing::PEER_ID, &[MUTE_PACKET_TYPE]).await;
         let ctx = UiContext::new(core.clone(), tokio::runtime::Handle::current());
         let message = || Message::Mute {
             device_id: device.device_id.clone(),
@@ -362,7 +362,7 @@ mod tests {
         assert_eq!(text, "No call is ringing on it now.");
 
         let ringing = Packet::from_body(1_u64, PACKET_TYPE, &json!({"event": "ringing"})).unwrap();
-        core.handle_peer_packet(testing::PEER_ID, ringing);
+        core.handle_peer_packet(testing::PEER_ID, ringing).await;
         let outcomes = testing::outputs(update(&ctx, message(), Origin::Window)).await;
         assert!(matches!(
             &outcomes[..],

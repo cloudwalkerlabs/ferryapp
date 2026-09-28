@@ -69,7 +69,12 @@ pub fn start(core: &Core) {
 
 /// Step `tick` of the demo, every [`TICK`]: the TV comes and goes, and each
 /// connected device sends what the features make up for it.
-pub(crate) fn tick(core: &Core, features: &Features, tick: u64) {
+pub(crate) fn tick(
+    core: &Core,
+    features: &Features,
+    tick: u64,
+) -> Vec<(&'static str, crate::protocol::Packet)> {
+    let mut packets = Vec::new();
     if tick > 0 {
         let _ = if tick % 2 == 1 {
             core.mark_device_connected(TV, now())
@@ -85,9 +90,10 @@ pub(crate) fn tick(core: &Core, features: &Features, tick: u64) {
             continue;
         };
         for packet in features.demo_packets(&device, tick) {
-            core.handle_peer_packet(id, packet);
+            packets.push((id, packet));
         }
     }
+    packets
 }
 
 fn now() -> u64 {

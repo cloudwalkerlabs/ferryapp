@@ -161,7 +161,7 @@ impl ClipboardUi {
                 let plugin_ctx = ctx.plugin_context();
                 // Writes the store.
                 ctx.spawn(
-                    async move { plugin.set_sync_enabled(&plugin_ctx, enabled) },
+                    async move { plugin.set_sync_enabled(&plugin_ctx, enabled).await },
                     move |result| {
                         let error = result.err().map(|error| describe_error(&error));
                         to_app(Message::SyncSaved(error), origin)
@@ -260,8 +260,9 @@ mod tests {
 
     #[tokio::test]
     async fn sending_the_clipboard_says_so_or_why_not() {
-        let (core, _commands) = handle();
-        let (device, mut sent) = testing::connect_peer(&core, testing::PEER_ID, &[PACKET_TYPE]);
+        let (core, _commands) = handle().await;
+        let (device, mut sent) =
+            testing::connect_peer(&core, testing::PEER_ID, &[PACKET_TYPE]).await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
 
         assert_eq!(
@@ -282,15 +283,15 @@ mod tests {
     #[tokio::test]
     async fn the_sync_switch_shows_and_saves_the_setting() {
         let (core, plugin, _commands) =
-            handle_with_plugin(ClipboardPlugin::new(InMemoryClipboard::shared()));
+            handle_with_plugin(ClipboardPlugin::new(InMemoryClipboard::shared())).await;
         let ctx = UiContext::new(core.clone(), tokio::runtime::Handle::current());
         let mut ui = ClipboardUi::new(plugin.clone());
         let plugin_ctx = core.plugin_context();
-        plugin.set_sync_enabled(&plugin_ctx, false).unwrap();
+        plugin.set_sync_enabled(&plugin_ctx, false).await.unwrap();
         ui.on_snapshot(&ctx);
         assert!(!ui.sync_enabled, "read from the plugin");
         let mut events = core.subscribe();
-        plugin.set_sync_enabled(&plugin_ctx, true).unwrap();
+        plugin.set_sync_enabled(&plugin_ctx, true).await.unwrap();
         ui.on_event(&events.try_recv().unwrap());
         assert!(ui.sync_enabled, "patched from its event");
 
@@ -311,7 +312,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_setting_that_cant_be_saved_says_why() {
-        let (core, _commands) = handle();
+        let (core, _commands) = handle().await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         let error = describe_error(&ClipboardSyncError::Core(CoreError::Internal));
         let saved = Message::SyncSaved(Some(error.clone()));

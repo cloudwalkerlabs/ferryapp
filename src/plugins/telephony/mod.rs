@@ -148,6 +148,7 @@ impl TelephonyPlugin {
     }
 }
 
+#[async_trait::async_trait]
 impl Plugin for TelephonyPlugin {
     fn id(&self) -> &'static str {
         ID
@@ -161,7 +162,7 @@ impl Plugin for TelephonyPlugin {
         &[MUTE_PACKET_TYPE]
     }
 
-    fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
+    async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
         let Ok(body) = packet.body_as::<TelephonyBody>() else {
             tracing::debug!(
                 device_id = device.device_id,
@@ -222,11 +223,11 @@ impl Plugin for TelephonyPlugin {
         serde_json::to_value(calls.get(&device.device_id)?).ok()
     }
 
-    fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
+    async fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
         self.set(device_id, None);
     }
 
-    fn unpaired(&self, _ctx: &PluginContext, device_id: &str) {
+    async fn unpaired(&self, _ctx: &PluginContext, device_id: &str) {
         self.set(device_id, None);
     }
 }
@@ -285,8 +286,8 @@ mod tests {
 
     /// A paired phone that takes mute requests, connected, with events
     /// subscribed after it was; what the core sends it.
-    fn connected() -> (Core, broadcast::Receiver<CoreEvent>, mpsc::Receiver<Packet>) {
-        let (handle, _plugin, _commands) = handle_with_plugin(TelephonyPlugin::default());
+    async fn connected() -> (Core, broadcast::Receiver<CoreEvent>, mpsc::Receiver<Packet>) {
+        let (handle, _plugin, _commands) = handle_with_plugin(TelephonyPlugin::default()).await;
         handle
             .discover_device(
                 &make_identity(PAIRED_ID, vec![MUTE_PACKET_TYPE.into()]),
@@ -297,6 +298,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(4);
         handle
             .register_connection(PAIRED_ID, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
         let events = handle.subscribe();
         (handle, events, rx)
@@ -320,78 +322,102 @@ mod tests {
         event.decode::<CallMissed>().expect("call.missed")
     }
 
-    #[test]
-    fn an_answered_call_rings_talks_and_ends() {
-        let (handle, mut events, _sent) = connected();
+    #[tokio::test]
+    async fn an_answered_call_rings_talks_and_ends() {
+        let (handle, mut events, _sent) = connected().await;
         let ana = |state| Call {
             state,
             contact_name: Some("Ana".into()),
             phone_number: Some("+6421000000".into()),
         };
 
-        handle.handle_peer_packet(
-            PAIRED_ID,
-            event(json!({"event": "ringing", "contactName": "Ana", "phoneNumber": "+6421000000"})),
-        );
+        handle
+            .handle_peer_packet(
+                PAIRED_ID,
+                event(
+                    json!({"event": "ringing", "contactName": "Ana", "phoneNumber": "+6421000000"}),
+                ),
+            )
+            .await;
         assert_eq!(updated_call(&mut events), Some(ana(CallState::Ringing)));
         assert_eq!(
             handle.device(PAIRED_ID).unwrap().plugins[ID],
             json!({"state": "ringing", "contactName": "Ana", "phoneNumber": "+6421000000"})
         );
 
-        handle.handle_peer_packet(
-            PAIRED_ID,
-            event(json!({"event": "talking", "contactName": "Ana", "phoneNumber": "+6421000000"})),
-        );
+        handle
+            .handle_peer_packet(
+                PAIRED_ID,
+                event(
+                    json!({"event": "talking", "contactName": "Ana", "phoneNumber": "+6421000000"}),
+                ),
+            )
+            .await;
         assert_eq!(updated_call(&mut events), Some(ana(CallState::Talking)));
 
         // A late cancel of the ringing doesn't end the call.
-        handle.handle_peer_packet(
-            PAIRED_ID,
-            event(json!({"event": "ringing", "isCancel": "true"})),
-        );
+        handle
+            .handle_peer_packet(
+                PAIRED_ID,
+                event(json!({"event": "ringing", "isCancel": "true"})),
+            )
+            .await;
         assert!(events.try_recv().is_err());
 
-        handle.handle_peer_packet(
-            PAIRED_ID,
-            event(json!({"event": "talking", "isCancel": "true", "contactName": "Ana"})),
-        );
+        handle
+            .handle_peer_packet(
+                PAIRED_ID,
+                event(json!({"event": "talking", "isCancel": "true", "contactName": "Ana"})),
+            )
+            .await;
         assert_eq!(updated_call(&mut events), None);
         assert_eq!(call(&handle), None);
         assert!(events.try_recv().is_err());
     }
 
-    #[test]
-    fn an_unanswered_call_is_published_as_missed() {
-        let (handle, mut events, _sent) = connected();
-        handle.handle_peer_packet(
-            PAIRED_ID,
-            event(json!({"event": "ringing", "phoneNumber": "+6421000000"})),
-        );
+    #[tokio::test]
+    async fn an_unanswered_call_is_published_as_missed() {
+        let (handle, mut events, _sent) = connected().await;
+        handle
+            .handle_peer_packet(
+                PAIRED_ID,
+                event(json!({"event": "ringing", "phoneNumber": "+6421000000"})),
+            )
+            .await;
         let _ = next(&mut events);
 
         // Android: the ringing again as a cancel, then the missed call.
-        handle.handle_peer_packet(
-            PAIRED_ID,
-            event(json!({"event": "ringing", "isCancel": "true", "phoneNumber": "+6421000000"})),
-        );
+        handle
+            .handle_peer_packet(
+                PAIRED_ID,
+                event(
+                    json!({"event": "ringing", "isCancel": "true", "phoneNumber": "+6421000000"}),
+                ),
+            )
+            .await;
         assert_eq!(updated_call(&mut events), None);
-        handle.handle_peer_packet(
-            PAIRED_ID,
-            event(json!({"event": "missedCall", "phoneNumber": "+6421000000"})),
-        );
+        handle
+            .handle_peer_packet(
+                PAIRED_ID,
+                event(json!({"event": "missedCall", "phoneNumber": "+6421000000"})),
+            )
+            .await;
         let missed = missed(&mut events);
         assert_eq!(missed.device_id, PAIRED_ID);
         assert_eq!(missed.caller(), Some("+6421000000"));
         assert!(events.try_recv().is_err());
     }
 
-    #[test]
-    fn a_missed_call_ends_a_ringing_one_left_behind() {
-        let (handle, mut events, _sent) = connected();
-        handle.handle_peer_packet(PAIRED_ID, event(json!({"event": "ringing"})));
+    #[tokio::test]
+    async fn a_missed_call_ends_a_ringing_one_left_behind() {
+        let (handle, mut events, _sent) = connected().await;
+        handle
+            .handle_peer_packet(PAIRED_ID, event(json!({"event": "ringing"})))
+            .await;
         let _ = next(&mut events);
-        handle.handle_peer_packet(PAIRED_ID, event(json!({"event": "missedCall"})));
+        handle
+            .handle_peer_packet(PAIRED_ID, event(json!({"event": "missedCall"})))
+            .await;
         assert_eq!(call(&handle), None);
         // The call's end came first; the bus holds only the last event.
         assert!(matches!(
@@ -401,36 +427,38 @@ mod tests {
         assert_eq!(missed(&mut events).caller(), None);
     }
 
-    #[test]
-    fn sms_and_unknown_events_are_ignored() {
-        let (handle, mut events, _sent) = connected();
+    #[tokio::test]
+    async fn sms_and_unknown_events_are_ignored() {
+        let (handle, mut events, _sent) = connected().await;
         for body in [
             json!({"event": "sms", "messageBody": "hi", "phoneNumber": "1"}),
             json!({"event": "hold"}),
             json!({"isCancel": "true"}),
             json!({"event": 3}),
         ] {
-            handle.handle_peer_packet(PAIRED_ID, event(body));
+            handle.handle_peer_packet(PAIRED_ID, event(body)).await;
         }
         assert!(events.try_recv().is_err());
         assert_eq!(call(&handle), None);
     }
 
-    #[test]
-    fn the_call_is_dropped_when_the_phone_disconnects() {
-        let (handle, mut events, _sent) = connected();
-        handle.handle_peer_packet(PAIRED_ID, event(json!({"event": "talking"})));
+    #[tokio::test]
+    async fn the_call_is_dropped_when_the_phone_disconnects() {
+        let (handle, mut events, _sent) = connected().await;
+        handle
+            .handle_peer_packet(PAIRED_ID, event(json!({"event": "talking"})))
+            .await;
         let _ = next(&mut events);
-        handle.unregister_connection(PAIRED_ID);
+        handle.unregister_connection(PAIRED_ID).await;
         let EventData::DeviceDisconnected(device) = next(&mut events) else {
             panic!("expected device.disconnected");
         };
         assert_eq!(Call::of(&device), None);
     }
 
-    #[test]
-    fn the_ringer_can_be_muted_only_while_a_call_rings() {
-        let (handle, mut events, mut sent) = connected();
+    #[tokio::test]
+    async fn the_ringer_can_be_muted_only_while_a_call_rings() {
+        let (handle, mut events, mut sent) = connected().await;
         let ctx = handle.plugin_context();
         assert!(matches!(
             mute_ringer(&ctx, PAIRED_ID),
@@ -441,7 +469,9 @@ mod tests {
             Err(TelephonyError::Core(CoreError::UnknownDevice))
         ));
 
-        handle.handle_peer_packet(PAIRED_ID, event(json!({"event": "ringing"})));
+        handle
+            .handle_peer_packet(PAIRED_ID, event(json!({"event": "ringing"})))
+            .await;
         let _ = next(&mut events);
         mute_ringer(&ctx, PAIRED_ID).unwrap();
         let packet = sent.try_recv().unwrap();

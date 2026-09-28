@@ -159,10 +159,10 @@ async fn connected_and_paired_with(
 ) -> Harness {
     let a_dir = tempfile::tempdir().unwrap();
     let b_dir = tempfile::tempdir().unwrap();
-    let a_store = Store::open(a_dir.path()).unwrap();
-    let b_store = Store::open(b_dir.path()).unwrap();
-    let a_identity = Arc::new(LocalIdentity::load_or_create(&a_store).unwrap());
-    let b_identity = Arc::new(LocalIdentity::load_or_create(&b_store).unwrap());
+    let a_store = Store::open(a_dir.path()).await.unwrap();
+    let b_store = Store::open(b_dir.path()).await.unwrap();
+    let a_identity = Arc::new(LocalIdentity::load_or_create(&a_store).await.unwrap());
+    let b_identity = Arc::new(LocalIdentity::load_or_create(&b_store).await.unwrap());
     let a_pubkey = subject_public_key_info(a_identity.certificate_der()).unwrap();
     let b_pubkey = subject_public_key_info(b_identity.certificate_der()).unwrap();
     let b_download_dir = b_dir.path().join("downloads");
@@ -192,6 +192,7 @@ async fn connected_and_paired_with(
         a_identity.clone(),
         a_transfer_config,
     )
+    .await
     .unwrap();
     let (b_application, b_commands) = Core::new(
         LocalDeviceSnapshot {
@@ -207,6 +208,7 @@ async fn connected_and_paired_with(
         b_identity.clone(),
         b_transfer_config,
     )
+    .await
     .unwrap();
 
     let a_id = a_identity.device_id().to_owned();
@@ -240,7 +242,7 @@ async fn connected_and_paired_with(
     wait_for_reachability(&a_application, &b_id, DeviceReachability::Connected).await;
     wait_for_reachability(&b_application, &a_id, DeviceReachability::Connected).await;
 
-    let pairing = a_application.start_outgoing_pairing(&b_id).unwrap();
+    let pairing = a_application.start_outgoing_pairing(&b_id).await.unwrap();
     let mut b_events = b_application.subscribe();
     let incoming = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -253,7 +255,7 @@ async fn connected_and_paired_with(
     .await
     .unwrap();
     assert_eq!(incoming.verification_code, pairing.verification_code);
-    b_application.accept_pairing(incoming.id).unwrap();
+    b_application.accept_pairing(incoming.id).await.unwrap();
     wait_for_paired(&a_application, &b_id, true).await;
     wait_for_paired(&b_application, &a_id, true).await;
 
@@ -378,8 +380,8 @@ async fn a_local_file_is_sent_from_disk_under_its_own_name() {
 #[tokio::test]
 async fn unpaired_device_cannot_initiate_a_transfer() {
     let a_dir = tempfile::tempdir().unwrap();
-    let a_store = Store::open(a_dir.path()).unwrap();
-    let a_identity = Arc::new(LocalIdentity::load_or_create(&a_store).unwrap());
+    let a_store = Store::open(a_dir.path()).await.unwrap();
+    let a_identity = Arc::new(LocalIdentity::load_or_create(&a_store).await.unwrap());
     let a_pubkey = subject_public_key_info(a_identity.certificate_der()).unwrap();
     let (a_application, _commands) = Core::new(
         LocalDeviceSnapshot {
@@ -396,6 +398,7 @@ async fn unpaired_device_cannot_initiate_a_transfer() {
         TransferConfig::new(a_dir.path().join("downloads"))
             .with_payload_bind_ip(Ipv4Addr::LOCALHOST),
     )
+    .await
     .unwrap();
 
     assert!(matches!(
@@ -499,7 +502,7 @@ async fn path_traversal_filename_is_rejected_without_touching_the_filesystem() {
     // to just `passwd` rather than rejected outright, so it can never escape
     // the download directory either way.
     let packet = share::build_request_packet(1_u64, "..".into(), None, 10, 65000).unwrap();
-    harness.b.handle_peer_packet(&harness.a_id, packet);
+    harness.b.handle_peer_packet(&harness.a_id, packet).await;
 
     // No network activity is expected at all: the rejection happens
     // synchronously, before any payload port is ever dialed.
@@ -529,7 +532,7 @@ async fn unreachable_payload_port_fails_the_incoming_transfer() {
     // fail the transfer once its short connect timeout elapses rather than
     // hang indefinitely.
     let packet = share::build_request_packet(1_u64, "unreachable.bin".into(), None, 4, 1).unwrap();
-    harness.b.handle_peer_packet(&harness.a_id, packet);
+    harness.b.handle_peer_packet(&harness.a_id, packet).await;
 
     let transfers = tokio::time::timeout(Duration::from_secs(2), async {
         loop {

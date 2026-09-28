@@ -30,10 +30,10 @@ struct Harness {
     _directory: tempfile::TempDir,
 }
 
-fn harness() -> Harness {
+async fn harness() -> Harness {
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path()).unwrap();
-    let local_identity = Arc::new(LocalIdentity::load_or_create(&store).unwrap());
+    let store = Store::open(directory.path()).await.unwrap();
+    let local_identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
     let local_public_key = subject_public_key_info(local_identity.certificate_der()).unwrap();
     let (application, commands) = Core::new(
         LocalDeviceSnapshot {
@@ -49,9 +49,12 @@ fn harness() -> Harness {
         local_identity,
         TransferConfig::new(directory.path().join("downloads")),
     )
+    .await
     .unwrap();
 
-    let peer_identity = LocalIdentity::load_or_create(&Store::open_in_memory().unwrap()).unwrap();
+    let peer_identity = LocalIdentity::load_or_create(&Store::open_in_memory().await.unwrap())
+        .await
+        .unwrap();
     let peer_id = peer_identity.device_id().to_owned();
     let peer_certificate_der = peer_identity.certificate_der().to_vec();
 
@@ -80,6 +83,7 @@ fn harness() -> Harness {
             CancellationToken::new(),
             1_000,
         )
+        .await
         .unwrap();
     // Subscribe only after setup so tests observe pairing events exclusively,
     // not the device.discovered/device.connected events from harness setup.
@@ -107,19 +111,23 @@ async fn next_pairing_event(events: &mut broadcast::Receiver<CoreEvent>) -> Even
 
 #[tokio::test]
 async fn outgoing_pairing_requires_a_connected_and_unpaired_device() {
-    let harness = harness();
+    let harness = harness().await;
     assert!(matches!(
-        harness.application.start_outgoing_pairing("missing-device"),
+        harness
+            .application
+            .start_outgoing_pairing("missing-device")
+            .await,
         Err(CoreError::UnknownDevice)
     ));
 }
 
 #[tokio::test]
 async fn outgoing_pairing_sends_a_pair_request_and_exposes_a_verification_code() {
-    let mut harness = harness();
+    let mut harness = harness().await;
     let pairing = harness
         .application
         .start_outgoing_pairing(&harness.peer_id)
+        .await
         .unwrap();
     assert_eq!(pairing.direction, PairingDirection::Outgoing);
     assert_eq!(pairing.status, PairingStatus::AwaitingConfirmation);
@@ -135,36 +143,40 @@ async fn outgoing_pairing_sends_a_pair_request_and_exposes_a_verification_code()
 
 #[tokio::test]
 async fn accept_is_rejected_for_the_wrong_direction() {
-    let harness = harness();
+    let harness = harness().await;
     let pairing = harness
         .application
         .start_outgoing_pairing(&harness.peer_id)
+        .await
         .unwrap();
     // Confirming a verification code only makes sense for a request we
     // received, not one we ourselves sent; the wrong flow must fail closed.
     assert!(matches!(
-        harness.application.accept_pairing(pairing.id),
+        harness.application.accept_pairing(pairing.id).await,
         Err(CoreError::InvalidPairingDirection)
     ));
 }
 
 #[tokio::test]
 async fn incoming_pairing_request_reaches_awaiting_confirmation_with_matching_code() {
-    let mut harness = harness();
+    let mut harness = harness().await;
     let timestamp = unix_seconds();
-    harness.application.handle_peer_packet(
-        &harness.peer_id,
-        Packet::from_body(
-            0,
-            "kdeconnect.pair",
-            &PairingBody {
-                pair: true,
-                timestamp: Some(timestamp),
-                extra: Map::new(),
-            },
+    harness
+        .application
+        .handle_peer_packet(
+            &harness.peer_id,
+            Packet::from_body(
+                0,
+                "kdeconnect.pair",
+                &PairingBody {
+                    pair: true,
+                    timestamp: Some(timestamp),
+                    extra: Map::new(),
+                },
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    );
+        .await;
 
     let EventData::PairingRequested(pairing) = next_pairing_event(&mut harness.events).await else {
         panic!("expected a pairing.requested event");
@@ -182,20 +194,23 @@ async fn incoming_pairing_request_reaches_awaiting_confirmation_with_matching_co
 
 #[tokio::test]
 async fn accepting_an_incoming_pairing_persists_trust_only_after_confirmation() {
-    let mut harness = harness();
-    harness.application.handle_peer_packet(
-        &harness.peer_id,
-        Packet::from_body(
-            0,
-            "kdeconnect.pair",
-            &PairingBody {
-                pair: true,
-                timestamp: Some(unix_seconds()),
-                extra: Map::new(),
-            },
+    let mut harness = harness().await;
+    harness
+        .application
+        .handle_peer_packet(
+            &harness.peer_id,
+            Packet::from_body(
+                0,
+                "kdeconnect.pair",
+                &PairingBody {
+                    pair: true,
+                    timestamp: Some(unix_seconds()),
+                    extra: Map::new(),
+                },
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    );
+        .await;
     let EventData::PairingRequested(pairing) = next_pairing_event(&mut harness.events).await else {
         panic!("expected pairing.requested");
     };
@@ -206,9 +221,20 @@ async fn accepting_an_incoming_pairing_persists_trust_only_after_confirmation() 
         trust_store_before,
         Some(device) if !device.paired
     ));
-    assert!(harness.store.device(&harness.peer_id).unwrap().is_none());
+    assert!(
+        harness
+            .store
+            .device(&harness.peer_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
-    let accepted = harness.application.accept_pairing(pairing.id).unwrap();
+    let accepted = harness
+        .application
+        .accept_pairing(pairing.id)
+        .await
+        .unwrap();
     assert_eq!(accepted.status, PairingStatus::Accepted);
 
     match harness.application.device(&harness.peer_id) {
@@ -224,6 +250,7 @@ async fn accepting_an_incoming_pairing_persists_trust_only_after_confirmation() 
     let pinned = harness
         .store
         .device(&harness.peer_id)
+        .await
         .unwrap()
         .expect("trust is pinned only after confirmation");
     assert_eq!(pinned.certificate_der, harness.peer_certificate_der);
@@ -232,14 +259,19 @@ async fn accepting_an_incoming_pairing_persists_trust_only_after_confirmation() 
 
 #[tokio::test]
 async fn rejecting_a_pairing_sends_pair_false_and_never_pairs() {
-    let mut harness = harness();
+    let mut harness = harness().await;
     let pairing = harness
         .application
         .start_outgoing_pairing(&harness.peer_id)
+        .await
         .unwrap();
     let _ = harness.packets.try_recv().unwrap(); // the original request
 
-    let rejected = harness.application.cancel_pairing(pairing.id).unwrap();
+    let rejected = harness
+        .application
+        .cancel_pairing(pairing.id)
+        .await
+        .unwrap();
     assert_eq!(rejected.status, PairingStatus::Rejected);
 
     let sent = harness.packets.try_recv().expect("a rejection is sent");
@@ -254,21 +286,24 @@ async fn rejecting_a_pairing_sends_pair_false_and_never_pairs() {
 
 #[tokio::test]
 async fn expired_pair_request_timestamp_is_ignored() {
-    let mut harness = harness();
+    let mut harness = harness().await;
     let ancient_timestamp = unix_seconds() - 3600;
-    harness.application.handle_peer_packet(
-        &harness.peer_id,
-        Packet::from_body(
-            0,
-            "kdeconnect.pair",
-            &PairingBody {
-                pair: true,
-                timestamp: Some(ancient_timestamp),
-                extra: Map::new(),
-            },
+    harness
+        .application
+        .handle_peer_packet(
+            &harness.peer_id,
+            Packet::from_body(
+                0,
+                "kdeconnect.pair",
+                &PairingBody {
+                    pair: true,
+                    timestamp: Some(ancient_timestamp),
+                    extra: Map::new(),
+                },
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    );
+        .await;
 
     assert!(
         tokio::time::timeout(Duration::from_millis(200), harness.events.recv())
@@ -284,20 +319,23 @@ async fn pair_request_within_ordinary_clock_drift_is_accepted() {
     // Connect tolerates up to 30 minutes of skew, well beyond the 30-second
     // pairing timeout.
     for skew in [-120, 120] {
-        let mut harness = harness();
-        harness.application.handle_peer_packet(
-            &harness.peer_id,
-            Packet::from_body(
-                0,
-                "kdeconnect.pair",
-                &PairingBody {
-                    pair: true,
-                    timestamp: Some(unix_seconds() + skew),
-                    extra: Map::new(),
-                },
+        let mut harness = harness().await;
+        harness
+            .application
+            .handle_peer_packet(
+                &harness.peer_id,
+                Packet::from_body(
+                    0,
+                    "kdeconnect.pair",
+                    &PairingBody {
+                        pair: true,
+                        timestamp: Some(unix_seconds() + skew),
+                        extra: Map::new(),
+                    },
+                )
+                .unwrap(),
             )
-            .unwrap(),
-        );
+            .await;
 
         let EventData::PairingRequested(pairing) = next_pairing_event(&mut harness.events).await
         else {
@@ -309,21 +347,24 @@ async fn pair_request_within_ordinary_clock_drift_is_accepted() {
 
 #[tokio::test]
 async fn clock_skewed_pair_request_is_ignored() {
-    let mut harness = harness();
+    let mut harness = harness().await;
     let far_future_timestamp = unix_seconds() + 3600;
-    harness.application.handle_peer_packet(
-        &harness.peer_id,
-        Packet::from_body(
-            0,
-            "kdeconnect.pair",
-            &PairingBody {
-                pair: true,
-                timestamp: Some(far_future_timestamp),
-                extra: Map::new(),
-            },
+    harness
+        .application
+        .handle_peer_packet(
+            &harness.peer_id,
+            Packet::from_body(
+                0,
+                "kdeconnect.pair",
+                &PairingBody {
+                    pair: true,
+                    timestamp: Some(far_future_timestamp),
+                    extra: Map::new(),
+                },
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    );
+        .await;
 
     assert!(
         tokio::time::timeout(Duration::from_millis(200), harness.events.recv())
@@ -335,10 +376,11 @@ async fn clock_skewed_pair_request_is_ignored() {
 
 #[tokio::test(start_paused = true)]
 async fn pairing_expires_after_the_thirty_second_timeout_and_releases_its_timer() {
-    let mut harness = harness();
+    let mut harness = harness().await;
     let pairing = harness
         .application
         .start_outgoing_pairing(&harness.peer_id)
+        .await
         .unwrap();
 
     // Tokio auto-advances virtual time here because the only outstanding
@@ -366,17 +408,21 @@ async fn pairing_expires_after_the_thirty_second_timeout_and_releases_its_timer(
 
 #[tokio::test]
 async fn disconnecting_during_pairing_fails_the_session_and_releases_its_timer() {
-    let mut harness = harness();
+    let mut harness = harness().await;
     let pairing = harness
         .application
         .start_outgoing_pairing(&harness.peer_id)
+        .await
         .unwrap();
     let _ = harness.packets.try_recv().unwrap();
 
     let requested = next_pairing_event(&mut harness.events).await;
     assert!(matches!(requested, EventData::PairingRequested(_)));
 
-    harness.application.unregister_connection(&harness.peer_id);
+    harness
+        .application
+        .unregister_connection(&harness.peer_id)
+        .await;
 
     let snapshot = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
@@ -395,14 +441,17 @@ async fn disconnecting_during_pairing_fails_the_session_and_releases_its_timer()
 
 #[tokio::test]
 async fn unpaired_devices_cannot_trigger_state_changes_with_non_pairing_packets() {
-    let harness = harness();
+    let harness = harness().await;
     // No panic, no pairing, no trust: an unpaired peer's non-pairing packet
     // is simply inert until later phases add plugin dispatch for paired
     // devices only.
-    harness.application.handle_peer_packet(
-        &harness.peer_id,
-        Packet::from_body(0, "kdeconnect.ping", &serde_json::json!({})).unwrap(),
-    );
+    harness
+        .application
+        .handle_peer_packet(
+            &harness.peer_id,
+            Packet::from_body(0, "kdeconnect.ping", &serde_json::json!({})).unwrap(),
+        )
+        .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     match harness.application.device(&harness.peer_id) {
         Some(device) => assert!(!device.paired),
@@ -412,35 +461,43 @@ async fn unpaired_devices_cannot_trigger_state_changes_with_non_pairing_packets(
 
 #[tokio::test]
 async fn forgetting_a_device_removes_trust_and_reports_unknown_afterwards() {
-    let mut harness = harness();
+    let mut harness = harness().await;
     let pairing = harness
         .application
         .start_outgoing_pairing(&harness.peer_id)
+        .await
         .unwrap();
     let _ = harness.packets.try_recv().unwrap();
     let requested = next_pairing_event(&mut harness.events).await;
     assert!(matches!(requested, EventData::PairingRequested(_)));
 
-    harness.application.handle_peer_packet(
-        &harness.peer_id,
-        Packet::from_body(
-            0,
-            "kdeconnect.pair",
-            &PairingBody {
-                pair: true,
-                timestamp: None,
-                extra: Map::new(),
-            },
+    harness
+        .application
+        .handle_peer_packet(
+            &harness.peer_id,
+            Packet::from_body(
+                0,
+                "kdeconnect.pair",
+                &PairingBody {
+                    pair: true,
+                    timestamp: None,
+                    extra: Map::new(),
+                },
+            )
+            .unwrap(),
         )
-        .unwrap(),
-    );
+        .await;
     let EventData::PairingUpdated(accepted) = next_pairing_event(&mut harness.events).await else {
         panic!("expected pairing.updated");
     };
     assert_eq!(accepted.id, pairing.id);
     assert_eq!(accepted.status, PairingStatus::Accepted);
 
-    harness.application.forget_device(&harness.peer_id).unwrap();
+    harness
+        .application
+        .forget_device(&harness.peer_id)
+        .await
+        .unwrap();
     let forgotten = loop {
         if let EventData::DeviceForgotten(device) = next_pairing_event(&mut harness.events).await {
             break device;
@@ -449,7 +506,7 @@ async fn forgetting_a_device_removes_trust_and_reports_unknown_afterwards() {
     assert_eq!(forgotten.device_id, harness.peer_id);
     assert!(harness.application.device(&harness.peer_id).is_none());
     assert!(matches!(
-        harness.application.forget_device(&harness.peer_id),
+        harness.application.forget_device(&harness.peer_id).await,
         Err(CoreError::UnknownDevice)
     ));
 }

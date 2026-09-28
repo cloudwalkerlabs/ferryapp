@@ -233,51 +233,74 @@ pub(super) struct Change {
 }
 
 impl Store {
-    /// The value stored for `entry`: `None` if there is none, or if it
-    /// doesn't decode as the key's type (a type changed incompatibly),
-    /// which is logged.
-    pub fn get<E: Entry>(&self, entry: &E) -> Result<Option<E::Value>, StoreError> {
-        let raw = read(&self.lock().connection, &EntryId::of(entry))?;
+    /// Last value loaded or committed by this store. Memory only, for
+    /// synchronous snapshots and plugin callbacks; external writes require
+    /// an async `get` or reopening, as with config watches.
+    pub fn cached<E: Entry>(&self, entry: &E) -> Result<Option<E::Value>, StoreError> {
+        let raw = self
+            .lock()
+            .cache
+            .get(&(
+                entry.name().to_owned(),
+                entry.scope().to_owned(),
+                entry.id().to_owned(),
+            ))
+            .cloned()
+            .flatten();
         Ok(decode_raw(entry.name(), raw.as_deref()))
     }
 
-    /// Like [`Store::get`], but a value that doesn't decode is an error:
-    /// for a value that mustn't be replaced by a default as if it were
-    /// missing.
-    pub fn get_strict<E: Entry>(&self, entry: &E) -> Result<Option<E::Value>, StoreError> {
-        let raw = read(&self.lock().connection, &EntryId::of(entry))?;
+    pub async fn get<E: Entry>(&self, entry: &E) -> Result<Option<E::Value>, StoreError> {
+        let id = EntryId::of(entry);
+        let raw = self.read(move |connection| read(connection, &id)).await?;
+        Ok(decode_raw(entry.name(), raw.as_deref()))
+    }
+
+    pub async fn get_strict<E: Entry>(&self, entry: &E) -> Result<Option<E::Value>, StoreError> {
+        let id = EntryId::of(entry);
+        let raw = self.read(move |connection| read(connection, &id)).await?;
         decode_strict(entry.name(), raw.as_deref())
     }
 
-    pub fn set<E: Entry>(&self, entry: &E, value: &E::Value) -> Result<(), StoreError> {
-        self.transaction(|transaction| transaction.set(entry, value))
-    }
-
-    /// Remove `entry`'s value; whether there was one.
-    pub fn remove<E: Entry>(&self, entry: &E) -> Result<bool, StoreError> {
-        self.transaction(|transaction| transaction.remove(entry))
-    }
-
-    /// Remove every entry of scope `S` for `id`, of any key: e.g. all of a
-    /// device's, as it's unpaired.
-    pub fn remove_scope<S: IdScope>(&self, id: &str) -> Result<(), StoreError> {
-        self.transaction(|transaction| transaction.remove_scope::<S>(id))
-    }
-
-    /// Watch `entry`, starting from its value now.
-    pub fn watch<E: Entry>(&self, entry: &E) -> Result<ConfigWatch<E::Value>, StoreError> {
-        let mut state = self.lock();
+    pub async fn set<E: Entry>(&self, entry: &E, value: &E::Value) -> Result<(), StoreError> {
         let id = EntryId::of(entry);
-        // Every sender in the map holds the committed value, even one
-        // whose watchers are all gone and that isn't pruned yet.
-        let receiver = match state.watchers.get(&id) {
-            Some(sender) => sender.subscribe(),
-            None => {
-                let (sender, receiver) = watch::channel(read(&state.connection, &id)?);
-                state.watchers.insert(id, sender);
-                receiver
-            }
-        };
+        let json = serde_json::to_string(value).map_err(StoreError::Encoding)?;
+        self.transaction(move |transaction| transaction.write(id, Some(json.into())).map(drop))
+            .await
+    }
+
+    pub async fn remove<E: Entry>(&self, entry: &E) -> Result<bool, StoreError> {
+        let id = EntryId::of(entry);
+        self.transaction(move |transaction| transaction.write(id, None))
+            .await
+    }
+
+    pub async fn remove_scope<S: IdScope>(&self, id: &str) -> Result<(), StoreError> {
+        let id = id.to_owned();
+        self.transaction(move |transaction| transaction.remove_scope::<S>(&id))
+            .await
+    }
+
+    /// Initialize on the writer so reads, registration, commits and
+    /// notifications cannot interleave and lose an update.
+    pub async fn watch<E: Entry>(&self, entry: &E) -> Result<ConfigWatch<E::Value>, StoreError> {
+        let id = EntryId::of(entry);
+        let state = self.state.clone();
+        let connection = self.writer.get().await.map_err(StoreError::Pool)?;
+        let receiver = connection
+            .interact(move |connection| {
+                let raw = read(connection, &id)?;
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let sender = state
+                    .watchers
+                    .entry(id)
+                    .or_insert_with(|| watch::channel(raw).0);
+                Ok::<_, StoreError>(sender.subscribe())
+            })
+            .await
+            .map_err(|error| StoreError::Worker(error.to_string()))??;
         Ok(ConfigWatch {
             name: entry.name(),
             receiver,
@@ -285,9 +308,6 @@ impl Store {
         })
     }
 
-    /// Every committed change to any entry, in commit order. A listener
-    /// that falls behind gets `Lagged` and should re-read what it cares
-    /// about.
     pub fn changes(&self) -> broadcast::Receiver<ConfigChange> {
         self.lock().changes.subscribe()
     }
@@ -384,6 +404,7 @@ impl Transaction<'_> {
 /// it changed and then changed back.
 pub(super) fn notify(
     watchers: &mut HashMap<EntryId, watch::Sender<RawValue>>,
+    cache: &mut HashMap<(String, String, String), RawValue>,
     changes: &broadcast::Sender<ConfigChange>,
     changed: BTreeMap<EntryId, Change>,
 ) {
@@ -391,6 +412,10 @@ pub(super) fn notify(
         if change.before == change.after {
             continue;
         }
+        cache.insert(
+            (entry.key.clone(), entry.scope.to_owned(), entry.id.clone()),
+            change.after.clone(),
+        );
         if let Some(sender) = watchers.get(&entry) {
             sender.send_replace(change.after);
         }
@@ -463,71 +488,76 @@ mod tests {
     const PHONE: &str = "740bd4b9b4184ee497d6caf1da8151be";
     const LAPTOP: &str = "2c1f3a9e0b7d4c5e8f6a1b2c3d4e5f60";
 
-    fn store() -> Store {
-        Store::open_in_memory().unwrap()
+    async fn store() -> Store {
+        Store::open_in_memory().await.unwrap()
     }
 
-    #[test]
-    fn values_round_trip_and_can_be_removed() {
-        let store = store();
-        assert_eq!(store.get(&NAME).unwrap(), None);
-        store.set(&NAME, &"Desk".to_owned()).unwrap();
-        store.set(&COUNT, &3).unwrap();
-        assert_eq!(store.get(&NAME).unwrap().as_deref(), Some("Desk"));
-        assert_eq!(store.get(&COUNT).unwrap(), Some(3));
+    #[tokio::test]
+    async fn values_round_trip_and_can_be_removed() {
+        let store = store().await;
+        assert_eq!(store.get(&NAME).await.unwrap(), None);
+        store.set(&NAME, &"Desk".to_owned()).await.unwrap();
+        store.set(&COUNT, &3).await.unwrap();
+        assert_eq!(store.get(&NAME).await.unwrap().as_deref(), Some("Desk"));
+        assert_eq!(store.get(&COUNT).await.unwrap(), Some(3));
 
-        assert!(store.remove(&NAME).unwrap());
-        assert!(!store.remove(&NAME).unwrap());
-        assert_eq!(store.get(&NAME).unwrap(), None);
-        assert_eq!(store.get(&COUNT).unwrap(), Some(3));
+        assert!(store.remove(&NAME).await.unwrap());
+        assert!(!store.remove(&NAME).await.unwrap());
+        assert_eq!(store.get(&NAME).await.unwrap(), None);
+        assert_eq!(store.get(&COUNT).await.unwrap(), Some(3));
     }
 
-    #[test]
-    fn values_persist_across_opens() {
+    #[tokio::test]
+    async fn values_persist_across_opens() {
         let directory = tempfile::tempdir().unwrap();
         Store::open(directory.path())
+            .await
             .unwrap()
             .set(&MUTED.of(PHONE), &true)
+            .await
             .unwrap();
-        let store = Store::open(directory.path()).unwrap();
-        assert_eq!(store.get(&MUTED.of(PHONE)).unwrap(), Some(true));
+        let store = Store::open(directory.path()).await.unwrap();
+        assert_eq!(store.get(&MUTED.of(PHONE)).await.unwrap(), Some(true));
     }
 
-    #[test]
-    fn each_id_has_its_own_value() {
-        let store = store();
-        store.set(&MUTED.of(PHONE), &true).unwrap();
-        store.set(&MUTED.of(LAPTOP), &false).unwrap();
-        assert_eq!(store.get(&MUTED.of(PHONE)).unwrap(), Some(true));
-        assert_eq!(store.get(&MUTED.of(LAPTOP)).unwrap(), Some(false));
+    #[tokio::test]
+    async fn each_id_has_its_own_value() {
+        let store = store().await;
+        store.set(&MUTED.of(PHONE), &true).await.unwrap();
+        store.set(&MUTED.of(LAPTOP), &false).await.unwrap();
+        assert_eq!(store.get(&MUTED.of(PHONE)).await.unwrap(), Some(true));
+        assert_eq!(store.get(&MUTED.of(LAPTOP)).await.unwrap(), Some(false));
     }
 
-    #[test]
-    fn a_value_that_does_not_decode_reads_as_none() {
+    #[tokio::test]
+    async fn a_value_that_does_not_decode_reads_as_none() {
         const SAME_NAME: ConfigKey<u32> = ConfigKey::new("test.name");
-        let store = store();
-        store.set(&NAME, &"Desk".to_owned()).unwrap();
-        assert_eq!(store.get(&SAME_NAME).unwrap(), None);
+        let store = store().await;
+        store.set(&NAME, &"Desk".to_owned()).await.unwrap();
+        assert_eq!(store.get(&SAME_NAME).await.unwrap(), None);
     }
 
-    #[test]
-    fn a_strict_read_reports_a_value_that_does_not_decode() {
+    #[tokio::test]
+    async fn a_strict_read_reports_a_value_that_does_not_decode() {
         const SAME_NAME: ConfigKey<u32> = ConfigKey::new("test.name");
-        let store = store();
-        assert_eq!(store.get_strict(&SAME_NAME).unwrap(), None);
-        store.set(&NAME, &"Desk".to_owned()).unwrap();
+        let store = store().await;
+        assert_eq!(store.get_strict(&SAME_NAME).await.unwrap(), None);
+        store.set(&NAME, &"Desk".to_owned()).await.unwrap();
         assert!(matches!(
-            store.get_strict(&SAME_NAME),
+            store.get_strict(&SAME_NAME).await,
             Err(StoreError::Undecodable {
                 key: "test.name",
                 ..
             })
         ));
-        assert_eq!(store.get_strict(&NAME).unwrap().as_deref(), Some("Desk"));
+        assert_eq!(
+            store.get_strict(&NAME).await.unwrap().as_deref(),
+            Some("Desk")
+        );
     }
 
-    #[test]
-    fn a_type_can_gain_defaulted_fields() {
+    #[tokio::test]
+    async fn a_type_can_gain_defaulted_fields() {
         #[derive(Serialize, Deserialize)]
         struct Before {
             enabled: bool,
@@ -538,15 +568,19 @@ mod tests {
             #[serde(default)]
             limit: u32,
         }
-        let store = store();
+        let store = store().await;
         store
             .set(
                 &ConfigKey::<Before>::new("test.section"),
                 &Before { enabled: true },
             )
+            .await
             .unwrap();
         assert_eq!(
-            store.get(&ConfigKey::<After>::new("test.section")).unwrap(),
+            store
+                .get(&ConfigKey::<After>::new("test.section"))
+                .await
+                .unwrap(),
             Some(After {
                 enabled: true,
                 limit: 0
@@ -554,21 +588,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn removing_a_scope_removes_only_that_ids_entries() {
+    #[tokio::test]
+    async fn removing_a_scope_removes_only_that_ids_entries() {
         const LIMIT: ConfigKey<u32, PerDevice> = ConfigKey::new("test.limit");
-        let store = store();
-        store.set(&MUTED.of(PHONE), &true).unwrap();
-        store.set(&LIMIT.of(PHONE), &5).unwrap();
-        store.set(&MUTED.of(LAPTOP), &true).unwrap();
-        store.set(&COUNT, &1).unwrap();
+        let store = store().await;
+        store.set(&MUTED.of(PHONE), &true).await.unwrap();
+        store.set(&LIMIT.of(PHONE), &5).await.unwrap();
+        store.set(&MUTED.of(LAPTOP), &true).await.unwrap();
+        store.set(&COUNT, &1).await.unwrap();
         let mut changes = store.changes();
 
-        store.remove_scope::<PerDevice>(PHONE).unwrap();
-        assert_eq!(store.get(&MUTED.of(PHONE)).unwrap(), None);
-        assert_eq!(store.get(&LIMIT.of(PHONE)).unwrap(), None);
-        assert_eq!(store.get(&MUTED.of(LAPTOP)).unwrap(), Some(true));
-        assert_eq!(store.get(&COUNT).unwrap(), Some(1));
+        store.remove_scope::<PerDevice>(PHONE).await.unwrap();
+        assert_eq!(store.get(&MUTED.of(PHONE)).await.unwrap(), None);
+        assert_eq!(store.get(&LIMIT.of(PHONE)).await.unwrap(), None);
+        assert_eq!(store.get(&MUTED.of(LAPTOP)).await.unwrap(), Some(true));
+        assert_eq!(store.get(&COUNT).await.unwrap(), Some(1));
 
         let mut removed = vec![changes.try_recv().unwrap(), changes.try_recv().unwrap()];
         removed.sort_by(|left, right| left.key.cmp(&right.key));
@@ -583,25 +617,27 @@ mod tests {
         assert!(changes.try_recv().is_err());
     }
 
-    #[test]
-    fn a_transaction_commits_all_or_nothing() {
-        let store = store();
-        store.set(&COUNT, &1).unwrap();
+    #[tokio::test]
+    async fn a_transaction_commits_all_or_nothing() {
+        let store = store().await;
+        store.set(&COUNT, &1).await.unwrap();
         let mut changes = store.changes();
 
-        let result: Result<(), StoreError> = store.transaction(|transaction| {
-            transaction.set(&COUNT, &2)?;
-            assert_eq!(
-                transaction.get(&COUNT)?,
-                Some(2),
-                "a transaction sees its writes"
-            );
-            transaction.set(&NAME, &"Desk".to_owned())?;
-            Err(StoreError::InvalidDeviceId)
-        });
+        let result: Result<(), StoreError> = store
+            .transaction(|transaction| {
+                transaction.set(&COUNT, &2)?;
+                assert_eq!(
+                    transaction.get(&COUNT)?,
+                    Some(2),
+                    "a transaction sees its writes"
+                );
+                transaction.set(&NAME, &"Desk".to_owned())?;
+                Err(StoreError::InvalidDeviceId)
+            })
+            .await;
         assert!(result.is_err());
-        assert_eq!(store.get(&COUNT).unwrap(), Some(1));
-        assert_eq!(store.get(&NAME).unwrap(), None);
+        assert_eq!(store.get(&COUNT).await.unwrap(), Some(1));
+        assert_eq!(store.get(&NAME).await.unwrap(), None);
         assert!(changes.try_recv().is_err(), "a rollback tells no one");
 
         store
@@ -610,28 +646,30 @@ mod tests {
                 transaction.set(&COUNT, &3)?;
                 transaction.set(&NAME, &"Desk".to_owned())
             })
+            .await
             .unwrap();
-        assert_eq!(store.get(&COUNT).unwrap(), Some(3));
+        assert_eq!(store.get(&COUNT).await.unwrap(), Some(3));
         let told: Vec<_> = std::iter::from_fn(|| changes.try_recv().ok())
             .map(|change| change.key)
             .collect();
         assert_eq!(told.len(), 2, "each entry once: {told:?}");
     }
 
-    #[test]
-    fn writing_the_same_value_or_changing_it_back_tells_no_one() {
-        let store = store();
-        store.set(&COUNT, &1).unwrap();
-        let mut watch = store.watch(&COUNT).unwrap();
+    #[tokio::test]
+    async fn writing_the_same_value_or_changing_it_back_tells_no_one() {
+        let store = store().await;
+        store.set(&COUNT, &1).await.unwrap();
+        let mut watch = store.watch(&COUNT).await.unwrap();
         let mut changes = store.changes();
 
-        store.set(&COUNT, &1).unwrap();
-        assert!(!store.remove(&NAME).unwrap());
+        store.set(&COUNT, &1).await.unwrap();
+        assert!(!store.remove(&NAME).await.unwrap());
         store
             .transaction(|transaction| {
                 transaction.set(&COUNT, &2)?;
                 transaction.set(&COUNT, &1)
             })
+            .await
             .unwrap();
         assert!(!watch.receiver.has_changed().unwrap());
         assert!(changes.try_recv().is_err());
@@ -640,20 +678,20 @@ mod tests {
 
     #[tokio::test]
     async fn watchers_start_from_the_value_now_and_see_each_change() {
-        let store = store();
-        store.set(&MUTED.of(PHONE), &false).unwrap();
-        let mut first = store.watch(&MUTED.of(PHONE)).unwrap();
-        let mut other_device = store.watch(&MUTED.of(LAPTOP)).unwrap();
+        let store = store().await;
+        store.set(&MUTED.of(PHONE), &false).await.unwrap();
+        let mut first = store.watch(&MUTED.of(PHONE)).await.unwrap();
+        let mut other_device = store.watch(&MUTED.of(LAPTOP)).await.unwrap();
         assert_eq!(first.get(), Some(false));
         assert_eq!(other_device.get(), None);
 
-        store.set(&MUTED.of(PHONE), &true).unwrap();
+        store.set(&MUTED.of(PHONE), &true).await.unwrap();
         first.changed().await.unwrap();
         assert_eq!(first.get(), Some(true));
-        let mut second = store.watch(&MUTED.of(PHONE)).unwrap();
+        let mut second = store.watch(&MUTED.of(PHONE)).await.unwrap();
         assert_eq!(second.get(), Some(true), "a later watcher starts from now");
 
-        store.remove(&MUTED.of(PHONE)).unwrap();
+        store.remove(&MUTED.of(PHONE)).await.unwrap();
         first.changed().await.unwrap();
         second.changed().await.unwrap();
         assert_eq!(first.get(), None);
@@ -661,21 +699,21 @@ mod tests {
         assert!(!other_device.receiver.has_changed().unwrap());
     }
 
-    #[test]
-    fn watches_nobody_holds_are_dropped_and_restart_from_the_database() {
-        let store = store();
-        drop(store.watch(&COUNT).unwrap());
-        store.set(&COUNT, &4).unwrap();
+    #[tokio::test]
+    async fn watches_nobody_holds_are_dropped_and_restart_from_the_database() {
+        let store = store().await;
+        drop(store.watch(&COUNT).await.unwrap());
+        store.set(&COUNT, &4).await.unwrap();
         assert!(store.lock().watchers.is_empty());
 
-        let mut watch = store.watch(&COUNT).unwrap();
+        let mut watch = store.watch(&COUNT).await.unwrap();
         assert_eq!(watch.get(), Some(4));
     }
 
     #[tokio::test]
     async fn a_watch_ends_with_the_store() {
-        let store = store();
-        let mut watch = store.watch(&COUNT).unwrap();
+        let store = store().await;
+        let mut watch = store.watch(&COUNT).await.unwrap();
         drop(store);
         assert!(watch.changed().await.is_err());
     }
