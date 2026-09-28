@@ -29,18 +29,29 @@ Packages for each release are on the
 [website](https://simophin.github.io/ferryapp/#download) and
 [GitHub Releases](https://github.com/simophin/ferryapp/releases).
 
-On macOS, install from Terminal:
+- **macOS:** `brew install simophin/tap/ferry` (the app, and `ferry-cli`
+  on your PATH). The app isn't notarized, so a DMG downloaded in a browser
+  is blocked until you allow it in System Settings → Privacy & Security;
+  the Homebrew cask clears that mark.
+- **Debian and Ubuntu:** add the apt repository, then `apt install ferry`:
 
-```sh
-curl -fsSL https://simophin.github.io/ferryapp/install.sh | sh
-```
+  ```sh
+  sudo curl -fsSLo /etc/apt/keyrings/ferry.gpg https://simophin.github.io/ferryapp/apt/ferry.gpg
+  sudo curl -fsSLo /etc/apt/sources.list.d/ferry.sources https://simophin.github.io/ferryapp/apt/ferry.sources
+  sudo apt update && sudo apt install ferry
+  ```
+- **Arch Linux:** [`ferry-bin`](https://aur.archlinux.org/packages/ferry-bin)
+  from the AUR.
+- **Windows:** the installer from the website.
 
-The script ([`packaging/macos/install.sh`](packaging/macos/install.sh))
-downloads the release's DMG, copies `Ferry.app` into `/Applications` (or
-`~/Applications`) and links `ferry-cli` into `/usr/local/bin` when it can.
-The app isn't notarized, so a DMG downloaded in a browser is blocked until
-you allow it in System Settings → Privacy & Security; files `curl`
-downloads aren't quarantined, so the script's copy opens directly.
+Each release's `SHA256SUMS` is signed with the release key
+([`packaging/release-key.asc`](packaging/release-key.asc), fingerprint
+`ECD3 B4C2 913B F64B 1664 F19F 074D A8D0 2070 102E`), which also signs the
+apt repository.
+
+### License
+
+MIT; see [`LICENSE`](LICENSE).
 
 ### Desktop app
 

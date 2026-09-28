@@ -221,12 +221,13 @@ CC_aarch64_apple_darwin=fakecc AR_aarch64_apple_darwin=fakear \
 - Accessibility: check what iced 0.14 exposes to screen readers and
   record the gap against Flutter.
 
-**Packaging.** Nothing is signed or notarized; the macOS app has only an
-ad-hoc signature. CI built the macOS and Windows apps and installed the
-Windows installer, but neither has been used on a real desktop. The macOS
-install script (`packaging/macos/install.sh`, served by the website as
-`install.sh`) gets past Gatekeeper because `curl` doesn't quarantine what it
-downloads; it hasn't been run on a real Mac yet.
+**Packaging.** Nothing is notarized. The macOS app is signed with a
+self-signed certificate (ADR 0001, "Packaging"), and the Homebrew cask
+clears the quarantine so Gatekeeper lets it open; the Windows installer is
+unsigned. CI built the macOS and Windows apps, installed the Windows
+installer and the cask, but neither has been used on a real desktop. Check
+on a Mac that `brew install simophin/tap/ferry` opens without a prompt,
+and that the Downloads folder permission survives a `brew upgrade`.
 
 **Browsing a device's files** (ARCHITECTURE §12, ADR 0008):
 

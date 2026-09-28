@@ -80,16 +80,44 @@
       <tr><td>Arch Linux</td><td><a href="{{arch_url}}">PKGBUILD</a></td><td>{{arch_size}}</td></tr>
     </tbody>
   </table>
-  <h3>Installing on macOS</h3>
-  <p>The quickest way is one command in Terminal:</p>
-  <pre><code>curl -fsSL https://simophin.github.io/ferryapp/install.sh | sh</code></pre>
+  <h3>macOS, with Homebrew</h3>
+  <pre><code>brew install simophin/tap/ferry</code></pre>
   <p>
-    It downloads the DMG above, copies Ferry into Applications, and opens
-    it (<a href="install.sh">read the script</a>). Ferry isn't notarized by
-    Apple, so if you download the DMG in a browser instead, macOS blocks it
-    the first time: open System Settings → Privacy &amp; Security and click
-    Open Anyway. The script avoids that because the files it downloads
-    aren't marked as coming from the internet.
+    This installs Ferry into Applications and <code>ferry-cli</code> on your
+    PATH, and <code>brew upgrade</code> keeps them up to date. Ferry isn't
+    notarized by Apple, so if you download the DMG in a browser instead,
+    macOS blocks it the first time: open System Settings → Privacy &amp;
+    Security and click Open Anyway. The Homebrew cask clears that mark for
+    you.
+  </p>
+  <h3>Debian and Ubuntu</h3>
+  <p>Add Ferry's apt repository, then install it and get updates with the rest of your system:</p>
+  <pre><code>sudo curl -fsSLo /etc/apt/keyrings/ferry.gpg https://simophin.github.io/ferryapp/apt/ferry.gpg
+sudo curl -fsSLo /etc/apt/sources.list.d/ferry.sources https://simophin.github.io/ferryapp/apt/ferry.sources
+sudo apt update
+sudo apt install ferry</code></pre>
+  <p>Debian 12, Ubuntu 22.04 and later, on x86_64 and arm64.</p>
+  <h3>Arch Linux</h3>
+  <p>
+    Install <a href="https://aur.archlinux.org/packages/ferry-bin">ferry-bin</a>
+    from the AUR, e.g. <code>yay -S ferry-bin</code>.
+  </p>
+  <h3>Verifying downloads</h3>
+  <p>
+    Each release has a <code>SHA256SUMS</code> file listing its packages,
+    signed with Ferry's <a href="ferry-release.asc">release key</a>, which
+    also signs the apt repository. Its fingerprint is
+    <code>ECD3 B4C2 913B F64B 1664 F19F 074D A8D0 2070 102E</code>:
+  </p>
+  <pre><code>gpg --import ferry-release.asc
+gpg --verify SHA256SUMS.asc SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS</code></pre>
+  <p>
+    The macOS app is signed with Ferry's own certificate, whose SHA-256
+    fingerprint is
+    <code>71:30:53:6B:23:05:DB:1C:00:FB:00:C7:6C:8C:20:8A:34:BA:31:6B:F7:A8:F2:B6:3D:EF:32:24:4F:83:0B:5B</code>
+    (<code>codesign -dvvv /Applications/Ferry.app</code> shows it as
+    "Ferry Code Signing").
   </p>
   <p>
     Older versions and release notes are on

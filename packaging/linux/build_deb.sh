@@ -7,7 +7,8 @@
 # CLI is cargo's ferry-cli, the command line, installed next to it as
 # /usr/bin/ferry-cli (docs/adr/0001, "Packaging"). LICENSES is the
 # THIRD_PARTY_LICENSES.html cargo-about wrote (about.toml), installed in
-# /usr/share/doc/ferry, where About opens it.
+# /usr/share/doc/ferry, where About opens it, next to Ferry's own license
+# (LICENSE) as the copyright file.
 # The menu entry, in each of the app's languages (packaging/i18n.sh), and
 # the icons go to /usr/share. Runs on Debian or
 # Ubuntu: it needs dpkg-deb, and dpkg-shlibdeps to work out the dependencies
@@ -50,6 +51,17 @@ install -m 755 -s "$cli" "$root/usr/bin/ferry-cli"
 install -m 644 "$work/$app_id.desktop" "$root/usr/share/applications/"
 cp -R "$assets/linux/hicolor" "$root/usr/share/icons/"
 install -m 644 "$licenses" "$root/usr/share/doc/ferry/THIRD_PARTY_LICENSES.html"
+# Debian's machine-readable format, with LICENSE's text (after its title
+# line) as the license: indented, blank lines as " .".
+{
+  printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n'
+  printf 'Upstream-Name: ferry\nSource: https://github.com/simophin/ferryapp\n\n'
+  printf 'Files: *\n'
+  printf 'Copyright: %s\n' "$(sed -n 's/^Copyright (c) //p' "$packaging/../../LICENSE")"
+  printf 'License: MIT\n'
+  sed -e '1,2d' -e 's/^$/./' -e 's/^/ /' "$packaging/../../LICENSE"
+} >"$root/usr/share/doc/ferry/copyright"
+chmod 644 "$root/usr/share/doc/ferry/copyright"
 chmod -R u=rwX,go=rX "$root/usr/share"
 
 # dpkg-shlibdeps wants to run from a source tree; give it a minimal one.
