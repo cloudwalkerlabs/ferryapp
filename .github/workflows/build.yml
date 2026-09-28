@@ -75,6 +75,23 @@ jobs:
             echo "deb=0.0.0~dev+${SHA::7}" >> "$GITHUB_OUTPUT"
           fi
 
+  # The release and website jobs sign with the release key, but run only
+  # for a release: check here, on every run, that its secrets can sign.
+  release-key:
+    name: Release key
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          RELEASE_GPG_KEY: ${{ secrets.RELEASE_GPG_KEY }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+        run: |
+          if [ -z "$RELEASE_GPG_KEY" ]; then
+            echo "::warning::No RELEASE_GPG_KEY secret: a release can't be signed"
+            exit 0
+          fi
+          packaging/release_key.sh "$RUNNER_TEMP/gnupg"
+
   macos:
     name: macOS (universal)
     needs: version
@@ -414,7 +431,7 @@ jobs:
   release:
     name: Attach to release
     if: github.event_name == 'release'
-    needs: [macos, windows, linux, linux-check, arch]
+    needs: [macos, windows, linux, linux-check, arch, release-key]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
