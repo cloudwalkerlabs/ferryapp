@@ -56,7 +56,7 @@ def main(release_json, out):
     out = Path(out)
     if out.exists():
         shutil.rmtree(out)
-    shutil.copytree(SITE, out, ignore=shutil.ignore_patterns("build.py", "index.html"))
+    shutil.copytree(SITE, out, ignore=shutil.ignore_patterns("build.py", "screenshots.py", "index.html"))
     (out / "index.html").write_text(page)
     shutil.copy(RELEASE_KEY, out / "ferry-release.asc")
 

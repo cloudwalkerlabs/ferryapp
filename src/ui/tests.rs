@@ -422,3 +422,72 @@ fn keys_map_to_commands() {
         None
     );
 }
+
+/// Documentation captures use the shell and built-in features, rather than
+/// the synthetic features used to test the device page's extension points.
+#[tokio::test]
+async fn snapshot_documentation_gallery() {
+    use crate::core::{DeviceReachability, TransferDirection, TransferStatus};
+    use crate::protocol::DeviceType;
+
+    let mut app = running();
+    app.options.version = env!("CARGO_PKG_VERSION").into();
+    let mut phone = testing::device("Pixel 8a");
+    phone.incoming_capabilities = vec![
+        "kdeconnect.ping".into(),
+        "kdeconnect.findmyphone.request".into(),
+        "kdeconnect.clipboard".into(),
+        "kdeconnect.share.request".into(),
+        "kdeconnect.sftp.request".into(),
+    ];
+    phone.plugins.insert(
+        crate::plugins::battery::ID.into(),
+        serde_json::json!({"charge": 82, "charging": false}),
+    );
+    let mut laptop = testing::device("Work laptop");
+    laptop.device_type = DeviceType::Laptop;
+    laptop.reachability = DeviceReachability::Unavailable;
+    let mut transfers = vec![
+        pages::transfers::tests::transfer(
+            "holiday.jpg",
+            TransferDirection::Incoming,
+            TransferStatus::Transferring,
+            2,
+        ),
+        pages::transfers::tests::transfer(
+            "notes.pdf",
+            TransferDirection::Outgoing,
+            TransferStatus::Completed,
+            1,
+        ),
+    ];
+    for transfer in &mut transfers {
+        transfer.device_id.clone_from(&phone.device_id);
+        transfer.device_name.clone_from(&phone.device_name);
+        if transfer.status == TransferStatus::Completed {
+            transfer.transferred_bytes = transfer.total_bytes;
+        }
+    }
+    let settings = testing::store("Demo desktop", Vec::new())
+        .settings()
+        .loaded()
+        .unwrap()
+        .clone();
+    let Phase::Running(running) = &mut app.phase else {
+        unreachable!();
+    };
+    running.ctx.store_mut().apply_snapshot(store::Snapshot {
+        devices: Ok(vec![phone.clone(), laptop]),
+        pairings: Ok(Vec::new()),
+        transfers,
+        settings: Ok(settings),
+    });
+    for (name, route, height) in [
+        ("gallery-devices", Route::Devices, 620.0),
+        ("gallery-device", Route::Device(phone.device_id), 820.0),
+        ("gallery-settings", Route::Settings, 840.0),
+    ] {
+        app.route = route;
+        testing::snapshot(name, (440.0, height), || app.view(window::Id::unique()));
+    }
+}

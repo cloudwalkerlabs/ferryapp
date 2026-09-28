@@ -376,10 +376,35 @@ and click with XTest (`libXtst` through Python `ctypes`). Don't open
 windows on the user's own session, and don't pair with or send to real
 devices on their network without asking.
 
-The README and the website share one set of screenshots,
-`site/img/<page>.webp`, taken in the light theme at 2x
-(`WINIT_X11_SCALE_FACTOR=2`) and saved 880 px wide. `ICED_THEME=Light`
-forces the light theme whatever the system's.
+The README and website share eight pairs of screenshots,
+`site/img/<page>-<light|dark>.webp`, rendered from the real iced views with
+bundled Inter at 2x by the snapshot fixtures. The export keeps
+images 880 px wide (downsampling the wide file preview). Both galleries
+use `<picture>` sources with `media="(prefers-color-scheme: dark)"` and a
+light `<img>` fallback, so the browser chooses the theme without JavaScript.
+The website also self-hosts Inter in `site/fonts/`.
+
+To retake every gallery image after a UI change (Pillow is needed for
+WebP export):
+
+```sh
+shots=$(mktemp -d /tmp/ferry-screenshots.XXXXXX)
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 SNAPSHOT_DIR="$shots" \
+  dbus-run-session -- xvfb-run --auto-servernum \
+  cargo test -p ferry --features gui --lib snapshot
+python3 site/screenshots.py "$shots"
+```
+
+Inspect the light and dark outputs before committing. The fixtures use
+made-up devices, transfers and files; `snapshot_pairing_request` is the
+clean incoming prompt, while the other incoming fixture exercises errors.
+`snapshot_documentation_gallery` captures the shell with its real built-in
+features, avoiding the synthetic Wave/Hug extension-point test fixture.
+`files-folder-narrow` shows a file's actions and `files-preview` previews
+a generated example image. Other snapshots (including pseudo-locales)
+stay in the temporary directory; remove that directory after inspection.
+For a live capture, `WINIT_X11_SCALE_FACTOR=2` renders at 2x and
+`ICED_THEME=Light` or `ICED_THEME=Dark` overrides the system appearance.
 
 - Launch the app under `env -u WAYLAND_DISPLAY DISPLAY=:NN
   GDK_BACKEND=x11 dbus-run-session -- ...`, with

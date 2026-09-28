@@ -242,9 +242,9 @@ fn clamp_digits(digits: usize) -> i16 {
     i16::try_from(digits.min(20)).expect("at most 20")
 }
 
-/// CLDR puts a narrow no-break space (U+202F) before "PM" and between
-/// French digit groups. The bundled Figtree font has no glyph for it, so
-/// it becomes a no-break space, which it has and which also doesn't wrap.
+/// Normalize CLDR’s narrow no-break space (U+202F), used before "PM" and
+/// between French digit groups, to a standard no-break space. This keeps
+/// the app’s existing spacing and prevents wrapping at these separators.
 fn without_narrow_spaces(text: String) -> String {
     if text.contains('\u{202F}') {
         text.replace('\u{202F}', "\u{A0}")

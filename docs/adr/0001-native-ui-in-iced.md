@@ -23,7 +23,7 @@ fixes.
 ## Decision
 
 - **The UI is Rust and iced 0.14**, with the Lucide icon font
-  (`iced_fonts`) and the Figtree text font bundled. The look follows
+  (`iced_fonts`) and the Inter text font bundled. The look follows
   iced's built-in theme palette, not the Flutter app's pixels; parity
   means the same behaviour.
 - **In-process access to the core.** The app (`gui/`, binary
@@ -106,7 +106,7 @@ UI:
 | Decoding previews | `image` 0.25 | What iced renders images with. Only the preview's codecs are on (BMP, GIF, JPEG, PNG, WebP), not every format iced's `image` feature brings. The browser decodes previews itself, off the UI thread, so an undecodable image says so ("This image can’t be shown."); iced decodes at draw time and drops the error. |
 | Local time | `chrono` 0.4 | Already in the tree through `russh-sftp`, with `clock` for the local time zone (`iana-time-zone`). `time` reads the local offset only in a single-threaded process on Unix, and `jiff` would be a second time crate. |
 | Icons | `iced_fonts` 0.3 (Lucide) | The Lucide icon font with typed helpers; the version matching iced 0.14. |
-| Text font | Figtree (`assets/fonts/`, OFL) | Bundled, Regular and Bold only (the weights the app uses), so text looks the same everywhere and a weight missing from the system's sans-serif can't fall back to another family (a semibold title once came out in URW Bookman's serif). About 115 KB. Latin only: cosmic-text draws other scripts, such as CJK, in a system font; a bundled CJK font would be 15–20 MB a weight. The pairing code still uses the system monospace. |
+| Text font | Inter (`assets/fonts/`, OFL) | Bundled, Regular and Bold only (the weights the app uses), so text looks the same everywhere and a weight missing from the system's sans-serif can't fall back to another family (a semibold title once came out in URW Bookman's serif). About 832 KB. Latin, Greek and Cyrillic: cosmic-text draws other scripts, such as CJK, in a system font; a bundled CJK font would be 15–20 MB a weight. The pairing code still uses the system monospace. |
 | Headless UI tests | `iced_test` 0.14 | iced's own test crate. Its simulator finds and clicks widgets and renders snapshots to PNG with no display; its emulator runs the whole program, tasks and subscriptions included, for the end-to-end tests (`tests/ui_e2e.rs`). |
 | Running tasks in tests | `iced_runtime` 0.14 (dev) | Already in iced's tree; its `task::into_stream` lets a unit test see what a `Task` produces, which `iced` doesn't re-export. |
 | Translations | `i18n-embed` 0.16 (`fluent-system`, `desktop-requester`), `i18n-embed-fl` 0.10, `rust-embed` 8 (`docs/PLAN_I18N.md`) | The Fluent stack COSMIC, also on iced, uses. Fluent handles CLDR plurals and word order; `fl!` checks each key and its arguments against the en-US file at compile time; `rust-embed` puts `i18n/` in the binary; `desktop-requester` reads the system's languages on Linux, macOS and Windows (`sys-locale`). `fluent-syntax` (already in the tree through `i18n-embed`) reads en-US's file and writes the en-XA pseudo-locale from it at run time (`ui::i18n::pseudo`), and parses every locale's file in a test that they all have en-US's keys. |

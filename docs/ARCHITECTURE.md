@@ -659,7 +659,7 @@ plan and its decisions are in [`PLAN_I18N.md`](PLAN_I18N.md).
   the `.desktop` entry, macOS's `<lang>.lproj` and `CFBundleLocalizations`,
   and the Windows installer's languages. A language is shipped by having
   its directory under `i18n/`.
-- **Fonts.** The bundled Figtree covers Latin; other scripts fall back to
+- **Fonts.** The bundled Inter covers Latin, Greek and Cyrillic; other scripts fall back to
   the system's fonts through cosmic-text, which picks CJK fonts by the
   system's locale, not the app's. On macOS bold CJK text mixes fonts:
   PingFang has no bold (700) face, and cosmic-text's fallback only takes an
