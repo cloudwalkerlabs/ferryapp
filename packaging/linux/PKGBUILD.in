@@ -2,9 +2,9 @@
 #
 # Repackages the release's .deb for Arch Linux. The release workflow fills in
 # the @...@ fields (see pkgbuild.sh), attaches the result to the release and
-# pushes it to the AUR as ferry-bin.
+# pushes it to the AUR as ferry-app-bin.
 
-pkgname=ferry-bin
+pkgname=ferry-app-bin
 pkgver=@PKGVER@
 pkgrel=1
 pkgdesc='Pair with your devices and share files and the clipboard over the local network'

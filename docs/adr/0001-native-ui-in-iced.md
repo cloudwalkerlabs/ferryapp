@@ -262,7 +262,7 @@ Decisions for steps 11 and 13:
   its window with its class and icon, and the CLI reaches its API.
 - **Ferry is MIT** (`LICENSE`): the `.deb`'s `copyright`, the bundle's
   `Resources/LICENSE`, `LICENSE.txt` next to `Ferry.exe`, and the Arch
-  package's `/usr/share/licenses/ferry-bin`.
+  package's `/usr/share/licenses/ferry-app-bin`.
 - **Where users get it** (owner's decision: our own channels, not
   Homebrew's or Debian's official ones). After a full release the Build
   workflow publishes:
@@ -271,7 +271,7 @@ Decisions for steps 11 and 13:
     release's `.deb`s, checked by `check_apt_repo.sh` on Debian 12 and 13;
   - the **Homebrew cask** (`packaging/macos/ferry.rb.in`) in
     `simophin/homebrew-tap`, checked by installing it in the macOS job;
-  - the **AUR package** `ferry-bin`, the release's PKGBUILD, checked by
+  - the **AUR package** `ferry-app-bin`, the release's PKGBUILD, checked by
     `makepkg` and `pacman -U` in the Arch job.
 - **Signing.** Two keys, kept apart so a leak of one doesn't touch the
   other; the owner holds both offline, CI has what it needs as secrets

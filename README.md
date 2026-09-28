@@ -40,7 +40,7 @@ Packages for each release are on the
   sudo curl -fsSLo /etc/apt/sources.list.d/ferry.sources https://simophin.github.io/ferryapp/apt/ferry.sources
   sudo apt update && sudo apt install ferry
   ```
-- **Arch Linux:** [`ferry-bin`](https://aur.archlinux.org/packages/ferry-bin)
+- **Arch Linux:** [`ferry-app-bin`](https://aur.archlinux.org/packages/ferry-app-bin)
   from the AUR.
 - **Windows:** the installer from the website.
 
