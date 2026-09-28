@@ -19,7 +19,10 @@ struct ClipboardState {
 
 pub(super) fn routes(plugin: Arc<ClipboardPlugin>, ctx: PluginContext) -> Router {
     Router::new()
-        .route("/clipboard", get(get_clipboard).put(put_clipboard))
+        .route(
+            "/clipboard",
+            get(get_clipboard).put(put_clipboard).patch(patch_clipboard),
+        )
         .route(
             "/devices/{device_id}/clipboard",
             post(post_device_clipboard),
@@ -41,7 +44,7 @@ impl From<ClipboardSyncError> for ApiProblem {
 }
 
 async fn get_clipboard(State(state): State<ClipboardState>) -> Json<ClipboardSnapshot> {
-    Json(state.plugin.snapshot())
+    Json(state.plugin.snapshot(&state.ctx))
 }
 
 #[derive(Deserialize)]
@@ -54,6 +57,24 @@ async fn put_clipboard(
     Json(request): Json<SetClipboardRequest>,
 ) -> Result<Json<ClipboardSnapshot>, ApiProblem> {
     Ok(Json(state.plugin.set_text(&state.ctx, request.text)?))
+}
+
+/// What `PATCH /clipboard` changes: whether sync is on.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PatchClipboardRequest {
+    sync_enabled: bool,
+}
+
+async fn patch_clipboard(
+    State(state): State<ClipboardState>,
+    Json(request): Json<PatchClipboardRequest>,
+) -> Result<Json<ClipboardSnapshot>, ApiProblem> {
+    Ok(Json(
+        state
+            .plugin
+            .set_sync_enabled(&state.ctx, request.sync_enabled)?,
+    ))
 }
 
 /// Send this machine's clipboard text to a paired, connected device, for

@@ -1,5 +1,6 @@
 //! The clipboard feature's UI: the *Send clipboard* action, and the
-//! "Sync clipboard" setting.
+//! "Sync clipboard" setting, which the plugin keeps: the switch shows its
+//! snapshot, patched from `clipboard.changed`.
 
 use std::sync::Arc;
 
@@ -8,20 +9,16 @@ use iced_fonts::lucide;
 
 use super::{DeviceAction, Feature};
 use crate::{
-    core::{DeviceReachability, DeviceSnapshot, SettingsSnapshot},
-    plugins::clipboard::{ClipboardPlugin, ClipboardSettings, ClipboardSyncError, PACKET_TYPE},
-    ui::{
-        self, Origin,
-        context::UiContext,
-        error::{describe_code, describe_error as describe_core_error},
-        i18n::fl,
-        shell, widgets,
-    },
+    core::{CoreEvent, DeviceReachability, DeviceSnapshot, EventData},
+    plugins::clipboard::{ClipboardPlugin, ClipboardSnapshot, ClipboardSyncError, PACKET_TYPE},
+    ui::{self, Origin, context::UiContext, error::describe_code, i18n::fl, shell, widgets},
 };
 
 /// The feature, over the same plugin instance the core runs.
 pub struct ClipboardUi {
     plugin: Arc<ClipboardPlugin>,
+    /// Whether sync is on, as the plugin's last snapshot or event said.
+    sync_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -65,20 +62,45 @@ pub fn device_actions(device: &DeviceSnapshot) -> Vec<DeviceAction> {
     }]
 }
 
-/// The "Sync clipboard" switch.
-pub fn view_settings(settings: &SettingsSnapshot) -> Element<'_, Message> {
-    widgets::switch_setting(
-        lucide::clipboard_copy,
-        fl!("clipboard-sync"),
-        fl!("clipboard-sync-detail"),
-        ClipboardSettings::of(settings).sync_enabled,
-        Message::SetSync,
-    )
-}
-
 impl ClipboardUi {
+    /// On, the plugin's default, until [`Self::on_snapshot`] reads it.
     pub fn new(plugin: Arc<ClipboardPlugin>) -> Self {
-        Self { plugin }
+        Self {
+            plugin,
+            sync_enabled: true,
+        }
+    }
+
+    /// Whether the switch shows sync on.
+    #[cfg(test)]
+    pub(crate) fn sync_enabled(&self) -> bool {
+        self.sync_enabled
+    }
+
+    /// The "Sync clipboard" switch.
+    pub fn view_settings(&self) -> Element<'_, Message> {
+        widgets::switch_setting(
+            lucide::clipboard_copy,
+            fl!("clipboard-sync"),
+            fl!("clipboard-sync-detail"),
+            self.sync_enabled,
+            Message::SetSync,
+        )
+    }
+
+    /// Follow the plugin's snapshot in `clipboard.changed`.
+    pub(crate) fn on_event(&mut self, event: &CoreEvent) {
+        if let EventData::Plugin(event) = &event.event
+            && let Some(clipboard) = event.decode::<ClipboardSnapshot>()
+        {
+            self.sync_enabled = clipboard.sync_enabled;
+        }
+    }
+
+    /// The shell took a fresh snapshot of the core: read the plugin's too,
+    /// in case an event was missed.
+    pub(crate) fn on_snapshot(&mut self, ctx: &UiContext) {
+        self.sync_enabled = self.plugin.snapshot(&ctx.plugin_context()).sync_enabled;
     }
 
     /// Put `text` on the clipboard, as [`ClipboardPlugin::set_text`] does,
@@ -135,12 +157,13 @@ impl ClipboardUi {
                 }
             },
             Message::SetSync(enabled) => {
-                let core = ctx.core().clone();
-                // Writes the settings file.
+                let plugin = self.plugin.clone();
+                let plugin_ctx = ctx.plugin_context();
+                // Writes the store.
                 ctx.spawn(
-                    async move { core.update_settings(ClipboardSettings::sync_enabled_patch(enabled)) },
+                    async move { plugin.set_sync_enabled(&plugin_ctx, enabled) },
                     move |result| {
-                        let error = result.err().map(|error| describe_core_error(&error));
+                        let error = result.err().map(|error| describe_error(&error));
                         to_app(Message::SyncSaved(error), origin)
                     },
                 )
@@ -261,14 +284,17 @@ mod tests {
         let (core, plugin, _commands) =
             handle_with_plugin(ClipboardPlugin::new(InMemoryClipboard::shared()));
         let ctx = UiContext::new(core.clone(), tokio::runtime::Handle::current());
-        let mut ui = ClipboardUi::new(plugin);
-        let settings = core.settings().unwrap();
-        assert!(
-            ClipboardSettings::of(&settings).sync_enabled,
-            "on by default"
-        );
+        let mut ui = ClipboardUi::new(plugin.clone());
+        let plugin_ctx = core.plugin_context();
+        plugin.set_sync_enabled(&plugin_ctx, false).unwrap();
+        ui.on_snapshot(&ctx);
+        assert!(!ui.sync_enabled, "read from the plugin");
+        let mut events = core.subscribe();
+        plugin.set_sync_enabled(&plugin_ctx, true).unwrap();
+        ui.on_event(&events.try_recv().unwrap());
+        assert!(ui.sync_enabled, "patched from its event");
 
-        let mut section = Simulator::new(view_settings(&settings));
+        let mut section = Simulator::new(ui.view_settings());
         section.click("Sync clipboard").unwrap();
         let clicked: Vec<_> = section.into_messages().collect();
         let [Message::SetSync(false)] = &clicked[..] else {
@@ -280,23 +306,20 @@ mod tests {
             panic!("unexpected outcomes: {outcomes:?}");
         };
         assert!(matches!(clipboard_message(saved), Message::SyncSaved(None)));
-        assert!(!ClipboardSettings::of(&core.settings().unwrap()).sync_enabled);
+        assert!(!plugin.snapshot(&plugin_ctx).sync_enabled);
     }
 
     #[tokio::test]
     async fn a_setting_that_cant_be_saved_says_why() {
-        // This core doesn't run the clipboard plugin, so it has no section.
         let (core, _commands) = handle();
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
-        let mut ui = ui("");
-        let mut outcomes =
-            testing::outputs(ui.update(&ctx, Message::SetSync(false), Origin::Window)).await;
-        let saved = clipboard_message(&outcomes.pop().expect("a message"));
-        let outcomes = testing::outputs(ui.update(&ctx, saved, Origin::Window)).await;
+        let error = describe_error(&ClipboardSyncError::Core(CoreError::Internal));
+        let saved = Message::SyncSaved(Some(error.clone()));
+        let outcomes = testing::outputs(ui("").update(&ctx, saved, Origin::Window)).await;
         let [ui::Message::Toast { text, .. }] = &outcomes[..] else {
             panic!("unexpected outcomes: {outcomes:?}");
         };
-        assert_eq!(text, &describe_code("invalid_settings"));
+        assert_eq!(text, &error);
     }
 
     /// The clipboard codes, worded as the Flutter app worded them.

@@ -117,7 +117,6 @@ pub fn store(local_name: &str, devices: Vec<DeviceSnapshot>) -> Store {
             close_to_tray: true,
             language: None,
             appearance: None,
-            plugins: Default::default(),
         }),
     });
     store

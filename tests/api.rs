@@ -7,7 +7,7 @@ use ferry::{
         Core, DeviceRegistry, EventData, LanCommand, LocalDeviceSnapshot, PluginEvent,
         TransferConfig,
     },
-    plugins::clipboard::{ClipboardSettings, ClipboardSnapshot, InMemoryClipboard},
+    plugins::clipboard::{ClipboardSnapshot, InMemoryClipboard},
     protocol::{DeviceType, IdentityBody},
     store::Store,
 };
@@ -378,6 +378,7 @@ async fn sse_delivers_typed_events_and_shutdown_cleans_up_clients() {
                 text: "event payload".into(),
                 updated_at: 12,
                 source_device_id: None,
+                sync_enabled: true,
             })
             .unwrap(),
         ))
@@ -434,6 +435,7 @@ async fn clipboard_get_and_put_round_trip_and_enforce_the_size_limit() {
     let get = request(&server, "GET", "/api/v1/clipboard", true).await;
     let get_json: serde_json::Value = serde_json::from_str(body(&get)).unwrap();
     assert_eq!(get_json["text"], "hello from api");
+    assert_eq!(get_json["syncEnabled"], true);
 
     // Oversized clipboard text is rejected with a typed, clipboard-specific
     // problem, distinct from the generic request-body-too-large rejection
@@ -448,6 +450,49 @@ async fn clipboard_get_and_put_round_trip_and_enforce_the_size_limit() {
 }
 
 #[tokio::test]
+async fn clipboard_sync_can_be_turned_off_and_is_announced() {
+    let server = TestServer::start().await;
+    let mut events = server.application.event_bus().subscribe();
+
+    let patched = request_with_body(
+        &server,
+        "PATCH",
+        "/api/v1/clipboard",
+        r#"{"syncEnabled":false}"#,
+    )
+    .await;
+    assert!(patched.starts_with("HTTP/1.1 200 OK"), "{patched}");
+    let patched: serde_json::Value = serde_json::from_str(body(&patched)).unwrap();
+    assert_eq!(patched["syncEnabled"], false);
+
+    let event = timeout(Duration::from_secs(1), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let EventData::Plugin(event) = event.event else {
+        panic!("expected a plugin event");
+    };
+    assert_eq!(
+        event.decode::<ClipboardSnapshot>().map(|c| c.sync_enabled),
+        Some(false)
+    );
+    let get = request(&server, "GET", "/api/v1/clipboard", true).await;
+    let get: serde_json::Value = serde_json::from_str(body(&get)).unwrap();
+    assert_eq!(get["syncEnabled"], false);
+
+    for invalid in [
+        r#"{"syncEnabled":"no"}"#,
+        r#"{"sync":true}"#,
+        r#"{"syncEnabled":true,"text":"x"}"#,
+    ] {
+        let response = request_with_body(&server, "PATCH", "/api/v1/clipboard", invalid).await;
+        assert!(!response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+
+    server.server.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn settings_can_be_read_changed_and_are_announced() {
     let server = TestServer::start().await;
     let mut events = server.application.event_bus().subscribe();
@@ -456,10 +501,7 @@ async fn settings_can_be_read_changed_and_are_announced() {
     assert!(initial.starts_with("HTTP/1.1 200 OK"));
     let initial: serde_json::Value = serde_json::from_str(body(&initial)).unwrap();
     assert_eq!(initial["deviceName"], "Test Device");
-    assert_eq!(
-        initial["plugins"],
-        serde_json::json!({"clipboard": {"syncEnabled": true}})
-    );
+    assert_eq!(initial.get("plugins"), None);
     assert_eq!(initial["closeToTray"], true);
     assert_eq!(initial["language"], serde_json::Value::Null);
     assert_eq!(initial["appearance"], serde_json::Value::Null);
@@ -468,13 +510,13 @@ async fn settings_can_be_read_changed_and_are_announced() {
         &server,
         "PATCH",
         "/api/v1/settings",
-        r#"{"deviceName":"Renamed","plugins":{"clipboard":{"syncEnabled":false}}}"#,
+        r#"{"deviceName":"Renamed","closeToTray":false}"#,
     )
     .await;
     assert!(patched.starts_with("HTTP/1.1 200 OK"), "{patched}");
     let patched: serde_json::Value = serde_json::from_str(body(&patched)).unwrap();
     assert_eq!(patched["deviceName"], "Renamed");
-    assert_eq!(patched["plugins"]["clipboard"]["syncEnabled"], false);
+    assert_eq!(patched["closeToTray"], false);
     assert_eq!(patched["downloadDir"], initial["downloadDir"]);
 
     let event = timeout(Duration::from_secs(1), events.recv())
@@ -485,7 +527,6 @@ async fn settings_can_be_read_changed_and_are_announced() {
         event.event,
         EventData::SettingsChanged(ref settings) if settings.device_name == "Renamed"
     ));
-    assert!(!ClipboardSettings::of(&server.application.settings().unwrap()).sync_enabled);
     let status = request(&server, "GET", "/api/v1/status", true).await;
     let status: serde_json::Value = serde_json::from_str(body(&status)).unwrap();
     assert_eq!(status["localDevice"]["deviceName"], "Renamed");
@@ -493,15 +534,6 @@ async fn settings_can_be_read_changed_and_are_announced() {
     for (patch, code) in [
         (r#"{"deviceName":"no.dots"}"#, "invalid_device_name"),
         (r#"{"downloadDir":"relative"}"#, "invalid_download_dir"),
-        (
-            r#"{"plugins":{"clipboard":{"syncEnabled":"no"}}}"#,
-            "invalid_settings",
-        ),
-        (
-            r#"{"plugins":{"clipboard":{"sync":true}}}"#,
-            "invalid_settings",
-        ),
-        (r#"{"plugins":{"nope":{}}}"#, "invalid_settings"),
         (r#"{"language":"not a tag"}"#, "invalid_settings"),
     ] {
         let response = request_with_body(&server, "PATCH", "/api/v1/settings", patch).await;
@@ -515,11 +547,15 @@ async fn settings_can_be_read_changed_and_are_announced() {
         r#"{"nope":1}"#,
         r#"{"clipboardSyncEnabled":true}"#,
         r#"{"appearance":"blue"}"#,
+        r#"{"plugins":{"clipboard":{"syncEnabled":false}}}"#,
     ] {
         let response = request_with_body(&server, "PATCH", "/api/v1/settings", unknown).await;
         assert!(!response.starts_with("HTTP/1.1 200"), "{response}");
     }
-    assert!(!ClipboardSettings::of(&server.application.settings().unwrap()).sync_enabled);
+    assert_eq!(
+        server.application.settings().unwrap().device_name,
+        "Renamed"
+    );
 
     // The app's language: a tag, or `null` for the system's.
     for (patch, language) in [

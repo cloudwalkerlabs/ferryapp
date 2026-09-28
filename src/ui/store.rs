@@ -326,7 +326,6 @@ mod tests {
             close_to_tray: true,
             language: None,
             appearance: None,
-            plugins: BTreeMap::new(),
         }
     }
 

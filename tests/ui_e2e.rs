@@ -30,7 +30,7 @@ use ferry::{
     client::ApiClient,
     core::{Core, DeviceReachability, EventData, PairingStatus, TransferDirection, TransferStatus},
     daemon::{ApiMode, RunRequest, RunningService},
-    plugins::{self, clipboard::ClipboardSettings, ping::ReceivedPing, share},
+    plugins::{self, ping::ReceivedPing, share},
     transport::lan::LOOPBACK_BROADCAST,
     ui::{
         self, Desktop, Service, Started, UiOptions,
@@ -219,15 +219,9 @@ fn sends_the_clipboard_to_a_peer_that_missed_it() {
     let peer = &test.peer;
     test.runtime.block_on(async {
         peer.client.set_clipboard("from the app").await.unwrap();
-        peer.client
-            .update_settings(&ClipboardSettings::sync_enabled_patch(false))
-            .await
-            .unwrap();
+        peer.client.set_clipboard_sync(false).await.unwrap();
         peer.client.set_clipboard("only on the peer").await.unwrap();
-        peer.client
-            .update_settings(&ClipboardSettings::sync_enabled_patch(true))
-            .await
-            .unwrap();
+        peer.client.set_clipboard_sync(true).await.unwrap();
     });
 
     app.click(&peer.name);

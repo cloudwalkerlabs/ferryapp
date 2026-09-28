@@ -651,6 +651,28 @@ impl ApiClient {
         decode_json(response, "clipboard").await
     }
 
+    /// Turn clipboard sync with paired devices on or off.
+    pub async fn set_clipboard_sync(
+        &self,
+        enabled: bool,
+    ) -> Result<ClipboardSnapshot, ClientError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PatchClipboard {
+            sync_enabled: bool,
+        }
+
+        let response = self
+            .authorized(self.http.patch(self.url("api/v1/clipboard")?))
+            .json(&PatchClipboard {
+                sync_enabled: enabled,
+            })
+            .send()
+            .await
+            .map_err(map_transport)?;
+        decode_json(response, "clipboard").await
+    }
+
     pub async fn settings(&self) -> Result<SettingsSnapshot, ClientError> {
         self.get_json("api/v1/settings", "settings").await
     }

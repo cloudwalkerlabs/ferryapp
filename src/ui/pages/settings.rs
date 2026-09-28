@@ -4,7 +4,8 @@
 //! keeps too, and [`i18n::follow_setting`] applies), its appearance, and
 //! command line access (the daemon's
 //! HTTP API, [`ApiSwitch`](crate::daemon::ApiSwitch)). Features add their
-//! own sections (clipboard: "Sync clipboard") through
+//! own sections (clipboard: "Sync clipboard", which the plugin keeps)
+//! through
 //! [`settings_sections`](crate::ui::features::Features::settings_sections).
 
 use std::path::Path;
@@ -81,13 +82,13 @@ pub struct Actions<M> {
     pub about: M,
 }
 
-/// The settings `store` holds, with the features' `sections` of them
-/// after the download folder, command line access, and a link to About.
+/// The settings `store` holds, with the features' `sections` after the
+/// download folder, command line access, and a link to About.
 /// `version` is the app's, and `start_on_login` whether the system starts
 /// it at login.
 pub fn view<'a, M: Clone + 'a>(
     store: &'a Store,
-    sections: impl FnOnce(&'a SettingsSnapshot) -> Vec<Element<'a, M>>,
+    sections: impl FnOnce() -> Vec<Element<'a, M>>,
     version: &'a str,
     start_on_login: bool,
     cli: CommandLine<'a>,
@@ -97,14 +98,7 @@ pub fn view<'a, M: Clone + 'a>(
     let body = match store.settings() {
         Load::Loading => widgets::loading(fl!("settings-loading")),
         Load::Failed(error) => widgets::error_view(error.as_str(), Some(actions.retry)),
-        Load::Loaded(settings) => list(
-            settings,
-            sections(settings),
-            version,
-            start_on_login,
-            cli,
-            actions,
-        ),
+        Load::Loaded(settings) => list(settings, sections(), version, start_on_login, cli, actions),
     };
     widgets::page(header, body)
 }
@@ -430,7 +424,7 @@ mod tests {
     }
 
     /// A feature's section: a switch of its own.
-    fn sections(_settings: &SettingsSnapshot) -> Vec<Element<'_, Message>> {
+    fn sections<'a>() -> Vec<Element<'a, Message>> {
         vec![widgets::switch_setting(
             lucide::clipboard_copy,
             "Sync clipboard",

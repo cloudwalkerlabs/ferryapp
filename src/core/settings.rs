@@ -3,20 +3,17 @@
 //! sockets and the rest of the core's state so the precedence rules can be
 //! tested on their own.
 //!
-//! The core's own settings are a config key each. Each plugin with settings
-//! owns a section under `plugins.<id>` (see [`super::PluginSettings`]),
-//! stored under [`PLUGIN_SETTINGS`] for its id; the core stores, merges and
-//! publishes sections without knowing their fields.
+//! Each setting is a config key. A plugin's settings are its own keys, which
+//! it reads through its context's store and serves on its own routes.
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{Map, Value};
 
-use super::{CoreError, plugin::SettingsSection};
+use super::CoreError;
 use crate::{
     protocol::is_valid_device_name,
-    store::{ConfigKey, IdScope, Scope, Store, StoreError, Transaction},
+    store::{ConfigKey, Store, StoreError, Transaction},
 };
 
 /// The device name the user chose. What's in effect is
@@ -33,10 +30,6 @@ pub const LANGUAGE: ConfigKey<String> = ConfigKey::new("ui.language");
 /// Whether the app is light or dark; unset follows the system. Owned by
 /// the UI.
 pub const APPEARANCE: ConfigKey<Appearance> = ConfigKey::new("ui.appearance");
-/// Each plugin's settings section, by plugin id: only the fields the user
-/// set (see [`super::PluginSettings`]).
-pub const PLUGIN_SETTINGS: ConfigKey<Map<String, Value>, PerPlugin> =
-    ConfigKey::new("core.pluginSettings");
 
 /// A stored setting, or `None` if it can't be read.
 fn read<T>(result: Result<Option<T>, StoreError>) -> Option<T> {
@@ -69,17 +62,8 @@ pub enum Appearance {
     Dark,
 }
 
-/// A value per plugin, by plugin id.
-pub enum PerPlugin {}
-
-impl Scope for PerPlugin {
-    const NAME: &'static str = "plugin";
-}
-
-impl IdScope for PerPlugin {}
-
-/// The settings the user set, or a run's start options: `None` (or a
-/// missing section) means "not set".
+/// The settings the user set, or a run's start options: `None` means "not
+/// set".
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct StoredSettings {
     pub device_name: Option<String>,
@@ -87,9 +71,6 @@ pub(crate) struct StoredSettings {
     pub close_to_tray: Option<bool>,
     pub language: Option<String>,
     pub appearance: Option<Appearance>,
-    /// Plugins' sections, by plugin id. Each holds only the fields the user
-    /// set, and none is empty.
-    pub plugins: BTreeMap<String, Map<String, Value>>,
 }
 
 /// What a setting falls back to when neither a start option nor the
@@ -116,16 +97,10 @@ pub struct SettingsSnapshot {
     /// `close_to_tray`.
     #[serde(default)]
     pub appearance: Option<Appearance>,
-    /// Every plugin's settings section, keyed by plugin id, with defaults
-    /// filled in.
-    #[serde(default)]
-    pub plugins: BTreeMap<String, Value>,
 }
 
 /// A partial update, as accepted by `PATCH /settings`. An absent field is
-/// left alone; `null` resets it to its default. A plugin's section, under
-/// `plugins`, is an object of the fields to change in the same way, or
-/// `null` to reset the whole section.
+/// left alone; `null` resets it to its default.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsPatch {
@@ -139,18 +114,6 @@ pub struct SettingsPatch {
     pub language: Option<Option<String>>,
     #[serde(deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     pub appearance: Option<Option<Appearance>>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub plugins: BTreeMap<String, Value>,
-}
-
-impl SettingsPatch {
-    /// A patch that changes `fields` of one plugin's section.
-    pub fn plugin(id: &str, fields: Map<String, Value>) -> Self {
-        Self {
-            plugins: BTreeMap::from([(id.to_owned(), Value::Object(fields))]),
-            ..Self::default()
-        }
-    }
 }
 
 /// Tells a field that is present but `null` (`Some(None)`) apart from one
@@ -175,7 +138,6 @@ pub(crate) struct Settings {
     stored: StoredSettings,
     overrides: StoredSettings,
     store: Option<Store>,
-    sections: Vec<SettingsSection>,
 }
 
 impl Settings {
@@ -186,15 +148,7 @@ impl Settings {
             stored: StoredSettings::default(),
             overrides: StoredSettings::default(),
             store: None,
-            sections: Vec::new(),
         }
-    }
-
-    /// Hold the plugins' sections, with what the store holds for them.
-    pub(crate) fn with_sections(mut self, sections: Vec<SettingsSection>) -> Self {
-        self.sections = sections;
-        self.load();
-        self
     }
 
     /// Keep the settings in `store`, starting from what it holds.
@@ -217,15 +171,6 @@ impl Settings {
             close_to_tray: read(store.get(&CLOSE_TO_TRAY)),
             language: read(store.get(&LANGUAGE)),
             appearance: read(store.get(&APPEARANCE)),
-            plugins: self
-                .sections
-                .iter()
-                .filter_map(|section| {
-                    let fields = read(store.get(&PLUGIN_SETTINGS.of(section.id)))?;
-                    Some((section.id.to_owned(), fields))
-                })
-                .filter(|(_, fields): &(String, Map<String, Value>)| !fields.is_empty())
-                .collect(),
         };
     }
 
@@ -256,30 +201,7 @@ impl Settings {
                 .clone()
                 .or_else(|| stored.language.clone()),
             appearance: overrides.appearance.or(stored.appearance),
-            plugins: self
-                .sections
-                .iter()
-                .map(|section| (section.id.to_owned(), self.resolve(section)))
-                .collect(),
         }
-    }
-
-    /// One plugin's section in effect, if it has one.
-    pub(crate) fn section(&self, id: &str) -> Option<Value> {
-        let section = self.sections.iter().find(|section| section.id == id)?;
-        Some(self.resolve(section))
-    }
-
-    fn resolve(&self, section: &SettingsSection) -> Value {
-        let empty = Map::new();
-        let stored = self.stored.plugins.get(section.id).unwrap_or(&empty);
-        section.resolve(stored).unwrap_or_else(|| {
-            // The store may hold what the plugin can't read (an older
-            // build's fields, or a hand edit); fall back to the defaults
-            // until the user changes the section.
-            tracing::warn!(section = section.id, "ignoring invalid stored settings");
-            section.resolve(&empty).unwrap_or(Value::Null)
-        })
     }
 
     /// Validate and apply `patch`, persisting the result before it takes
@@ -329,34 +251,6 @@ impl Settings {
             stored.appearance = value;
             overrides.appearance = None;
         }
-        for (id, change) in patch.plugins {
-            let section = self
-                .sections
-                .iter()
-                .find(|section| section.id == id)
-                .ok_or(CoreError::InvalidSettings)?;
-            let mut fields = stored.plugins.remove(&id).unwrap_or_default();
-            match change {
-                Value::Null => fields.clear(),
-                Value::Object(changes) => {
-                    for (field, value) in changes {
-                        if value.is_null() {
-                            fields.remove(&field);
-                        } else {
-                            fields.insert(field, value);
-                        }
-                    }
-                }
-                _ => return Err(CoreError::InvalidSettings),
-            }
-            if section.resolve(&fields).is_none() {
-                return Err(CoreError::InvalidSettings);
-            }
-            if !fields.is_empty() {
-                stored.plugins.insert(id, fields);
-            }
-        }
-
         if stored != self.stored
             && let Some(store) = &self.store
         {
@@ -390,13 +284,6 @@ impl Settings {
         put(transaction, &CLOSE_TO_TRAY, stored.close_to_tray.as_ref())?;
         put(transaction, &LANGUAGE, stored.language.as_ref())?;
         put(transaction, &APPEARANCE, stored.appearance.as_ref())?;
-        for section in &self.sections {
-            put(
-                transaction,
-                &PLUGIN_SETTINGS.of(section.id),
-                stored.plugins.get(section.id),
-            )?;
-        }
         Ok(())
     }
 }
@@ -561,96 +448,6 @@ mod tests {
             assert_eq!(format!("{error:?}"), expected, "{body}");
         }
         assert_eq!(settings.snapshot(), Settings::new(defaults()).snapshot());
-    }
-
-    /// A plugin's settings, as a plugin would declare them.
-    #[derive(Serialize, Deserialize)]
-    #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
-    struct Waving {
-        enabled: bool,
-        hand: String,
-    }
-
-    impl Default for Waving {
-        fn default() -> Self {
-            Self {
-                enabled: true,
-                hand: "left".into(),
-            }
-        }
-    }
-
-    impl super::super::PluginSettings for Waving {
-        const ID: &'static str = "wave";
-    }
-
-    #[test]
-    fn plugin_sections_merge_changes_and_reset_to_their_defaults() {
-        let store = Store::open_in_memory().unwrap();
-        let wave = PLUGIN_SETTINGS.of("wave");
-        store
-            .set(&wave, &Map::from_iter([("enabled".into(), false.into())]))
-            .unwrap();
-        // A section no plugin of this build has is left alone.
-        let gone = PLUGIN_SETTINGS.of("gone");
-        store.set(&gone, &Map::new()).unwrap();
-        let mut settings = Settings::new(defaults())
-            .with_store(store.clone())
-            .with_sections(vec![SettingsSection::of::<Waving>()]);
-
-        let expected = serde_json::json!({"enabled": false, "hand": "left"});
-        assert_eq!(settings.snapshot().plugins["wave"], expected);
-        assert_eq!(settings.section("wave"), Some(expected));
-        assert_eq!(settings.section("other"), None);
-
-        let snapshot = settings
-            .update(patch(r#"{"plugins": {"wave": {"hand": "right"}}}"#))
-            .unwrap();
-        assert_eq!(
-            snapshot.plugins["wave"],
-            serde_json::json!({"enabled": false, "hand": "right"})
-        );
-        // Only what the user set is saved.
-        assert_eq!(
-            serde_json::to_value(store.get(&wave).unwrap()).unwrap(),
-            serde_json::json!({"enabled": false, "hand": "right"})
-        );
-
-        let snapshot = settings
-            .update(patch(r#"{"plugins": {"wave": {"enabled": null}}}"#))
-            .unwrap();
-        assert_eq!(
-            snapshot.plugins["wave"],
-            serde_json::json!({"enabled": true, "hand": "right"})
-        );
-
-        let snapshot = settings
-            .update(patch(r#"{"plugins": {"wave": null}}"#))
-            .unwrap();
-        assert_eq!(
-            snapshot.plugins["wave"],
-            serde_json::json!({"enabled": true, "hand": "left"})
-        );
-        assert_eq!(store.get(&wave).unwrap(), None);
-        assert_eq!(store.get(&gone).unwrap(), Some(Map::new()));
-    }
-
-    #[test]
-    fn invalid_plugin_sections_change_nothing() {
-        let mut settings =
-            Settings::new(defaults()).with_sections(vec![SettingsSection::of::<Waving>()]);
-        let before = settings.snapshot();
-        for body in [
-            r#"{"plugins": {"wave": {"hand": 1}}}"#,
-            r#"{"plugins": {"wave": {"foot": "left"}}}"#,
-            r#"{"plugins": {"wave": true}}"#,
-            r#"{"plugins": {"unknown": {}}}"#,
-            r#"{"closeToTray": false, "plugins": {"wave": {"enabled": "no"}}}"#,
-        ] {
-            let error = settings.update(patch(body)).unwrap_err();
-            assert_eq!(format!("{error:?}"), "InvalidSettings", "{body}");
-        }
-        assert_eq!(settings.snapshot(), before);
     }
 
     #[test]

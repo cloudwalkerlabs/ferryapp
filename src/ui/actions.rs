@@ -473,7 +473,7 @@ mod tests {
     use crate::{
         core::{
             Appearance, LanCommand, PairingDirection, PairingSnapshot, PairingStatus,
-            SettingsSnapshot, TransferDirection, testing::handle,
+            TransferDirection, testing::handle,
         },
         plugins::{
             browse::BrowsePlugin,
@@ -1060,26 +1060,32 @@ mod tests {
             ),
         );
         let features = Features::new(
-            plugin,
+            plugin.clone(),
             Arc::new(BrowsePlugin::default()),
             Arc::new(NotificationsPlugin::default()),
         );
         let mut app = running_with(core.clone(), features, &Fakes::default());
         settle(&mut app, Message::Reload).await;
         settle(&mut app, Message::Navigate(Route::Settings, Origin::Window)).await;
-        let sync_enabled = |settings: &SettingsSnapshot| {
-            crate::plugins::clipboard::ClipboardSettings::of(settings).sync_enabled
-        };
-        assert!(sync_enabled(settings(&app)));
+        let sync_enabled = || plugin.snapshot(&core.plugin_context()).sync_enabled;
+        assert!(sync_enabled());
 
-        // The feature's own section.
+        // The feature's own section, which its plugin keeps.
+        let mut events = core.subscribe();
         click(&mut app, "Sync clipboard").await;
-        assert!(!sync_enabled(&core.settings().unwrap()));
+        assert!(!sync_enabled());
+        let shown = |app: &mut App| features_mut(app).clipboard.sync_enabled();
+        assert!(shown(&mut app), "the switch waits for the event");
+        let event = events.try_recv().unwrap();
+        let update = crate::ui::sync::Update::Event(Box::new(event));
+        settle(&mut app, Message::Sync(update)).await;
+        assert!(!shown(&mut app), "its event updates the switch");
+        // A fresh snapshot, as after missed events, reads it again.
+        plugin
+            .set_sync_enabled(&core.plugin_context(), true)
+            .unwrap();
         settle(&mut app, Message::Reload).await;
-        assert!(
-            !sync_enabled(settings(&app)),
-            "its event updates the switch"
-        );
+        assert!(shown(&mut app));
 
         // The shell's.
         assert!(settings(&app).close_to_tray, "on by default");

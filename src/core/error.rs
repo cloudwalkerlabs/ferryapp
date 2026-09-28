@@ -67,7 +67,7 @@ pub enum CoreError {
     InvalidDeviceName,
     #[error("download directory must be an absolute path that can be created")]
     InvalidDownloadDir,
-    #[error("a plugin's settings section is unknown or its values are invalid")]
+    #[error("a setting's value is invalid")]
     InvalidSettings,
     #[error("transfer is not in a state that allows this operation")]
     InvalidTransferState,

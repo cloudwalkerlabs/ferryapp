@@ -21,7 +21,7 @@ use std::{fmt, path::PathBuf, sync::Arc};
 use iced::{Element, Subscription, Task};
 
 use crate::{
-    core::{CoreEvent, DeviceSnapshot, SettingsSnapshot},
+    core::{CoreEvent, DeviceSnapshot},
     plugins::{
         browse::BrowsePlugin, clipboard::ClipboardPlugin, notifications::NotificationsPlugin,
     },
@@ -154,6 +154,7 @@ impl Features {
 
     /// Every core event, after the store has applied it.
     pub(crate) fn on_event(&mut self, ctx: &UiContext, event: &CoreEvent) -> Task<Message> {
+        self.clipboard.on_event(event);
         Task::batch([
             ping::on_event(event),
             share::on_event(event),
@@ -191,12 +192,10 @@ impl Features {
     }
 
     /// The features' sections of the settings page.
-    pub(crate) fn settings_sections<'a>(
-        &'a self,
-        settings: &'a SettingsSnapshot,
-    ) -> Vec<Element<'a, Message>> {
+    pub(crate) fn settings_sections(&self) -> Vec<Element<'_, Message>> {
         vec![
-            clipboard::view_settings(settings)
+            self.clipboard
+                .view_settings()
                 .map(|message| Message::Feature(Feature::Clipboard(message), Origin::Window)),
         ]
     }
@@ -213,6 +212,7 @@ impl Features {
     /// The shell took a fresh snapshot of the core, after missing events
     /// or on Reload.
     pub(crate) fn on_snapshot(&mut self, ctx: &UiContext) -> Task<Message> {
+        self.clipboard.on_snapshot(ctx);
         self.notifications.on_snapshot();
         self.telephony.on_snapshot(ctx)
     }

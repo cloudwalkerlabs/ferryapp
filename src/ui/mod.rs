@@ -924,7 +924,7 @@ impl App {
             ),
             Route::Settings => settings::view(
                 running.ctx.store(),
-                |settings| running.features.settings_sections(settings),
+                || running.features.settings_sections(),
                 &self.options.version,
                 self.start_on_login,
                 settings::CommandLine {
