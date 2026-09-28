@@ -13,7 +13,7 @@ cask "ferry" do
   desc "KDE Connect client: share files and the clipboard with your phone"
   homepage "https://simophin.github.io/ferryapp/"
 
-  depends_on macos: ">= :monterey"
+  depends_on macos: :monterey
 
   app "Ferry.app"
   binary "#{appdir}/Ferry.app/Contents/MacOS/ferry-cli"
