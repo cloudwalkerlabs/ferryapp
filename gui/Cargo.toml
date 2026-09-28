@@ -3,6 +3,7 @@ name = "ferry-gui"
 version = "0.1.0"
 edition = "2024"
 description = "The Ferry desktop app: the daemon and its iced UI in one process"
+license = "MIT"
 publish = false
 
 [dependencies]

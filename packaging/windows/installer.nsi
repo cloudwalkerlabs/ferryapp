@@ -8,7 +8,8 @@
 ;
 ; The app is installed as Ferry.exe and the CLI next to it as ferry-cli.exe
 ; (docs/adr/0001, "Packaging"). LICENSES is the notices cargo-about wrote
-; (about.toml), installed next to Ferry.exe, where About opens it.
+; (about.toml), installed next to Ferry.exe, where About opens it, with
+; Ferry's own LICENSE as LICENSE.txt.
 ; LANGUAGES is what `packaging/i18n.sh nsis` prints: the app's languages
 ; and the installer's own strings in each. The installer speaks the
 ; system's language if it is one of them, else English.
@@ -49,6 +50,8 @@ Section "Ferry"
   SetOutPath "$INSTDIR"
   File "/oname=Ferry.exe" "${APP}"
   File "/oname=THIRD_PARTY_LICENSES.html" "${LICENSES}"
+  ; makensis runs from this file's directory.
+  File "/oname=LICENSE.txt" "..\..\LICENSE"
   File "/oname=ferry-cli.exe" "${CLI}"
   ; Where versions before the rename put the CLI.
   Delete "$INSTDIR\cli\ferry.exe"
@@ -78,6 +81,7 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Ferry.lnk"
   Delete "$INSTDIR\Ferry.exe"
   Delete "$INSTDIR\THIRD_PARTY_LICENSES.html"
+  Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\ferry-cli.exe"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"

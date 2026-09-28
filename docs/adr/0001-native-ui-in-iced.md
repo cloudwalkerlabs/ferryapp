@@ -218,7 +218,7 @@ Decisions for steps 11 and 13:
   `packaging/linux/build_deb.sh` (the `.deb`, with dependencies from
   `dpkg-shlibdeps` plus the libraries winit loads at runtime),
   `packaging/macos/build_app.sh` (a universal `.app` from `lipo`,
-  `iconutil` and an ad-hoc `codesign`, and the DMG from `hdiutil`) and
+  `iconutil` and `codesign`, and the DMG from `hdiutil`) and
   `packaging/windows/installer.nsi` (NSIS). `cargo-packager` would be one
   more tool and config for the same result, and it can't derive the
   `.deb`'s dependencies or join two architectures into one binary.
@@ -260,6 +260,40 @@ Decisions for steps 11 and 13:
   `packaging/linux/check_deb.sh` on a clean Debian 12: it installs with
   its Depends only (no GPU driver; the app draws with tiny-skia), opens
   its window with its class and icon, and the CLI reaches its API.
+- **Ferry is MIT** (`LICENSE`): the `.deb`'s `copyright`, the bundle's
+  `Resources/LICENSE`, `LICENSE.txt` next to `Ferry.exe`, and the Arch
+  package's `/usr/share/licenses/ferry-bin`.
+- **Where users get it** (owner's decision: our own channels, not
+  Homebrew's or Debian's official ones). After a full release the Build
+  workflow publishes:
+  - an **apt repository** on the website (`apt/`,
+    `packaging/linux/apt_repo.sh`): one `stable` suite holding only the
+    release's `.deb`s, checked by `check_apt_repo.sh` on Debian 12 and 13;
+  - the **Homebrew cask** (`packaging/macos/ferry.rb.in`) in
+    `simophin/homebrew-tap`, checked by installing it in the macOS job;
+  - the **AUR package** `ferry-bin`, the release's PKGBUILD, checked by
+    `makepkg` and `pacman -U` in the Arch job.
+- **Signing.** Two keys, kept apart so a leak of one doesn't touch the
+  other; the owner holds both offline, CI has what it needs as secrets
+  (listed at the top of `build.yml`):
+  - The **release key**, OpenPGP, ed25519
+    (`packaging/release-key.asc`, fingerprint
+    `ECD3B4C2913BF64B1664F19F074DA8D02070102E`), signs the apt repository
+    and each release's `SHA256SUMS`. The primary key only certifies; CI
+    has only its signing subkey, so a leaked subkey can be revoked and
+    replaced without users changing the key they trust. It doesn't
+    expire: apt refuses a repository whose key has.
+  - A **self-signed code signing certificate** ("Ferry Code Signing",
+    SHA-256 `7130536B…830B5B`, the full value in `build.yml`) signs the
+    macOS app. Gatekeeper trusts only Apple's Developer ID, so it doesn't
+    help there (the cask clears the quarantine); what it gives is one
+    identity across releases, so the permissions users grant survive
+    updates. A new certificate changes that identity once.
+  - Windows stays unsigned: SmartScreen treats a self-signed Authenticode
+    signature like none.
+  - Apple's Developer ID and notarization ($99 a year) would make the DMG
+    open without a prompt and the cask eligible for Homebrew's own
+    repository; the owner chose not to, for now.
 
 ## Deliberate differences from the Flutter app
 

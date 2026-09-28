@@ -16,10 +16,15 @@
 # hdiutil. Each of the app's languages gets a <lang>.lproj in Resources,
 # from its i18n/<lang>/ferry.ftl (packaging/i18n.sh).
 #
-# The bundle is ad-hoc signed and not sandboxed (docs/adr/0001,
-# "Deliberate differences"): Gatekeeper blocks it until the user allows it in
-# System Settings → Privacy & Security. install.sh installs it from the DMG
-# without that step.
+# The bundle is signed with FERRY_CODESIGN_IDENTITY, an identity in the
+# keychain (the Build workflow's self-signed "Ferry Code Signing"
+# certificate), or ad hoc without it. The certificate gives every release
+# the same identity, so macOS keeps what the user allowed it (the
+# Downloads folder) across updates; an ad-hoc signature is a new identity
+# each build. It isn't notarized or sandboxed (docs/adr/0001, "Deliberate
+# differences"), so Gatekeeper blocks a DMG a browser downloaded until the
+# user allows it in System Settings → Privacy & Security; the Homebrew cask
+# (ferry.rb.in) clears the quarantine instead.
 set -eu
 
 if [ $# -lt 5 ]; then
@@ -74,10 +79,12 @@ printf 'APPL????' >"$app/Contents/PkgInfo"
 iconutil -c icns -o "$app/Contents/Resources/AppIcon.icns" \
   "$assets/macos/AppIcon.iconset"
 cp "$licenses" "$app/Contents/Resources/THIRD_PARTY_LICENSES.html"
+cp "$packaging/../../LICENSE" "$app/Contents/Resources/LICENSE"
+identity=${FERRY_CODESIGN_IDENTITY:--}
 # Nested code first: signing the bundle seals the CLI's signature into it.
-codesign --force --sign - --identifier dev.fanchao.Ferry.cli \
+codesign --force --sign "$identity" --identifier dev.fanchao.Ferry.cli \
   "$app/Contents/MacOS/ferry-cli"
-codesign --force --sign - --identifier dev.fanchao.Ferry "$app"
+codesign --force --sign "$identity" --identifier dev.fanchao.Ferry "$app"
 codesign --verify --strict --verbose=2 "$app"
 
 staging=$(mktemp -d)

@@ -8,8 +8,9 @@ links from a GitHub release.
 `gh release view` without a tag reads the latest release. The page is
 index.html with {{name}} placeholders; each package is found among the
 release's assets by the end of its file name, so the names may carry any
-version (or the app's old name). The macOS install script
-(packaging/macos/install.sh) is published next to the page as install.sh.
+version (or the app's old name). The release key's public half
+(packaging/release-key.asc) is published next to the page as
+ferry-release.asc; the Build workflow adds the apt repository in apt/.
 """
 
 import json
@@ -19,7 +20,7 @@ import sys
 from pathlib import Path
 
 SITE = Path(__file__).resolve().parent
-INSTALL_SCRIPT = SITE.parent / "packaging" / "macos" / "install.sh"
+RELEASE_KEY = SITE.parent / "packaging" / "release-key.asc"
 
 # Placeholder prefix -> how the package's file name ends.
 PACKAGES = {
@@ -57,7 +58,7 @@ def main(release_json, out):
         shutil.rmtree(out)
     shutil.copytree(SITE, out, ignore=shutil.ignore_patterns("build.py", "index.html"))
     (out / "index.html").write_text(page)
-    shutil.copy(INSTALL_SCRIPT, out / "install.sh")
+    shutil.copy(RELEASE_KEY, out / "ferry-release.asc")
 
 
 if __name__ == "__main__":

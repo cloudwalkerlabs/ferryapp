@@ -1,10 +1,21 @@
 # Builds the desktop app when a release is published and attaches the
 # packages to the release: a universal macOS .app in a DMG, a Windows
-# installer, Debian packages for amd64 and arm64 (the app and the CLI), and a
-# PKGBUILD that repackages those for Arch Linux. It can also be run by hand
-# (Actions → Build → Run workflow), leaving the packages as run artifacts.
-# After a full release it also publishes the website (site/) for it.
-# The scripts it runs are in packaging/.
+# installer, Debian packages for amd64 and arm64 (the app and the CLI), a
+# PKGBUILD that repackages those for Arch Linux, and SHA256SUMS of them all,
+# signed with the release key. It can also be run by hand (Actions → Build →
+# Run workflow), leaving the packages as run artifacts.
+# After a full release it also publishes the website (site/) with the apt
+# repository, the Homebrew cask (simophin/homebrew-tap) and the AUR package
+# (ferry-bin). The scripts it runs are in packaging/.
+#
+# Secrets (docs/adr/0001, "Packaging"; without them a run by hand still
+# builds, with an ad-hoc signed app):
+#   MACOS_CERT_P12, MACOS_CERT_PASSWORD  the self-signed "Ferry Code
+#       Signing" certificate, base64, and its password
+#   RELEASE_GPG_KEY, RELEASE_GPG_PASSPHRASE  the release key's signing
+#       subkey (packaging/release_key.sh) and its passphrase
+#   AUR_SSH_KEY  an SSH key of the AUR account that maintains ferry-bin
+#   TAP_DEPLOY_KEY  a deploy key of simophin/homebrew-tap, with write access
 name: Build
 
 on:
@@ -72,6 +83,9 @@ jobs:
       FERRY_VERSION: ${{ needs.version.outputs.app }}
       # Keep in step with packaging/macos/build_app.sh.
       MACOSX_DEPLOYMENT_TARGET: "12.0"
+      # The code signing certificate's, as the website publishes it; a
+      # MACOS_CERT_P12 with any other certificate fails the build.
+      MACOS_CERT_SHA256: 7130536B2305DB1C00FB00C76C8C208A34BA316BF7A8F2B63DEF32244F830B5B
     steps:
       - uses: actions/checkout@v7
         with:
@@ -94,6 +108,42 @@ jobs:
             cargo build --release --locked -p ferry --target "$target"
           done
           cargo about generate --locked --fail about.hbs -o target/THIRD_PARTY_LICENSES.html
+      # Into a keychain of its own, which build_app.sh signs from
+      # (FERRY_CODESIGN_IDENTITY). codesign signs with a self-signed
+      # certificate without trusting it; only Gatekeeper would ask.
+      - name: Import the code signing certificate
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$MACOS_CERT_P12" ]; then
+            echo "::warning::No MACOS_CERT_P12 secret: the app is signed ad hoc"
+            exit 0
+          fi
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          password=$(openssl rand -hex 16)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$MACOS_CERT_P12" | base64 --decode >"$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          # Lets codesign use the key without a prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$password" "$keychain" >/dev/null
+          # shellcheck disable=SC2046 # The existing keychains, one per word.
+          security list-keychains -d user -s "$keychain" \
+            $(security list-keychains -d user | tr -d '"')
+          hashes=$(security find-certificate -a -Z "$keychain")
+          sha256=$(echo "$hashes" | awk '/SHA-256 hash:/ { print $3 }')
+          if [ "$sha256" != "$MACOS_CERT_SHA256" ]; then
+            echo "::error::MACOS_CERT_P12 holds certificate $sha256, not $MACOS_CERT_SHA256"
+            exit 1
+          fi
+          # codesign takes the identity by its SHA-1.
+          sha1=$(echo "$hashes" | awk '/SHA-1 hash:/ { print $3 }')
+          echo "FERRY_CODESIGN_IDENTITY=$sha1" >>"$GITHUB_ENV"
       - name: Package
         run: |
           packaging/macos/build_app.sh \
@@ -108,15 +158,56 @@ jobs:
           lipo "$app/Contents/MacOS/Ferry" -verify_arch arm64 x86_64
           lipo "$app/Contents/MacOS/ferry-cli" -verify_arch arm64 x86_64
           codesign --verify --deep --strict --verbose=2 "$app"
+          # Signed with the certificate: the requirement names its hash,
+          # rather than this build's (cdhash), so it holds for the next
+          # release too.
+          codesign --display --requirements - "$app"
+          if [ -n "${FERRY_CODESIGN_IDENTITY:-}" ]; then
+            codesign --display --requirements - "$app" 2>&1 |
+              grep -qi "H\"$FERRY_CODESIGN_IDENTITY\""
+            codesign --display --requirements - "$app/Contents/MacOS/ferry-cli" 2>&1 |
+              grep -qi "H\"$FERRY_CODESIGN_IDENTITY\""
+          fi
           plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist"
           plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist"
           plutil -extract CFBundleVersion raw "$app/Contents/Info.plist"
           "$app/Contents/MacOS/Ferry" --version
           "$app/Contents/MacOS/ferry-cli" --version
           test -s "$app/Contents/Resources/THIRD_PARTY_LICENSES.html"
+          test -s "$app/Contents/Resources/LICENSE"
           plutil -extract CFBundleLocalizations json -o - "$app/Contents/Info.plist"
           test -s "$app/Contents/Resources/en.lproj/InfoPlist.strings"
           rm -rf "$app"
+      # Installs the DMG through the cask a release pushes to the tap, from
+      # a local tap and the file here: the app must land in /Applications
+      # without the quarantine mark, and ferry-cli on the PATH.
+      - name: Check the Homebrew cask
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_ANALYTICS: "1"
+        run: |
+          dmg=$(ls dist/*.dmg)
+          brew tap-new --no-git ferry/local
+          tap=$(brew --repository ferry/local)
+          mkdir -p "$tap/Casks"
+          packaging/macos/cask.sh "${{ needs.version.outputs.numeric }}" \
+            "file://$PWD/$dmg" "$dmg" >"$tap/Casks/ferry.rb"
+          cat "$tap/Casks/ferry.rb"
+          brew style "$tap/Casks/ferry.rb" ||
+            echo "::warning::brew style has comments on the cask"
+          brew install --cask ferry/local/ferry
+          app=/Applications/Ferry.app
+          if xattr -p com.apple.quarantine "$app" 2>/dev/null; then
+            echo "::error::$app is still quarantined"
+            exit 1
+          fi
+          ferry-cli --version
+          brew uninstall --cask ferry
+          test ! -e "$app"
+          brew untap ferry/local
+      - name: Remove the signing keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2>/dev/null || true
       - uses: actions/upload-artifact@v7
         with:
           name: macos
@@ -276,6 +367,7 @@ jobs:
     if: needs.version.outputs.tag != ''
     needs: [version, linux]
     runs-on: ubuntu-24.04
+    container: archlinux:base-devel
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -292,6 +384,27 @@ jobs:
             "debs/ferry_${DEB}_amd64.deb" "debs/ferry_${DEB}_arm64.deb" \
             > dist/PKGBUILD
           cat dist/PKGBUILD
+      # Builds and installs the package as an AUR user would, from the .deb
+      # here rather than the release (makepkg takes a source that is already
+      # there), and this checkout's LICENSE as the tag's.
+      - name: Check the package
+        env:
+          DEB: ${{ needs.version.outputs.deb }}
+        run: |
+          pacman -Syu --noconfirm
+          # makepkg refuses to run as root.
+          useradd -m builder
+          build=/home/builder/build
+          mkdir "$build"
+          cp dist/PKGBUILD "debs/ferry_${DEB}_amd64.deb" "$build/"
+          cp LICENSE "$build/LICENSE-$DEB"
+          chown -R builder "$build"
+          su builder -c "cd $build && makepkg --nodeps --noconfirm && makepkg --printsrcinfo >.SRCINFO"
+          cat "$build/.SRCINFO"
+          pacman -U --noconfirm "$build"/ferry-bin-*.pkg.tar.zst
+          ferry-cli --version
+          test -x /usr/bin/ferry-gui
+          test -s /usr/share/licenses/ferry-bin/LICENSE
       - uses: actions/upload-artifact@v7
         with:
           name: arch
@@ -306,10 +419,24 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
+      # SHA256SUMS lists every package; SHA256SUMS.asc is its signature by
+      # the release key (packaging/release-key.asc), which the website
+      # publishes with its fingerprint.
+      - name: Sign
+        env:
+          RELEASE_GPG_KEY: ${{ secrets.RELEASE_GPG_KEY }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+        run: |
+          (cd dist && sha256sum -- *) >"$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" dist/
+          cat dist/SHA256SUMS
+          packaging/release_key.sh "$RUNNER_TEMP/gnupg"
+          GNUPGHOME=$RUNNER_TEMP/gnupg gpg --detach-sign --armor dist/SHA256SUMS
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
@@ -317,9 +444,10 @@ jobs:
 
   # Publishes the website (site/) to GitHub Pages, with its download links
   # filled in from this release (site/build.py) now that its packages are
-  # attached, so the links never point at files that aren't uploaded yet. A
-  # pre-release keeps the site on the last full release. A change to site/
-  # goes live with the next release.
+  # attached, so the links never point at files that aren't uploaded yet,
+  # and the apt repository (packaging/linux/apt_repo.sh) in apt/, holding
+  # this release's .debs. A pre-release keeps the site on the last full
+  # release. A change to site/ goes live with the next release.
   # Needs Settings → Pages → Source: GitHub Actions.
   website:
     name: Website
@@ -338,16 +466,122 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: linux-*
+          path: debs
+          merge-multiple: true
       - name: Build
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
+          RELEASE_GPG_KEY: ${{ secrets.RELEASE_GPG_KEY }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
         run: |
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,url,assets > release.json
           site/build.py release.json _site
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends apt-utils
+          packaging/release_key.sh "$RUNNER_TEMP/gnupg"
+          GNUPGHOME=$RUNNER_TEMP/gnupg packaging/linux/apt_repo.sh _site/apt debs/*.deb
+      # Installs from the repository on clean systems, as the website says.
+      # Debian 13 checks signatures with sqv, Debian 12 with gpgv.
+      - name: Check the apt repository
+        run: |
+          for image in debian:12 debian:13; do
+            docker run --rm -v "$PWD:/w" -w /w "$image" \
+              packaging/linux/check_apt_repo.sh _site/apt
+          done
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site
       - id: deployment
         uses: actions/deploy-pages@v5
+
+  # Pushes the release's PKGBUILD to the AUR as ferry-bin, once its .debs
+  # are attached for it to download.
+  aur:
+    name: Publish to the AUR
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    needs: [version, release]
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: arch
+          path: dist
+      - env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          VERSION: ${{ needs.version.outputs.deb }}
+        run: |
+          pacman -Sy --noconfirm --needed git openssh
+          ssh=$RUNNER_TEMP/ssh
+          install -d -m 700 "$ssh"
+          printf '%s\n' "$AUR_SSH_KEY" >"$ssh/key"
+          chmod 600 "$ssh/key"
+          # From ssh-keyscan, matching the fingerprint aur.archlinux.org
+          # publishes (SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4).
+          echo 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' >"$ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh/known_hosts -o StrictHostKeyChecking=yes"
+          git config --global --add safe.directory '*'
+          # Cloning a package that doesn't exist yet gives an empty
+          # repository; the push creates it.
+          git clone ssh://aur@aur.archlinux.org/ferry-bin.git aur
+          cp dist/PKGBUILD aur/
+          # makepkg refuses to run as root.
+          useradd -m builder
+          chown -R builder aur
+          su builder -c "cd $PWD/aur && makepkg --printsrcinfo >.SRCINFO"
+          cd aur
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "ferry-bin is already at $VERSION"
+            exit 0
+          fi
+          git -c user.name=fanchao -c user.email=ferryapp@fanchao.dev \
+            commit -m "Update to $VERSION"
+          git push origin HEAD:master
+
+  # Pushes the cask for the release's DMG to the tap
+  # (brew install simophin/tap/ferry). The macOS job checked that it
+  # installs.
+  homebrew:
+    name: Publish to the Homebrew tap
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    needs: [version, release]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos
+          path: dist
+      - env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.numeric }}
+        run: |
+          ssh=$RUNNER_TEMP/ssh
+          install -d -m 700 "$ssh"
+          printf '%s\n' "$TAP_DEPLOY_KEY" >"$ssh/key"
+          chmod 600 "$ssh/key"
+          # GitHub's, as https://api.github.com/meta lists it.
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >"$ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh/known_hosts -o StrictHostKeyChecking=yes"
+          git clone git@github.com:simophin/homebrew-tap.git "$RUNNER_TEMP/tap"
+          dmg=$(ls dist/*.dmg)
+          mkdir -p "$RUNNER_TEMP/tap/Casks"
+          packaging/macos/cask.sh "$VERSION" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$dmg")" \
+            "$dmg" >"$RUNNER_TEMP/tap/Casks/ferry.rb"
+          cd "$RUNNER_TEMP/tap"
+          git add Casks/ferry.rb
+          if git diff --cached --quiet; then
+            echo "The cask is already at $VERSION"
+            exit 0
+          fi
+          git -c user.name=fanchao -c user.email=ferryapp@fanchao.dev \
+            commit -m "ferry $VERSION"
+          git push origin HEAD
