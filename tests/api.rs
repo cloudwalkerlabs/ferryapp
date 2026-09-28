@@ -126,6 +126,7 @@ impl TestServer {
                 "kdeconnect.share.request".into(),
                 "kdeconnect.ping".into(),
                 "kdeconnect.findmyphone.request".into(),
+                "kdeconnect.telephony.request_mute".into(),
             ],
             outgoing_capabilities: vec!["kdeconnect.share.request".into()],
             protocol_version: 8,
@@ -633,6 +634,52 @@ async fn ring_asks_a_paired_device_to_ring() {
     .await;
     assert!(unpaired.starts_with("HTTP/1.1 409 Conflict"));
     assert!(body(&unpaired).contains("device_not_paired"));
+
+    server.server.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_ringing_call_shows_and_its_ringer_can_be_muted() {
+    let server = TestServer::start().await;
+    let device_id = "cccccccccccccccccccccccccccccccc";
+    let mut packets = server.connect_and_pair(device_id);
+    let call_path = format!("/api/v1/devices/{device_id}/call");
+    let mute_path = format!("/api/v1/devices/{device_id}/call/mute");
+
+    let idle = request(&server, "GET", &call_path, true).await;
+    assert!(idle.starts_with("HTTP/1.1 200 OK"), "{idle}");
+    assert_eq!(body(&idle), "null");
+    let not_ringing = request(&server, "POST", &mute_path, true).await;
+    assert!(not_ringing.starts_with("HTTP/1.1 409 Conflict"));
+    assert!(body(&not_ringing).contains("not_ringing"));
+
+    let ringing = ferry::protocol::Packet::from_body(
+        1_u64,
+        "kdeconnect.telephony",
+        &serde_json::json!({"event": "ringing", "contactName": "Ana"}),
+    )
+    .unwrap();
+    server.application.handle_peer_packet(device_id, ringing);
+    let call = request(&server, "GET", &call_path, true).await;
+    let call: serde_json::Value = serde_json::from_str(body(&call)).unwrap();
+    assert_eq!(
+        call,
+        serde_json::json!({"state": "ringing", "contactName": "Ana"})
+    );
+
+    let muted = request(&server, "POST", &mute_path, true).await;
+    assert!(muted.starts_with("HTTP/1.1 202 Accepted"), "{muted}");
+    let sent = packets.try_recv().unwrap();
+    assert_eq!(sent.packet_type, "kdeconnect.telephony.request_mute");
+
+    let unknown = request(
+        &server,
+        "GET",
+        "/api/v1/devices/dddddddddddddddddddddddddddddddd/call",
+        true,
+    )
+    .await;
+    assert!(unknown.starts_with("HTTP/1.1 404 Not Found"));
 
     server.server.shutdown().await.unwrap();
 }

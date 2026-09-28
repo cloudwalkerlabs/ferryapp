@@ -255,6 +255,12 @@ Windows installer, but neither has been used on a real desktop.
   reply from the app. Not built: the `conversation` history Android sends
   for messaging apps, showing this machine's notifications on the phone,
   and per-app muting here (the phone picks which apps share).
+- Calls (`kdeconnect.telephony`: `ferry-cli call`/`mute`, a notification
+  with a Mute button while a phone rings, one per missed call) have only
+  unit and API tests, and `--demo` (the made-up phone rings, then misses
+  the call). Worth checking on a phone and on Linux and macOS: the
+  notification's Mute button, its withdrawal on answer or hang-up, and
+  that the phone's ringer really goes quiet. SMS isn't handled.
 - Battery reports were checked against the fake phone only. A low-battery
   notification (`thresholdEvent: 1`) isn't shown, and this machine doesn't
   report its own battery.

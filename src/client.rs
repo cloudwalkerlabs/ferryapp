@@ -26,6 +26,7 @@ use crate::{
         browse::{DirectoryListing, FileEntry},
         clipboard::ClipboardSnapshot,
         notifications::{Notification, NotificationPosted, NotificationRemoved},
+        telephony::{Call, CallMissed},
     },
 };
 
@@ -555,6 +556,77 @@ impl ApiClient {
         .await
     }
 
+    /// The call going on on a paired device, if any.
+    pub async fn call(&self, device_id: &str) -> Result<Option<Call>, ClientError> {
+        self.get_json(&format!("api/v1/devices/{device_id}/call"), "device")
+            .await
+    }
+
+    /// Ask a paired phone to mute its ringer for the call ringing now.
+    pub async fn mute_ringer(&self, device_id: &str) -> Result<(), ClientError> {
+        let response = self
+            .authorized(
+                self.http
+                    .post(self.url(&format!("api/v1/devices/{device_id}/call/mute"))?),
+            )
+            .send()
+            .await
+            .map_err(map_transport)?;
+        checked(response, "device").await?;
+        Ok(())
+    }
+
+    /// Like [`ApiClient::watch_devices`], for one device's calls: the call
+    /// going on, again each time it changes, and each missed call.
+    pub async fn watch_call<F>(
+        &self,
+        device_id: &str,
+        cancellation: CancellationToken,
+        mut on_update: F,
+    ) -> Result<(), ClientError>
+    where
+        F: FnMut(CallWatchUpdate) + Send,
+    {
+        // Device events also carry other changes (a battery report); only
+        // a change of call is news.
+        let mut last = None;
+        self.watch(
+            cancellation,
+            || self.call(device_id),
+            |update| {
+                let call = match update {
+                    Watched::Snapshot(call) => call,
+                    Watched::Event(event) => match &event.event {
+                        EventData::DeviceConnected(device)
+                        | EventData::DeviceUpdated(device)
+                        | EventData::DeviceDisconnected(device)
+                        | EventData::DeviceForgotten(device)
+                            if device.device_id == device_id =>
+                        {
+                            Call::of(device)
+                        }
+                        EventData::Plugin(event) => {
+                            if let Some(missed) = event
+                                .decode::<CallMissed>()
+                                .filter(|missed| missed.device_id == device_id)
+                            {
+                                on_update(CallWatchUpdate::Missed(missed));
+                            }
+                            return false;
+                        }
+                        _ => return false,
+                    },
+                };
+                if last.as_ref() != Some(&call) {
+                    last = Some(call.clone());
+                    on_update(CallWatchUpdate::Call(call));
+                }
+                false
+            },
+        )
+        .await
+    }
+
     pub async fn transfer(&self, transfer_id: Uuid) -> Result<TransferSnapshot, ClientError> {
         self.get_json(&format!("api/v1/transfers/{transfer_id}"), "transfer")
             .await
@@ -827,6 +899,12 @@ pub enum DeviceWatchUpdate {
 pub enum NotificationWatchUpdate {
     Snapshot(Vec<Notification>),
     Event(CoreEvent),
+}
+
+pub enum CallWatchUpdate {
+    /// The call going on now, or `None`.
+    Call(Option<Call>),
+    Missed(CallMissed),
 }
 
 #[derive(Debug)]

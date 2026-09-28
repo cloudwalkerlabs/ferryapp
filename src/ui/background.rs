@@ -21,9 +21,10 @@ use crate::{
             tray::{self as trays, TrayCommand, TrayItem},
             window as windowing,
         },
-        features::Features,
+        features::{Feature, Features},
         i18n::fl,
         route::Route,
+        shell::DesktopNotification,
         store::Store,
     },
 };
@@ -99,13 +100,16 @@ fn device_menu(device: &DeviceSnapshot, features: &Features) -> TrayItem {
     }
 }
 
-/// The desktop notifications the shell shows, and which pairing request
-/// each one is about.
+/// The desktop notifications the shell shows, which pairing request each
+/// one is about, and which ones features asked for.
 #[derive(Default)]
 pub struct Notifications {
     /// A notification per pending incoming request, or `None` when it
     /// arrived over a focused window and needed none.
     pairings: HashMap<Uuid, Option<u32>>,
+    /// The notifications features showed, by the feature's key, with the
+    /// message each of their buttons sends.
+    keyed: HashMap<String, (u32, Vec<Feature>)>,
     next_id: u32,
 }
 
@@ -113,8 +117,44 @@ impl Notifications {
     /// Show a notification.
     pub fn show(&mut self, notifier: &dyn Notifier, title: &str, body: &str) -> u32 {
         self.next_id += 1;
-        notifier.show(self.next_id, title, body);
+        notifier.show(self.next_id, title, body, &[]);
         self.next_id
+    }
+
+    /// Show a feature's notification, in place of the one showing under
+    /// its key.
+    pub(crate) fn show_keyed(
+        &mut self,
+        notifier: &dyn Notifier,
+        notification: DesktopNotification,
+    ) {
+        let DesktopNotification {
+            key,
+            title,
+            body,
+            actions,
+        } = notification;
+        self.withdraw_keyed(notifier, &key);
+        self.next_id += 1;
+        let (labels, messages): (Vec<_>, Vec<_>) = actions.into_iter().unzip();
+        notifier.show(self.next_id, &title, &body, &labels);
+        self.keyed.insert(key, (self.next_id, messages));
+    }
+
+    /// Withdraw the feature's notification showing under `key`, if any.
+    pub(crate) fn withdraw_keyed(&mut self, notifier: &dyn Notifier, key: &str) {
+        if let Some((id, _)) = self.keyed.remove(key) {
+            notifier.withdraw(id);
+        }
+    }
+
+    /// What button `action` of notification `id` does, while the feature
+    /// that showed it hasn't withdrawn it.
+    pub(crate) fn action(&self, id: u32, action: usize) -> Option<Feature> {
+        self.keyed
+            .values()
+            .find(|(shown, _)| *shown == id)
+            .and_then(|(_, messages)| messages.get(action).cloned())
     }
 
     /// Follow the pending incoming pairing requests: notify about new ones
@@ -143,6 +183,7 @@ impl Notifications {
                     self.next_id,
                     &fl!("notify-pairing-title"),
                     &fl!("notify-pairing-body", name = pairing.device_name.as_str()),
+                    &[],
                 );
                 self.next_id
             });
@@ -236,6 +277,13 @@ impl App {
             DesktopEvent::TrayClicked
             | DesktopEvent::NotificationClicked
             | DesktopEvent::ShowRequested => self.show_window(),
+            DesktopEvent::NotificationAction { id, action } => {
+                match self.notifications.action(id, action) {
+                    // As from the tray: the window stays as it is.
+                    Some(feature) => Task::done(Message::Feature(feature, Origin::Tray)),
+                    None => Task::none(),
+                }
+            }
             DesktopEvent::TrayChose(command) => self.tray_command(command),
             DesktopEvent::TrayDropped(paths) => self.dropped_on_tray(paths),
             DesktopEvent::TrayAvailable(available) => {
@@ -707,6 +755,50 @@ mod tests {
         core.cancel_pairing(pairing).unwrap();
         settle(&mut app, Message::Reload).await;
         assert!(fakes.notified().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_ringing_call_notifies_with_a_mute_button_until_answered() {
+        use crate::plugins::telephony::{MUTE_PACKET_TYPE, PACKET_TYPE, TelephonyPlugin};
+
+        let fakes = Fakes::default();
+        let (core, _plugin, _commands) =
+            crate::core::testing::handle_with_plugin(TelephonyPlugin::default());
+        let mut app = running_on_desktop(core.clone(), &fakes);
+        let mut sent = peer(&mut app, &[MUTE_PACKET_TYPE]).await;
+        let call = |body: serde_json::Value| {
+            core.handle_peer_packet(
+                testing::PEER_ID,
+                crate::protocol::Packet::from_body(1_u64, PACKET_TYPE, &body).unwrap(),
+            );
+        };
+
+        // Shown over the focused window too: the phone is still ringing.
+        call(serde_json::json!({"event": "ringing", "contactName": "Ana"}));
+        settle(&mut app, Message::Reload).await;
+        assert_eq!(fakes.notified(), ["Incoming call from Ana"]);
+        let (id, labels) = fakes.notifier.actions.lock().unwrap().pop_first().unwrap();
+        assert_eq!(labels, ["Mute"]);
+
+        settle(
+            &mut app,
+            Message::Desktop(DesktopEvent::NotificationAction { id, action: 0 }),
+        )
+        .await;
+        assert_eq!(sent.try_recv().unwrap().packet_type, MUTE_PACKET_TYPE);
+        // Muted quietly, as from the tray.
+        assert_eq!(fakes.notified(), ["Incoming call from Ana"]);
+
+        call(serde_json::json!({"event": "talking", "contactName": "Ana"}));
+        settle(&mut app, Message::Reload).await;
+        assert!(fakes.notified().is_empty());
+        // A stale button does nothing.
+        settle(
+            &mut app,
+            Message::Desktop(DesktopEvent::NotificationAction { id, action: 0 }),
+        )
+        .await;
+        assert!(sent.try_recv().is_err());
     }
 
     #[tokio::test(start_paused = true)]

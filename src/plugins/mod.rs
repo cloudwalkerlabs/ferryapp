@@ -2,7 +2,7 @@
 //!
 //! Each feature implements [`crate::core::Plugin`] and is listed in
 //! [`builtin`]: ping, find my phone, battery, connectivity, clipboard,
-//! share, browse and notifications.
+//! share, browse, notifications and telephony.
 //! The set is fixed at compile time; nothing is loaded at runtime. A plugin
 //! reaches the core through its [`crate::core::PluginContext`], never another
 //! plugin. See `docs/ARCHITECTURE.md` §2.
@@ -15,6 +15,7 @@ pub mod findmyphone;
 pub mod notifications;
 pub mod ping;
 pub mod share;
+pub mod telephony;
 
 use std::sync::Arc;
 
@@ -53,6 +54,7 @@ pub fn builtin_parts(clipboard: Arc<dyn clipboard::ClipboardService + Send + Syn
             Arc::new(share::SharePlugin),
             browse.clone(),
             notifications.clone(),
+            Arc::new(telephony::TelephonyPlugin::default()),
         ],
         clipboard,
         browse,
@@ -92,7 +94,8 @@ mod tests {
                         browse::PACKET_TYPE,
                         battery::PACKET_TYPE,
                         connectivity::PACKET_TYPE,
-                        notifications::PACKET_TYPE
+                        notifications::PACKET_TYPE,
+                        telephony::PACKET_TYPE,
                     ]
                 ]
                 .concat()
@@ -109,6 +112,7 @@ mod tests {
                         notifications::REQUEST_PACKET_TYPE,
                         notifications::REPLY_PACKET_TYPE,
                         notifications::ACTION_PACKET_TYPE,
+                        telephony::MUTE_PACKET_TYPE,
                     ]
                 ]
                 .concat()

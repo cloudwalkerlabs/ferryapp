@@ -322,6 +322,19 @@ notifications-error-notification_not_dismissable = 无法在此处忽略该通�
 notifications-error-unknown_notification_action = 该通知已没有这个按钮。
 notifications-error-empty_reply = 请输入消息。
 
+## A phone's calls (src/ui/features/telephony.rs)
+
+telephony-incoming-call = { $caller } 来电
+telephony-missed-call = { $caller } 的未接来电
+telephony-unknown-caller = 未知来电者
+telephony-mute = 静音
+telephony-mute-action = 铃声静音
+telephony-muted = 已让 { $name } 将铃声静音。
+telephony-mute-failed = 无法将 { $name } 静音
+telephony-error-not_ringing = 现在没有来电在响铃。
+telephony-status-ringing = 来电中
+telephony-status-talking = 通话中
+
 ## Browsing a device's files (src/ui/features/browse/)
 
 browse-action = 浏览文件

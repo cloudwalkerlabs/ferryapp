@@ -29,7 +29,8 @@ The app lists your paired devices with their battery, pairs with a code
 both sides confirm, sends files (from a picker, dropped on the window,
 or on macOS dropped on the menu bar icon), pings and rings devices, shares
 the clipboard, browses a phone's files, shows a phone's notifications
-(reply, dismiss, press their buttons), and keeps running in the tray. It
+(reply, dismiss, press their buttons), tells you when a phone rings (and
+mutes it) or misses a call, and keeps running in the tray. It
 follows the system's light or dark theme.
 
 <table>
@@ -106,6 +107,9 @@ variables for a script run elsewhere.
 - `ferry-cli notifications <device-id> [ls [--watch] | reply <id> <message> |
   action <id> <label> | dismiss <id>]` - List a phone's notifications, or
   answer, press a button on, or dismiss one.
+- `ferry-cli call <device-id> [--watch]` - Show the call going on on a phone
+  (`--watch` also prints missed calls).
+- `ferry-cli mute <device-id>` - Mute a phone's ringer while a call rings.
 - `ferry-cli clipboard get|set <text>|watch|send <device-id>` - Control text
   sync, or send the clipboard to one device now.
 
@@ -134,7 +138,7 @@ src/
 ├── store/           # the SQLite store: configs, paired devices, migrations
 ├── transport/       # UDP discovery, TCP/TLS, auxiliary payload connections
 ├── core(.rs/*)      # devices, connections, pairing, transfers, settings, events, plugin API
-├── plugins/         # features: ping, findmyphone, battery, connectivity, clipboard, share, browse, notifications
+├── plugins/         # features: ping, findmyphone, battery, connectivity, clipboard, share, browse, notifications, telephony
 ├── daemon(.rs/*)    # composition root: core + built-in plugins + LAN + API switch
 ├── api(.rs/*)       # local HTTP control plane (optional token auth)
 ├── client.rs        # HTTP client used by the CLI

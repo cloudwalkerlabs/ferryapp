@@ -65,6 +65,29 @@ impl fmt::Debug for PickFiles {
     }
 }
 
+/// A desktop notification a feature keeps up to date, shown even over a
+/// focused window: a new one under the same `key` replaces it, and
+/// [`withdraw_notification`] takes it away. Its buttons (`actions`, by
+/// label) send their message as from the tray, where the system shows
+/// buttons at all.
+#[derive(Debug, Clone)]
+pub(crate) struct DesktopNotification {
+    pub key: String,
+    pub title: String,
+    pub body: String,
+    pub actions: Vec<(String, Feature)>,
+}
+
+/// Show `notification`, in place of the one under its key.
+pub(crate) fn show_notification(notification: DesktopNotification) -> Task<Message> {
+    Task::done(Message::ShowNotification(notification))
+}
+
+/// Withdraw the notification shown under `key`, if it still shows.
+pub(crate) fn withdraw_notification(key: impl Into<String>) -> Task<Message> {
+    Task::done(Message::WithdrawNotification(key.into()))
+}
+
 /// A toast with no button.
 pub(crate) fn toast(origin: Origin, text: impl Into<String>) -> Task<Message> {
     Task::done(Message::Toast {
