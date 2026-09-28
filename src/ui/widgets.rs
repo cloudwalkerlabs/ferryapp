@@ -427,17 +427,17 @@ pub fn gap(size: impl Into<Length> + Copy) -> Space {
     Space::new().width(size).height(size)
 }
 
-/// The app's font, Figtree, bundled so text looks the same on every
+/// The app's font, Instrument Sans, bundled so text looks the same on every
 /// system. It covers Latin only: cosmic-text draws other scripts, such as
 /// CJK, in a system font.
-pub const FONT: Font = Font::with_name("Figtree");
+pub const FONT: Font = Font::with_name("Instrument Sans");
 
-/// Figtree's faces, one per weight the app draws with: [`FONT`] and
+/// Instrument Sans's faces, one per weight the app draws with: [`FONT`] and
 /// [`bold`]. cosmic-text matches the weight exactly, so a weight added
 /// here needs its face too. Licensed under the OFL (`assets/fonts/OFL.txt`).
 pub const FONT_FACES: [&[u8]; 2] = [
-    include_bytes!("../../assets/fonts/Figtree-Regular.ttf"),
-    include_bytes!("../../assets/fonts/Figtree-Bold.ttf"),
+    include_bytes!("../../assets/fonts/InstrumentSans-Regular.ttf"),
+    include_bytes!("../../assets/fonts/InstrumentSans-Bold.ttf"),
 ];
 
 /// The app's bold font, for titles.

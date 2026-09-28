@@ -161,6 +161,26 @@ mod tests {
         assert!(ui.into_messages().next().is_none());
     }
 
+    /// The successful incoming request used in the documentation gallery.
+    #[test]
+    fn snapshot_pairing_request() {
+        let first = request(1, "Pixel 8a");
+        let pending = [&first];
+        let store = testing::store("Demo desktop", vec![testing::device("Pixel 8a")]);
+        testing::snapshot("pairing-request", (440.0, 620.0), || {
+            modal(
+                crate::ui::pages::devices::view(
+                    &store,
+                    &|_| Vec::new(),
+                    |_| Asked::Reject(first.id),
+                    Asked::Reject(first.id),
+                ),
+                view(&pending, false, None, &ACTIONS).unwrap(),
+                None,
+            )
+        });
+    }
+
     #[test]
     fn snapshot_incoming_prompt() {
         let (first, second) = (request(1, "Pixel 8a"), request(2, "Tab"));

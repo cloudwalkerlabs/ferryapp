@@ -243,7 +243,7 @@ fn clamp_digits(digits: usize) -> i16 {
 }
 
 /// CLDR puts a narrow no-break space (U+202F) before "PM" and between
-/// French digit groups. The bundled Figtree font has no glyph for it, so
+/// French digit groups. The bundled Instrument Sans font has no glyph for it, so
 /// it becomes a no-break space, which it has and which also doesn't wrap.
 fn without_narrow_spaces(text: String) -> String {
     if text.contains('\u{202F}') {

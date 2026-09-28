@@ -9,7 +9,21 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="pico.classless.min.css">
 <style>
-  :root { --pico-font-size: 100%; }
+  @font-face {
+    font-family: "Instrument Sans";
+    src: url("fonts/InstrumentSans-Regular.woff2") format("woff2");
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "Instrument Sans";
+    src: url("fonts/InstrumentSans-Bold.woff2") format("woff2");
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+  }
+  :root { --pico-font-size: 100%; --pico-font-family-sans-serif: "Instrument Sans", system-ui, sans-serif; }
   header hgroup { display: flex; align-items: center; gap: 1rem; }
   header hgroup img { width: 64px; height: 64px; }
   header hgroup h1, header hgroup p { margin: 0; }
@@ -127,39 +141,64 @@ sha256sum --check --ignore-missing SHA256SUMS</code></pre>
 
 <section>
   <h2>Screenshots</h2>
+  <p>Screenshots follow your system’s light or dark appearance.</p>
   <div class="shots">
     <figure>
-      <img src="img/devices.webp" width="880" height="1240" alt="The device list: a phone with its battery, and a desktop">
+      <picture>
+        <source srcset="img/devices-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/devices-light.webp" width="880" height="1240" alt="The device list: a phone with its battery, and a desktop">
+      </picture>
       <figcaption>Paired devices</figcaption>
     </figure>
     <figure>
-      <img src="img/device.webp" width="880" height="1240" alt="A device's page: ping, ring, send clipboard, send files, recent transfers">
+      <picture>
+        <source srcset="img/device-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/device-light.webp" width="880" height="1640" alt="A device's page: ping, ring, send clipboard, send files, recent transfers">
+      </picture>
       <figcaption>One device</figcaption>
     </figure>
     <figure>
-      <img src="img/pairing-request.webp" width="880" height="1240" alt="A pairing request with the verification code to compare" loading="lazy">
+      <picture>
+        <source srcset="img/pairing-request-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/pairing-request-light.webp" width="880" height="1240" alt="A pairing request with the verification code to compare" loading="lazy">
+      </picture>
       <figcaption>Pairing</figcaption>
     </figure>
     <figure>
-      <img src="img/add-device.webp" width="880" height="1240" alt="Add device: devices found on the network, and add by IP address" loading="lazy">
+      <picture>
+        <source srcset="img/add-device-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/add-device-light.webp" width="880" height="1240" alt="Add device: devices found on the network, and add by IP address" loading="lazy">
+      </picture>
       <figcaption>Finding devices</figcaption>
     </figure>
     <figure>
-      <img src="img/transfers.webp" width="880" height="1240" alt="Transfers in both directions, one in progress" loading="lazy">
+      <picture>
+        <source srcset="img/transfers-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/transfers-light.webp" width="880" height="1240" alt="Transfers in both directions, one in progress" loading="lazy">
+      </picture>
       <figcaption>Transfers</figcaption>
     </figure>
     <figure>
-      <img src="img/settings.webp" width="880" height="1240" alt="Settings: device name, download folder, clipboard sync, tray" loading="lazy">
+      <picture>
+        <source srcset="img/settings-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/settings-light.webp" width="880" height="1680" alt="Settings: device name, download folder, clipboard sync, tray" loading="lazy">
+      </picture>
       <figcaption>Settings</figcaption>
     </figure>
   </div>
   <h3>Browsing a phone's files</h3>
   <div class="shots wide">
     <figure>
-      <img src="img/files.webp" width="880" height="691" alt="A phone's camera folder, with a photo's actions open" loading="lazy">
+      <picture>
+        <source srcset="img/files-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/files-light.webp" width="880" height="840" alt="A phone's example folder, with a photo's actions open" loading="lazy">
+      </picture>
     </figure>
     <figure>
-      <img src="img/file-preview.webp" width="880" height="691" alt="An image preview" loading="lazy">
+      <picture>
+        <source srcset="img/file-preview-dark.webp" media="(prefers-color-scheme: dark)">
+        <img src="img/file-preview-light.webp" width="880" height="636" alt="An image preview" loading="lazy">
+      </picture>
     </figure>
   </div>
 </section>

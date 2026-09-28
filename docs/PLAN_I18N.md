@@ -237,7 +237,7 @@ Anything a later phase must know, one line each, newest last.
   "24.09.2026, 14:03", "2026年9月24日 14:03"); browse's Modified column
   (168 px) fits en-US's; check zh-CN and de in phase 6's snapshots.
 - 3: CLDR's narrow no-break space (U+202F, before "PM" and in French
-  grouping) is turned into U+00A0, since Figtree has no glyph for it;
+  grouping) is turned into U+00A0, since the bundled font has no glyph for it;
   tests expecting a time use `\u{A0}`. `1 bytes` is now `1 byte`
   (plural), and counts over 999 are grouped.
 - 3: new keys `widget-size-bytes`/`-kb`/`-mb`/`-gb`/`-tb` and
@@ -267,7 +267,7 @@ Anything a later phase must know, one line each, newest last.
   Fluent's `Filtering`, a system asking for `en-GB` could otherwise land on
   it. Phase 7's language list must leave it out, or show it only for
   testing. Brackets are `{ "[" }` string literals, which Fluent doesn't
-  isolate. The accented letters are all Latin-1/Extended-A (Figtree has
+  isolate. The accented letters are all Latin-1/Extended-A (Instrument Sans has
   them); numbers format as English.
 - 4: unit tests render en-XA through `ui::i18n::in_pseudo_locale`, which
   makes `LOADER` (now a `Deref` wrapper, `ui::i18n::Loader`) return an
@@ -345,7 +345,7 @@ Anything a later phase must know, one line each, newest last.
   no 700 face, and cosmic-text 0.15's fallback only takes fonts of the
   exact weight, so each glyph lands on whichever Bold font has it. Regular
   text is fine. Not fixed (iced is pinned; HANDOFF "Traps"); options are a
-  cosmic-text fix upstream, or drawing titles in Semibold with a Figtree
+  cosmic-text fix upstream, or drawing titles in Semibold with an Instrument Sans
   Semibold face bundled. Linux's Noto Sans CJK and Windows' YaHei have
   bold faces, so check there before deciding.
 - 6 was checked on macOS, as 5 was: the same `tests/lan.rs` loopback
