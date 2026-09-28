@@ -6,7 +6,7 @@
 # Run workflow), leaving the packages as run artifacts.
 # After a full release it also publishes the website (site/) with the apt
 # repository, the Homebrew cask (simophin/homebrew-tap) and the AUR package
-# (ferry-bin). The scripts it runs are in packaging/.
+# (ferry-app-bin). The scripts it runs are in packaging/.
 #
 # Secrets (docs/adr/0001, "Packaging"; without them a run by hand still
 # builds, with an ad-hoc signed app):
@@ -14,7 +14,7 @@
 #       Signing" certificate, base64, and its password
 #   RELEASE_GPG_KEY, RELEASE_GPG_PASSPHRASE  the release key's signing
 #       subkey (packaging/release_key.sh) and its passphrase
-#   AUR_SSH_KEY  an SSH key of the AUR account that maintains ferry-bin
+#   AUR_SSH_KEY  an SSH key of the AUR account that maintains ferry-app-bin
 #   TAP_DEPLOY_KEY  a deploy key of simophin/homebrew-tap, with write access
 name: Build
 
@@ -418,10 +418,10 @@ jobs:
           chown -R builder "$build"
           su builder -c "cd $build && makepkg --nodeps --noconfirm && makepkg --printsrcinfo >.SRCINFO"
           cat "$build/.SRCINFO"
-          pacman -U --noconfirm "$build"/ferry-bin-*.pkg.tar.zst
+          pacman -U --noconfirm "$build"/ferry-app-bin-*.pkg.tar.zst
           ferry-cli --version
           test -x /usr/bin/ferry-gui
-          test -s /usr/share/licenses/ferry-bin/LICENSE
+          test -s /usr/share/licenses/ferry-app-bin/LICENSE
       - uses: actions/upload-artifact@v7
         with:
           name: arch
@@ -516,7 +516,7 @@ jobs:
       - id: deployment
         uses: actions/deploy-pages@v5
 
-  # Pushes the release's PKGBUILD to the AUR as ferry-bin, once its .debs
+  # Pushes the release's PKGBUILD to the AUR as ferry-app-bin, once its .debs
   # are attached for it to download.
   aur:
     name: Publish to the AUR
@@ -545,7 +545,7 @@ jobs:
           git config --global --add safe.directory '*'
           # Cloning a package that doesn't exist yet gives an empty
           # repository; the push creates it.
-          git clone ssh://aur@aur.archlinux.org/ferry-bin.git aur
+          git clone ssh://aur@aur.archlinux.org/ferry-app-bin.git aur
           cp dist/PKGBUILD aur/
           # makepkg refuses to run as root.
           useradd -m builder
@@ -554,7 +554,7 @@ jobs:
           cd aur
           git add PKGBUILD .SRCINFO
           if git diff --cached --quiet; then
-            echo "ferry-bin is already at $VERSION"
+            echo "ferry-app-bin is already at $VERSION"
             exit 0
           fi
           git -c user.name=fanchao -c user.email=ferryapp@fanchao.dev \
