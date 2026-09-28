@@ -23,6 +23,25 @@ against KDE Connect for Android, not yet against KDE Connect on desktop.
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#11-known-gaps) for known
 gaps and [`docs/HANDOFF.md`](docs/HANDOFF.md) for what to build next.
 
+### Install
+
+Packages for each release are on the
+[website](https://simophin.github.io/ferryapp/#download) and
+[GitHub Releases](https://github.com/simophin/ferryapp/releases).
+
+On macOS, install from Terminal:
+
+```sh
+curl -fsSL https://simophin.github.io/ferryapp/install.sh | sh
+```
+
+The script ([`packaging/macos/install.sh`](packaging/macos/install.sh))
+downloads the release's DMG, copies `Ferry.app` into `/Applications` (or
+`~/Applications`) and links `ferry-cli` into `/usr/local/bin` when it can.
+The app isn't notarized, so a DMG downloaded in a browser is blocked until
+you allow it in System Settings → Privacy & Security; files `curl`
+downloads aren't quarantined, so the script's copy opens directly.
+
 ### Desktop app
 
 The app lists your paired devices with their battery, pairs with a code

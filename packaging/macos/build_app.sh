@@ -18,7 +18,8 @@
 #
 # The bundle is ad-hoc signed and not sandboxed (docs/adr/0001,
 # "Deliberate differences"): Gatekeeper blocks it until the user allows it in
-# System Settings → Privacy & Security.
+# System Settings → Privacy & Security. install.sh installs it from the DMG
+# without that step.
 set -eu
 
 if [ $# -lt 5 ]; then
