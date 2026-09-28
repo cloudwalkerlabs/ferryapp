@@ -223,7 +223,10 @@ CC_aarch64_apple_darwin=fakecc AR_aarch64_apple_darwin=fakear \
 
 **Packaging.** Nothing is signed or notarized; the macOS app has only an
 ad-hoc signature. CI built the macOS and Windows apps and installed the
-Windows installer, but neither has been used on a real desktop.
+Windows installer, but neither has been used on a real desktop. The macOS
+install script (`packaging/macos/install.sh`, served by the website as
+`install.sh`) gets past Gatekeeper because `curl` doesn't quarantine what it
+downloads; it hasn't been run on a real Mac yet.
 
 **Browsing a device's files** (ARCHITECTURE §12, ADR 0008):
 
