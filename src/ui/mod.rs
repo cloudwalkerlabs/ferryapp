@@ -232,6 +232,18 @@ pub(crate) enum Message {
     OpenFailed(PathBuf, String),
     /// Open a web page in the system browser.
     OpenLink(&'static str),
+    /// Open a web link a device shared in the browser, and say so in a
+    /// notification titled with the device's name. Never logged.
+    OpenSharedLink {
+        url: String,
+        device_name: String,
+    },
+    /// Put text a device shared on the clipboard, and say so in a
+    /// notification titled with the device's name. Never logged.
+    CopySharedText {
+        text: String,
+        device_name: String,
+    },
     /// Ask for a new name for this computer.
     Rename,
     /// Pick the folder received files are saved in.
@@ -651,6 +663,10 @@ impl App {
                 )
             }
             Message::OpenLink(url) => self.open_link(url),
+            Message::OpenSharedLink { url, device_name } => self.open_shared_link(url, device_name),
+            Message::CopySharedText { text, device_name } => {
+                self.copy_shared_text(text, device_name)
+            }
             Message::Rename => self.rename(),
             Message::ChooseDownloadDir => self.choose_download_dir(),
             Message::DownloadDirPicked(Some(folder)) => self.update_settings(SettingsPatch {

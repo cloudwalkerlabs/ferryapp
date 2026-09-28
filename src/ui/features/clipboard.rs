@@ -81,6 +81,27 @@ impl ClipboardUi {
         Self { plugin }
     }
 
+    /// Put `text` on the clipboard, as [`ClipboardPlugin::set_text`] does,
+    /// off the UI thread: the desktop clipboard can block. `then` gets
+    /// whether it was.
+    pub(crate) fn copy(
+        &self,
+        ctx: &UiContext,
+        text: String,
+        then: impl FnOnce(bool) -> ui::Message + Send + 'static,
+    ) -> Task<ui::Message> {
+        let plugin = self.plugin.clone();
+        let plugin_ctx = ctx.plugin_context();
+        ctx.spawn(
+            async move {
+                tokio::task::spawn_blocking(move || plugin.set_text(&plugin_ctx, text).is_ok())
+                    .await
+                    .unwrap_or(false)
+            },
+            then,
+        )
+    }
+
     pub(crate) fn update(
         &mut self,
         ctx: &UiContext,

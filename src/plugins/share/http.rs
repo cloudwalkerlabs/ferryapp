@@ -5,7 +5,9 @@ use axum::{
     routing::post,
 };
 
-use super::send_file;
+use serde::Deserialize;
+
+use super::{ShareTextError, send_file, send_text, send_url};
 use crate::{
     api::{
         ApiProblem, Forwarded, TransferQuery, UploadIdleTimeout, declared_size, forward_upload,
@@ -13,6 +15,57 @@ use crate::{
     },
     core::{PluginContext, TransferSnapshot},
 };
+
+pub(super) fn routes(ctx: PluginContext) -> Router {
+    Router::new()
+        .route("/devices/{device_id}/share/text", post(post_text))
+        .route("/devices/{device_id}/share/url", post(post_url))
+        .with_state(ctx)
+}
+
+impl From<ShareTextError> for ApiProblem {
+    fn from(error: ShareTextError) -> Self {
+        let code = error.code();
+        match error {
+            ShareTextError::Empty => ApiProblem::bad_request(code),
+            ShareTextError::TooLarge { .. } => {
+                ApiProblem::new(StatusCode::PAYLOAD_TOO_LARGE, "Payload too large", code)
+            }
+            ShareTextError::Core(error) => error.into(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ShareTextRequest {
+    text: String,
+}
+
+/// Send text to a paired, connected device: `{"text": "..."}`, `202`.
+async fn post_text(
+    State(ctx): State<PluginContext>,
+    Path(device_id): Path<String>,
+    Json(request): Json<ShareTextRequest>,
+) -> Result<StatusCode, ApiProblem> {
+    send_text(&ctx, &device_id, request.text)?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Deserialize)]
+struct ShareUrlRequest {
+    url: String,
+}
+
+/// Send a link to a paired, connected device, which opens it:
+/// `{"url": "..."}`, `202`.
+async fn post_url(
+    State(ctx): State<PluginContext>,
+    Path(device_id): Path<String>,
+    Json(request): Json<ShareUrlRequest>,
+) -> Result<StatusCode, ApiProblem> {
+    send_url(&ctx, &device_id, &request.url)?;
+    Ok(StatusCode::ACCEPTED)
+}
 
 pub(super) fn streaming_routes(ctx: PluginContext) -> Router {
     Router::new()

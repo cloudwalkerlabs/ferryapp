@@ -12,7 +12,14 @@
 //! resource; the type is modeled and round-trip tested for protocol
 //! completeness and future batch support, but it is never sent by this build.
 //!
-//! Never log a `filename` value or transferred file contents.
+//! The same `kdeconnect.share.request` type also carries shared text or a
+//! link, with no payload: a body of just `text` or just `url` (KDE Connect's
+//! `SharePlugin::shareText`/`shareUrl` on the desktop, `sendText`/`sendUrls`
+//! on Android). A receiver tells them apart by which field is there,
+//! checking `filename` first, then `text`, then `url`.
+//!
+//! Never log a `filename` value, transferred file contents, or shared text
+//! or links.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value};
@@ -33,6 +40,18 @@ pub struct ShareRequestBody {
     pub last_modified: Option<i64>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// Body of a `kdeconnect.share.request` carrying text rather than a file.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareTextBody {
+    pub text: String,
+}
+
+/// Body of a `kdeconnect.share.request` carrying a link rather than a file.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareUrlBody {
+    pub url: String,
 }
 
 /// Body of a `kdeconnect.share.request.update` packet.
@@ -85,6 +104,16 @@ pub fn build_request_packet(
     Ok(packet)
 }
 
+/// Build a `kdeconnect.share.request` sharing `text`, with no payload.
+pub fn build_text_packet(id: impl Into<Number>, text: String) -> Result<Packet, BodyError> {
+    Packet::from_body(id, PACKET_TYPE, &ShareTextBody { text })
+}
+
+/// Build a `kdeconnect.share.request` sharing a link, with no payload.
+pub fn build_url_packet(id: impl Into<Number>, url: String) -> Result<Packet, BodyError> {
+    Packet::from_body(id, PACKET_TYPE, &ShareUrlBody { url })
+}
+
 /// Build a `kdeconnect.share.request.update` packet. Not sent by this build's
 /// single-file transfer path; provided for protocol completeness.
 pub fn build_update_packet(
@@ -131,6 +160,26 @@ mod tests {
     fn request_packet_omits_last_modified_when_absent() {
         let packet = build_request_packet(1_u64, "notes.txt".into(), None, 0, 1716).unwrap();
         assert!(!packet.body.contains_key("lastModified"));
+    }
+
+    #[test]
+    fn text_and_url_packets_carry_only_their_field_and_no_payload() {
+        let text = build_text_packet(1_u64, "hello".into()).unwrap();
+        assert_eq!(text.packet_type, PACKET_TYPE);
+        assert_eq!(
+            serde_json::Value::Object(text.body.clone()),
+            serde_json::json!({"text": "hello"})
+        );
+        assert_eq!(text.payload_size, None);
+        assert_eq!(text.payload_transfer_info, None);
+
+        let url = build_url_packet(1_u64, "https://kde.org".into()).unwrap();
+        assert_eq!(url.packet_type, PACKET_TYPE);
+        assert_eq!(
+            serde_json::Value::Object(url.body.clone()),
+            serde_json::json!({"url": "https://kde.org"})
+        );
+        assert_eq!(url.payload_size, None);
     }
 
     #[test]

@@ -144,9 +144,21 @@ impl Features {
     pub(crate) fn on_event(&mut self, ctx: &UiContext, event: &CoreEvent) -> Task<Message> {
         Task::batch([
             ping::on_event(event),
+            share::on_event(event),
             self.browse.on_event(ctx, event),
             self.notifications.on_event(event),
         ])
+    }
+
+    /// Put `text` on the clipboard as if copied here (so it syncs), off
+    /// the UI thread; `then` gets whether it was.
+    pub(crate) fn copy_text(
+        &self,
+        ctx: &UiContext,
+        text: String,
+        then: impl FnOnce(bool) -> Message + Send + 'static,
+    ) -> Task<Message> {
+        self.clipboard.copy(ctx, text, then)
     }
 
     /// The window now shows `route`, whoever's page it is.

@@ -288,6 +288,19 @@ share-drop-hint = Ablegen, um an { $name } zu senden
 share-pick-title = Dateien an { $name } senden
 share-failed = Senden an { $name } fehlgeschlagen
 share-error-file-unreadable = Die Datei konnte nicht gelesen werden.
+share-text-action = Text senden
+share-text-title = Text oder Link senden
+share-text-to = An { $name }
+share-text-label = Text oder Link
+share-text-send = Senden
+share-error-share_empty = Gib den Text oder Link ein, der gesendet werden soll.
+share-error-share_too_large = Der Text ist zu lang zum Senden.
+share-text-sent = Text an { $name } gesendet.
+share-link-sent = Link an { $name } gesendet.
+share-text-copied = Geteilter Text in die Zwischenablage kopiert.
+share-text-not-copied = Geteilter Text war zu lang für die Zwischenablage.
+share-link-opened = Geteilter Link im Browser geöffnet.
+share-link-failed = Geteilter Link konnte nicht im Browser geöffnet werden.
 
 ## The clipboard (src/ui/features/clipboard.rs)
 

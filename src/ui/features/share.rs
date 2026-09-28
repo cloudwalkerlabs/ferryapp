@@ -1,5 +1,6 @@
-//! Share's UI: the *Send files* action, and files dropped on a device that
-//! takes them.
+//! Share's UI: the *Send files* and *Send text* actions, files dropped on
+//! a device that takes them, and what a device shares with this computer:
+//! a web link opens in the browser, text goes on the clipboard.
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -8,14 +9,17 @@ use iced_fonts::lucide;
 
 use super::{DeviceAction, DropTarget, Feature};
 use crate::{
-    core::{DeviceReachability, DeviceSnapshot},
-    plugins::share::{PACKET_TYPE, SendPathError, send_path},
+    core::{CoreEvent, DeviceReachability, DeviceSnapshot, EventData},
+    plugins::share::{
+        PACKET_TYPE, ReceivedShare, SendPathError, ShareTextError, SharedContent, is_web_link,
+        send_path, send_text, send_url,
+    },
     ui::{
         self, Origin,
         context::UiContext,
         error::{FileBatch, describe_code, describe_error, describe_file_failures},
         i18n::fl,
-        shell,
+        shell::{self, Prompt},
     },
 };
 
@@ -36,21 +40,66 @@ pub enum Message {
         name: String,
         failures: Option<String>,
     },
+    /// Ask for text or a link to send to the device.
+    Compose { device_id: String, name: String },
+    /// Send the device this text, as a link if it is a web link.
+    SendText {
+        device_id: String,
+        name: String,
+        text: String,
+    },
 }
 
-/// Listed for every device, enabled while it takes files.
+/// Listed for every device, enabled while it takes files (and so text).
 pub fn device_actions(device: &DeviceSnapshot) -> Vec<DeviceAction> {
-    vec![DeviceAction {
-        id: "send-files",
-        label: fl!("share-action"),
-        icon: lucide::file_up,
-        enabled: accepts_files(device),
-        visible_in_tray: true,
-        message: Feature::Share(Message::Pick {
-            device_id: device.device_id.clone(),
-            name: device.device_name.clone(),
-        }),
-    }]
+    let enabled = accepts_files(device);
+    vec![
+        DeviceAction {
+            id: "send-files",
+            label: fl!("share-action"),
+            icon: lucide::file_up,
+            enabled,
+            visible_in_tray: true,
+            message: Feature::Share(Message::Pick {
+                device_id: device.device_id.clone(),
+                name: device.device_name.clone(),
+            }),
+        },
+        DeviceAction {
+            id: "send-text",
+            label: fl!("share-text-action"),
+            icon: lucide::message_square_text,
+            enabled,
+            visible_in_tray: true,
+            message: Feature::Share(Message::Compose {
+                device_id: device.device_id.clone(),
+                name: device.device_name.clone(),
+            }),
+        },
+    ]
+}
+
+/// What a device shared: the shell opens a web link in the browser and
+/// copies text to the clipboard, each with a notification saying so.
+/// Never logged.
+pub(crate) fn on_event(event: &CoreEvent) -> Task<ui::Message> {
+    let EventData::Plugin(event) = &event.event else {
+        return Task::none();
+    };
+    let Some(ReceivedShare {
+        device_name,
+        content,
+        ..
+    }) = event.decode::<ReceivedShare>()
+    else {
+        return Task::none();
+    };
+    match content {
+        SharedContent::Link { url } => Task::done(ui::Message::OpenSharedLink { url, device_name }),
+        SharedContent::Text { text } => {
+            Task::done(ui::Message::CopySharedText { text, device_name })
+        }
+    }
 }
 
 /// Files dropped on a device that takes them are sent to it.
@@ -122,6 +171,54 @@ pub(crate) fn update(ctx: &UiContext, message: Message, origin: Origin) -> Task<
             failures: Some(text),
         } => shell::failed(origin, fl!("share-failed", name = name.as_str()), text),
         Message::Sent { failures: None, .. } => Task::none(),
+        Message::Compose { device_id, name } => shell::prompt(Prompt {
+            title: fl!("share-text-title"),
+            body: Some(fl!("share-text-to", name = name.as_str())),
+            label: fl!("share-text-label"),
+            initial: String::new(),
+            selection: None,
+            confirm_label: fl!("share-text-send"),
+            validate: Arc::new(|text: &str| {
+                text.trim()
+                    .is_empty()
+                    .then(|| fl!("share-error-share_empty"))
+            }),
+            then: Arc::new(move |text| {
+                Feature::Share(Message::SendText {
+                    device_id: device_id.clone(),
+                    name: name.clone(),
+                    text,
+                })
+            }),
+            origin,
+        }),
+        Message::SendText {
+            device_id,
+            name,
+            text,
+        } => {
+            // Queues the packet; nothing here waits on the network.
+            let plugin_ctx = ctx.plugin_context();
+            let (sent, done) = if is_web_link(&text) {
+                (
+                    send_url(&plugin_ctx, &device_id, &text),
+                    fl!("share-link-sent", name = name.as_str()),
+                )
+            } else {
+                (
+                    send_text(&plugin_ctx, &device_id, text),
+                    fl!("share-text-sent", name = name.as_str()),
+                )
+            };
+            match sent {
+                Ok(()) => shell::done(origin, done),
+                Err(error) => shell::failed(
+                    origin,
+                    fl!("share-failed", name = name.as_str()),
+                    describe_text_error(&error),
+                ),
+            }
+        }
     }
 }
 
@@ -132,6 +229,15 @@ fn accepts_files(device: &DeviceSnapshot) -> bool {
             .incoming_capabilities
             .iter()
             .any(|capability| capability == PACKET_TYPE)
+}
+
+/// A sentence for the user about why text or a link wasn't sent.
+fn describe_text_error(error: &ShareTextError) -> String {
+    match error {
+        ShareTextError::Empty => fl!("share-error-share_empty"),
+        ShareTextError::TooLarge { .. } => fl!("share-error-share_too_large"),
+        ShareTextError::Core(error) => describe_error(error),
+    }
 }
 
 /// A sentence for the user about why a file wasn't sent.
@@ -146,12 +252,19 @@ fn describe(error: &SendPathError) -> String {
 mod tests {
     use super::*;
     use crate::{
-        core::testing::handle,
+        core::{PluginEvent, testing::handle},
+        plugins::share::{MAX_SHARED_TEXT_BYTES, ShareTextBody, ShareUrlBody},
         ui::{shell::PickFiles, testing},
     };
 
     fn send_action(device: &DeviceSnapshot) -> DeviceAction {
-        let [action] = device_actions(device).try_into().unwrap();
+        let [action, _] = device_actions(device).try_into().unwrap();
+        action
+    }
+
+    fn text_action(device: &DeviceSnapshot) -> DeviceAction {
+        let [_, action] = device_actions(device).try_into().unwrap();
+        assert_eq!(action.id, "send-text");
         action
     }
 
@@ -171,6 +284,7 @@ mod tests {
 
         device.incoming_capabilities = vec![PACKET_TYPE.into()];
         assert!(send_action(&device).enabled);
+        assert!(text_action(&device).enabled);
         let target = drop_target(&device).unwrap();
         assert_eq!(target.label, "Drop to send to Pixel");
         let Message::Send {
@@ -189,7 +303,106 @@ mod tests {
 
         device.reachability = DeviceReachability::Discovered;
         assert!(!send_action(&device).enabled);
+        assert!(!text_action(&device).enabled);
         assert!(drop_target(&device).is_none());
+    }
+
+    #[tokio::test]
+    async fn sending_text_asks_for_it_then_sends_links_as_links() {
+        let (core, _commands) = handle();
+        let (device, mut sent) = testing::connect_peer(&core, testing::PEER_ID, &[PACKET_TYPE]);
+        let ctx = UiContext::new(core, tokio::runtime::Handle::current());
+
+        let asked = testing::outputs(update(
+            &ctx,
+            share(text_action(&device).message),
+            Origin::Tray,
+        ))
+        .await;
+        let [ui::Message::Prompt(prompt)] = &asked[..] else {
+            panic!("unexpected outcomes: {asked:?}");
+        };
+        assert_eq!(prompt.origin, Origin::Tray);
+        assert_eq!(prompt.body.as_deref(), Some("To Peer"));
+        assert_eq!(
+            (prompt.validate)(" "),
+            Some("Type the text or link to send.".into())
+        );
+        assert_eq!((prompt.validate)("hi"), None);
+
+        for (typed, report) in [
+            ("see you at 6", "Sent the text to Peer."),
+            (" https://kde.org ", "Sent the link to Peer."),
+        ] {
+            let message = share((prompt.then)(typed.into()));
+            let outcomes = testing::outputs(update(&ctx, message, Origin::Window)).await;
+            assert!(
+                matches!(&outcomes[..], [ui::Message::Report { text, failure: None, .. }] if text == report),
+                "unexpected outcomes: {outcomes:?}"
+            );
+        }
+        let text = sent.try_recv().unwrap();
+        assert_eq!(
+            text.body_as::<ShareTextBody>().unwrap().text,
+            "see you at 6"
+        );
+        let link = sent.try_recv().unwrap();
+        assert_eq!(
+            link.body_as::<ShareUrlBody>().unwrap().url,
+            "https://kde.org"
+        );
+    }
+
+    #[tokio::test]
+    async fn text_too_long_to_send_says_so() {
+        let (core, _commands) = handle();
+        let (device, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[PACKET_TYPE]);
+        let ctx = UiContext::new(core, tokio::runtime::Handle::current());
+        let send = Message::SendText {
+            device_id: device.device_id,
+            name: "Peer".into(),
+            text: "a".repeat(MAX_SHARED_TEXT_BYTES + 1),
+        };
+        let outcomes = testing::outputs(update(&ctx, send, Origin::Window)).await;
+        assert!(
+            matches!(&outcomes[..], [ui::Message::Report { text, failure: Some(title), .. }]
+                if text == "The text is too long to send." && title == "Couldn’t send to Peer"),
+            "unexpected outcomes: {outcomes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_text_is_copied_and_links_are_opened() {
+        let received = |content: SharedContent| CoreEvent {
+            sequence: 1,
+            timestamp: 0,
+            event: EventData::Plugin(
+                PluginEvent::new(&ReceivedShare {
+                    device_id: "pixel".into(),
+                    device_name: "Pixel".into(),
+                    content,
+                })
+                .unwrap(),
+            ),
+        };
+        let text = received(SharedContent::Text {
+            text: "hello".into(),
+        });
+        let outcomes = testing::outputs(on_event(&text)).await;
+        assert!(
+            matches!(&outcomes[..], [ui::Message::CopySharedText { text, device_name }]
+                if text == "hello" && device_name == "Pixel"),
+            "unexpected outcomes: {outcomes:?}"
+        );
+        let link = received(SharedContent::Link {
+            url: "https://kde.org".into(),
+        });
+        let outcomes = testing::outputs(on_event(&link)).await;
+        assert!(
+            matches!(&outcomes[..], [ui::Message::OpenSharedLink { url, device_name }]
+                if url == "https://kde.org" && device_name == "Pixel"),
+            "unexpected outcomes: {outcomes:?}"
+        );
     }
 
     #[tokio::test]
