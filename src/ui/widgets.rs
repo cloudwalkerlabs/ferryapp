@@ -427,17 +427,20 @@ pub fn gap(size: impl Into<Length> + Copy) -> Space {
     Space::new().width(size).height(size)
 }
 
-/// The app's font, Instrument Sans, bundled so text looks the same on every
-/// system. It covers Latin only: cosmic-text draws other scripts, such as
-/// CJK, in a system font.
-pub const FONT: Font = Font::with_name("Instrument Sans");
+/// The app's font, Inter, bundled so text looks the same on every
+/// system. Scripts outside its coverage, such as CJK, are drawn by cosmic-text
+/// in a system font.
+pub const FONT: Font = Font {
+    weight: font::Weight::Normal, // 400, the bundled Regular face.
+    ..Font::with_name("Inter")
+};
 
-/// Instrument Sans's faces, one per weight the app draws with: [`FONT`] and
+/// Inter’s faces, one per weight the app draws with: [`FONT`] and
 /// [`bold`]. cosmic-text matches the weight exactly, so a weight added
 /// here needs its face too. Licensed under the OFL (`assets/fonts/OFL.txt`).
 pub const FONT_FACES: [&[u8]; 2] = [
-    include_bytes!("../../assets/fonts/InstrumentSans-Regular.ttf"),
-    include_bytes!("../../assets/fonts/InstrumentSans-Bold.ttf"),
+    include_bytes!("../../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../../assets/fonts/Inter-Bold.ttf"),
 ];
 
 /// The app's bold font, for titles.

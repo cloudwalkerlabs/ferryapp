@@ -378,11 +378,11 @@ devices on their network without asking.
 
 The README and website share eight pairs of screenshots,
 `site/img/<page>-<light|dark>.webp`, rendered from the real iced views with
-bundled Instrument Sans at 2x by the snapshot fixtures. The export keeps
+bundled Inter at 2x by the snapshot fixtures. The export keeps
 images 880 px wide (downsampling the wide file preview). Both galleries
 use `<picture>` sources with `media="(prefers-color-scheme: dark)"` and a
 light `<img>` fallback, so the browser chooses the theme without JavaScript.
-The website also self-hosts Instrument Sans in `site/fonts/`.
+The website also self-hosts Inter in `site/fonts/`.
 
 To retake every gallery image after a UI change (Pillow is needed for
 WebP export):

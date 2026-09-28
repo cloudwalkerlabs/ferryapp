@@ -61,7 +61,7 @@ or on macOS dropped on the menu bar icon), pings and rings devices, shares
 the clipboard, browses a phone's files, shows a phone's notifications
 (reply, dismiss, press their buttons), tells you when a phone rings (and
 mutes it) or misses a call, and keeps running in the tray. It
-uses the bundled Instrument Sans font and follows the system's light or
+uses the bundled Inter font and follows the system's light or
 dark theme.
 The screenshots below follow your appearance too.
 
