@@ -350,6 +350,13 @@ findmyphone-failed = Couldn’t ring { $name }
 # German's "82 %") belong here.
 battery-charge = { $charge }%
 
+## Connectivity (src/ui/features/connectivity.rs)
+
+# A SIM's status chip when the phone doesn't say which mobile network it
+# is on (otherwise the chip shows the network's name, like "LTE"); its
+# icon shows the signal's bars.
+connectivity-unknown-network = Mobile
+
 ## Sending files (src/ui/features/share.rs)
 
 share-action = Send files

@@ -30,6 +30,7 @@ use ferry::{
     plugins::{
         battery::PACKET_TYPE as BATTERY_PACKET_TYPE,
         browse::{PACKET_TYPE as SFTP_PACKET_TYPE, REQUEST_PACKET_TYPE},
+        connectivity::PACKET_TYPE as CONNECTIVITY_PACKET_TYPE,
         notifications::{
             ACTION_PACKET_TYPE as NOTIFICATION_ACTION_PACKET_TYPE,
             PACKET_TYPE as NOTIFICATION_PACKET_TYPE,
@@ -207,6 +208,12 @@ impl FakePhone {
         self.send(battery_report(charge, charging)).await;
     }
 
+    /// Report one SIM's mobile signal, as Android does when it changes.
+    pub async fn report_connectivity(&self, network_type: &str, signal_strength: i64) {
+        self.send(connectivity_report(network_type, signal_strength))
+            .await;
+    }
+
     /// Post (or update) a notification, as Android does: `body` is the
     /// packet's body, and `icon`, if any, is offered as its payload on a
     /// port of its own, served once over TLS.
@@ -284,6 +291,7 @@ fn identity_packet(device_id: &str, name: &str, extra: Map<String, Value>) -> Ve
             SFTP_PACKET_TYPE.into(),
             "kdeconnect.ping".into(),
             BATTERY_PACKET_TYPE.into(),
+            CONNECTIVITY_PACKET_TYPE.into(),
             NOTIFICATION_PACKET_TYPE.into(),
         ],
         protocol_version: 8,
@@ -412,6 +420,10 @@ async fn connect_to_desktop(
                     let _ = sender.send(accept).await;
                     // Android's battery plugin reports as soon as it loads.
                     let _ = sender.send(battery_report(PHONE_BATTERY, false)).await;
+                    // So does its connectivity report plugin.
+                    let _ = sender
+                        .send(connectivity_report(PHONE_NETWORK, PHONE_SIGNAL))
+                        .await;
                 }
                 REQUEST_PACKET_TYPE => {
                     shared.log.browse_requests.fetch_add(1, Ordering::SeqCst);
@@ -441,6 +453,22 @@ fn battery_report(charge: i64, charging: bool) -> Packet {
         0_u64,
         BATTERY_PACKET_TYPE,
         &json!({"currentCharge": charge, "isCharging": charging, "thresholdEvent": 0}),
+    )
+    .unwrap()
+}
+
+/// The network and signal level (0 to 4) the phone reports right after
+/// pairing, for its one SIM.
+pub const PHONE_NETWORK: &str = "LTE";
+pub const PHONE_SIGNAL: i64 = 3;
+
+fn connectivity_report(network_type: &str, signal_strength: i64) -> Packet {
+    Packet::from_body(
+        0_u64,
+        CONNECTIVITY_PACKET_TYPE,
+        &json!({"signalStrengths": {
+            "1": {"networkType": network_type, "signalStrength": signal_strength}
+        }}),
     )
     .unwrap()
 }

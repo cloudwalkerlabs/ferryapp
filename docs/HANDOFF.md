@@ -258,6 +258,11 @@ Windows installer, but neither has been used on a real desktop.
 - Battery reports were checked against the fake phone only. A low-battery
   notification (`thresholdEvent: 1`) isn't shown, and this machine doesn't
   report its own battery.
+- Mobile signal reports (`kdeconnect.connectivity_report`: a chip per
+  SIM on the device list and details page, a label in the tray, a column
+  in `ferry-cli devices`) were checked against the fake phone only. The
+  tray shows only the network type ("LTE"), since its items have no
+  icons for the bars.
 - Devices added by IP address are forgotten on restart. KDE Connect keeps
   a list of such addresses and announces to them periodically; here that
   would be a daemon setting (a list of addresses, as a config key) that

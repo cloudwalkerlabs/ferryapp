@@ -9,6 +9,7 @@
 pub mod battery;
 pub mod browse;
 pub mod clipboard;
+pub mod connectivity;
 pub mod findmyphone;
 pub mod notifications;
 pub mod ping;
@@ -27,8 +28,8 @@ use crate::{
     ui::{Message, Origin, context::UiContext, route::Route, widgets::Icon},
 };
 
-/// A feature's message. Battery has none: it only shows what the device
-/// reports.
+/// A feature's message. Battery and connectivity have none: they only show
+/// what the device reports.
 #[derive(Debug, Clone)]
 pub enum Feature {
     Ping(ping::Message),
@@ -137,7 +138,11 @@ impl Features {
 
     /// The chips on the device card, the detail header and the tray label.
     pub fn device_statuses(&self, device: &DeviceSnapshot) -> Vec<DeviceStatus> {
-        battery::device_status(device).into_iter().collect()
+        [
+            battery::device_status(device).into_iter().collect(),
+            connectivity::device_statuses(device),
+        ]
+        .concat()
     }
 
     /// Every core event, after the store has applied it.
@@ -223,6 +228,7 @@ impl Features {
     pub fn demo_packets(&self, device: &DeviceSnapshot, tick: u64) -> Vec<Packet> {
         [
             battery::demo_packets(device, tick),
+            connectivity::demo_packets(device, tick),
             notifications::demo_packets(device, tick),
         ]
         .concat()

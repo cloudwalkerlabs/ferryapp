@@ -281,6 +281,10 @@ findmyphone-failed = { $name } konnte nicht zum Klingeln gebracht werden
 
 battery-charge = { $charge } %
 
+## Connectivity (src/ui/features/connectivity.rs)
+
+connectivity-unknown-network = Mobilfunk
+
 ## Sending files (src/ui/features/share.rs)
 
 share-action = Dateien senden
