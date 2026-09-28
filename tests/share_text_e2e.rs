@@ -166,8 +166,8 @@ async fn paired_ferry_peers_share_text_and_links() {
         "unexpected result: {early:?}"
     );
 
-    let pairing = a.start_outgoing_pairing(&b_id).await.unwrap();
     let mut b_events = b.subscribe();
+    let pairing = a.start_outgoing_pairing(&b_id).await.unwrap();
     let incoming = timeout(Duration::from_secs(3), async {
         loop {
             if let EventData::PairingRequested(snapshot) = b_events.recv().await.unwrap().event {

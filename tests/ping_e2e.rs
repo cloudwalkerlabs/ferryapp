@@ -134,8 +134,8 @@ async fn wait_for_paired(application: &Core, device_id: &str, expected: bool) {
 }
 
 async fn pair(a: &Core, b: &Core, a_id: &str, b_id: &str) {
-    let pairing = a.start_outgoing_pairing(b_id).await.unwrap();
     let mut b_events = b.subscribe();
+    let pairing = a.start_outgoing_pairing(b_id).await.unwrap();
     let incoming = timeout(Duration::from_secs(2), async {
         loop {
             let event = b_events.recv().await.unwrap();

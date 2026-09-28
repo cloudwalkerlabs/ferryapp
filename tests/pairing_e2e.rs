@@ -159,12 +159,13 @@ async fn valid_peer_pairs_reconnects_with_pinned_trust_and_unpairs() {
     wait_for_reachability(&a.application, &b_id, DeviceReachability::Connected).await;
     wait_for_reachability(&b.application, &a_id, DeviceReachability::Connected).await;
 
+    // Subscribe before the awaited request can reach B.
+    let mut b_events = b.application.subscribe();
     // A initiates pairing.
     let pairing = a.application.start_outgoing_pairing(&b_id).await.unwrap();
     assert_eq!(pairing.direction, PairingDirection::Outgoing);
 
     // B observes the incoming request and the matching verification code.
-    let mut b_events = b.application.subscribe();
     let incoming = timeout(Duration::from_secs(2), async {
         loop {
             let event = b_events.recv().await.unwrap();

@@ -17,7 +17,9 @@ Keep bundled `rusqlite`, the schema and existing migrations. Add
 `deadpool-sqlite` 0.14, compatible with `rusqlite` 0.40, to acquire
 connections asynchronously and run SQL closures on blocking workers.
 File databases use WAL, a single writer pool and a separate pool of three
-readers. Every connection enables foreign keys and a five-second busy
+readers. Each pool retains the daemon's Tokio handle for closing SQLite
+connections when the last store reference drops outside the runtime (for
+example on the UI thread). Every connection enables foreign keys and a five-second busy
 timeout. In-memory tests share one connection, so every query sees the
 same database.
 

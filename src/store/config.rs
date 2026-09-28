@@ -409,15 +409,23 @@ pub(super) fn notify(
     changed: BTreeMap<EntryId, Change>,
 ) {
     for (entry, change) in changed {
+        let cache_key = (entry.key.clone(), entry.scope.to_owned(), entry.id.clone());
+        if change.after.is_some() {
+            cache.insert(cache_key, change.after.clone());
+        } else {
+            cache.remove(&cache_key);
+        }
+        if let Some(sender) = watchers.get(&entry) {
+            sender.send_if_modified(|value| {
+                if *value == change.after {
+                    return false;
+                }
+                *value = change.after.clone();
+                true
+            });
+        }
         if change.before == change.after {
             continue;
-        }
-        cache.insert(
-            (entry.key.clone(), entry.scope.to_owned(), entry.id.clone()),
-            change.after.clone(),
-        );
-        if let Some(sender) = watchers.get(&entry) {
-            sender.send_replace(change.after);
         }
         // No listeners is fine.
         let _ = changes.send(ConfigChange {

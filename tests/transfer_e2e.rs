@@ -242,8 +242,8 @@ async fn connected_and_paired_with(
     wait_for_reachability(&a_application, &b_id, DeviceReachability::Connected).await;
     wait_for_reachability(&b_application, &a_id, DeviceReachability::Connected).await;
 
-    let pairing = a_application.start_outgoing_pairing(&b_id).await.unwrap();
     let mut b_events = b_application.subscribe();
+    let pairing = a_application.start_outgoing_pairing(&b_id).await.unwrap();
     let incoming = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let event = b_events.recv().await.unwrap();

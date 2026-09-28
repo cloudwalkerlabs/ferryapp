@@ -41,8 +41,31 @@ const CHANGES_CAPACITY: usize = 256;
 #[derive(Clone)]
 pub struct Store {
     state: Arc<Mutex<State>>,
-    writer: Pool,
-    readers: Pool,
+    writer: Connections,
+    readers: Connections,
+}
+
+/// deadpool closes SQLite connections on blocking workers when its pool
+/// drops. The last store clone can drop on iced's thread, outside Tokio.
+#[derive(Clone)]
+struct Connections {
+    pool: Option<Pool>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl std::ops::Deref for Connections {
+    type Target = Pool;
+
+    fn deref(&self) -> &Pool {
+        self.pool.as_ref().expect("pool exists until drop")
+    }
+}
+
+impl Drop for Connections {
+    fn drop(&mut self) {
+        let _runtime = self.runtime.enter();
+        drop(self.pool.take());
+    }
 }
 
 impl std::fmt::Debug for Store {
@@ -76,13 +99,17 @@ impl Store {
     }
 
     async fn open_path(path: std::path::PathBuf, memory: bool) -> Result<Self, StoreError> {
-        fn pool(path: &Path, size: usize) -> Result<Pool, StoreError> {
+        fn pool(path: &Path, size: usize) -> Result<Connections, StoreError> {
             let manager =
                 deadpool_sqlite::Manager::from_config(&Config::new(path), Runtime::Tokio1);
-            Pool::builder(manager)
+            let pool = Pool::builder(manager)
                 .max_size(size)
                 .build()
-                .map_err(|error| StoreError::Worker(error.to_string()))
+                .map_err(|error| StoreError::Worker(error.to_string()))?;
+            Ok(Connections {
+                pool: Some(pool),
+                runtime: tokio::runtime::Handle::current(),
+            })
         }
         let writer = pool(&path, 1)?;
         let connection = writer.get().await.map_err(StoreError::Pool)?;
@@ -255,6 +282,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_store_can_drop_outside_its_runtime() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let store = runtime.block_on(Store::open_in_memory()).unwrap();
+        let clone = store.clone();
+        drop(store);
+        drop(clone);
+    }
+
     #[tokio::test]
     async fn another_schema_version_is_refused() {
         let directory = tempfile::tempdir().unwrap();
@@ -295,6 +331,30 @@ mod tests {
         assert_eq!(read.unwrap().unwrap(), Some(1));
         writer.await.unwrap().unwrap();
         assert_eq!(store.get(&COUNT).await.unwrap(), Some(2));
+    }
+
+    #[tokio::test]
+    async fn a_noop_write_refreshes_the_cache_after_an_external_write() {
+        const COUNT: ConfigKey<u32> = ConfigKey::new("test.count");
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).await.unwrap();
+        store.set(&COUNT, &1).await.unwrap();
+        let mut watch = store.watch(&COUNT).await.unwrap();
+        let other = Store::open(directory.path()).await.unwrap();
+        other.set(&COUNT, &2).await.unwrap();
+        assert_eq!(store.cached(&COUNT).unwrap(), Some(1));
+        store.set(&COUNT, &2).await.unwrap();
+        assert_eq!(store.cached(&COUNT).unwrap(), Some(2));
+        watch.changed().await.unwrap();
+        assert_eq!(watch.get(), Some(2));
+        store.remove(&COUNT).await.unwrap();
+        assert!(
+            store
+                .lock()
+                .cache
+                .keys()
+                .all(|(key, _, _)| key != COUNT.name())
+        );
     }
 
     #[tokio::test]
