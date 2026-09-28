@@ -150,6 +150,10 @@ pub(crate) enum Message {
         title: String,
         body: String,
     },
+    /// A feature's desktop notification, even over a focused window.
+    ShowNotification(shell::DesktopNotification),
+    /// Withdraw the feature's notification under this key.
+    WithdrawNotification(String),
     /// Ask before doing something; `then` is sent on confirm. From the
     /// tray, the window shows too.
     Confirm {
@@ -456,8 +460,7 @@ impl App {
                 match update {
                     sync::Update::Snapshot(snapshot) => {
                         running.ctx.store_mut().apply_snapshot(*snapshot);
-                        running.features.on_snapshot();
-                        Task::none()
+                        running.features.on_snapshot(&running.ctx)
                     }
                     // The store first, so features see the event applied.
                     sync::Update::Event(event) => {
@@ -470,7 +473,7 @@ impl App {
                 if let Some(running) = self.running() {
                     let snapshot = Snapshot::take(running.ctx.core());
                     running.ctx.store_mut().apply_snapshot(snapshot);
-                    running.features.on_snapshot();
+                    return running.features.on_snapshot(&running.ctx);
                 }
                 Task::none()
             }
@@ -492,6 +495,16 @@ impl App {
             },
             Message::Report { text, .. } => self.toast(text, None),
             Message::Notify { title, body } => self.notify(&title, &body),
+            Message::ShowNotification(notification) => {
+                self.notifications
+                    .show_keyed(&*self.desktop.notifier, notification);
+                Task::none()
+            }
+            Message::WithdrawNotification(key) => {
+                self.notifications
+                    .withdraw_keyed(&*self.desktop.notifier, &key);
+                Task::none()
+            }
             Message::Confirm {
                 title,
                 body,

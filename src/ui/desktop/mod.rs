@@ -42,6 +42,9 @@ pub enum DesktopEvent {
     TrayAvailable(bool),
     /// A click on one of the app's notifications.
     NotificationClicked,
+    /// A press on a notification's button: the shell's id for the
+    /// notification, and the button's index.
+    NotificationAction { id: u32, action: usize },
     /// A second launch asked this one to show its window.
     ShowRequested,
     /// The system asked the app to quit (a signal, a logout).

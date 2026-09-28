@@ -8,8 +8,8 @@ use clap::{Parser, Subcommand};
 use ferry::{
     api::DEFAULT_API_PORT,
     client::{
-        API_TOKEN_ENV, API_URL_ENV, ApiClient, ClipboardWatchUpdate, DeviceWatchUpdate,
-        NotificationWatchUpdate, TransferWatchUpdate,
+        API_TOKEN_ENV, API_URL_ENV, ApiClient, CallWatchUpdate, ClipboardWatchUpdate,
+        DeviceWatchUpdate, NotificationWatchUpdate, TransferWatchUpdate,
     },
     config::{ApiToken, StoredApi, default_config_dir},
     core::{
@@ -25,6 +25,7 @@ use ferry::{
         notifications::{Notification, NotificationPosted, NotificationRemoved},
         ping::ReceivedPing,
         share::{ReceivedShare, SharedContent},
+        telephony::{Call, CallMissed, CallState},
     },
     transport::lan::DISCOVERY_PORT,
 };
@@ -159,6 +160,16 @@ enum Command {
         #[command(subcommand)]
         action: Option<NotificationsAction>,
     },
+    /// Show the call going on on a paired phone (KDE Connect for Android
+    /// shares its calls once allowed to read the phone's state).
+    Call {
+        device_id: String,
+        /// Keep listening and print each change of call, and missed calls.
+        #[arg(long)]
+        watch: bool,
+    },
+    /// Mute a paired phone's ringer while a call rings on it.
+    Mute { device_id: String },
     /// Read, update, or watch synchronized clipboard text.
     Clipboard {
         #[command(subcommand)]
@@ -532,6 +543,33 @@ impl Cli {
                     }
                 }
             }
+            Command::Call {
+                device_id,
+                watch: false,
+            } => print_call(client.call(&device_id).await?.as_ref(), json),
+            Command::Call {
+                device_id,
+                watch: true,
+            } => {
+                client
+                    .watch_call(
+                        &device_id,
+                        cancellation_on_ctrl_c(),
+                        |update| match update {
+                            CallWatchUpdate::Call(call) => print_call(call.as_ref(), json),
+                            CallWatchUpdate::Missed(missed) => print_missed_call(&missed, json),
+                        },
+                    )
+                    .await?
+            }
+            Command::Mute { device_id } => {
+                client.mute_ringer(&device_id).await?;
+                if json {
+                    println!("{}", json!({"deviceId": device_id, "status": "sent"}));
+                } else {
+                    println!("Asked {device_id} to mute its ringer");
+                }
+            }
             Command::Clipboard {
                 action: ClipboardAction::Get,
             } => print_clipboard(&client.clipboard().await?, json),
@@ -867,6 +905,10 @@ fn print_event(event: &CoreEvent, json_output: bool) {
                     }
                     return;
                 }
+                if let Some(missed) = event.decode::<CallMissed>() {
+                    print_missed_call(&missed, false);
+                    return;
+                }
                 match event.decode::<ReceivedPing>() {
                     Some(ReceivedPing {
                         device_name,
@@ -924,6 +966,54 @@ fn print_notification(notification: &Notification) {
         println!("  id {}", notification.id);
     } else {
         println!("  id {} ({})", notification.id, can.join(", "));
+    }
+}
+
+/// `Ringing: Ana (+64 21 000 0000)`, or `No call`.
+fn print_call(call: Option<&Call>, json_output: bool) {
+    if json_output {
+        println!("{}", serde_json::to_string(&call).expect("call serializes"));
+        return;
+    }
+    let Some(call) = call else {
+        println!("No call");
+        return;
+    };
+    let state = match call.state {
+        CallState::Ringing => "Ringing",
+        CallState::Talking => "Talking",
+    };
+    println!(
+        "{state}: {}",
+        caller(call.contact_name.as_deref(), call.phone_number.as_deref())
+    );
+}
+
+fn print_missed_call(missed: &CallMissed, json_output: bool) {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(missed).expect("missed call serializes")
+        );
+    } else {
+        println!(
+            "Missed call on {}: {}",
+            missed.device_name,
+            caller(
+                missed.contact_name.as_deref(),
+                missed.phone_number.as_deref()
+            )
+        );
+    }
+}
+
+/// A caller's name and number, as many of them as the phone gave.
+fn caller(name: Option<&str>, number: Option<&str>) -> String {
+    match (name, number) {
+        (Some(name), Some(number)) if name != number => format!("{name} ({number})"),
+        (Some(name), _) => name.to_owned(),
+        (None, Some(number)) => number.to_owned(),
+        (None, None) => "unknown caller".to_owned(),
     }
 }
 

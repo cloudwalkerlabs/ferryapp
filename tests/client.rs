@@ -68,6 +68,11 @@ impl MockServer {
             .route("/api/v1/devices/{device_id}", delete(unpair))
             .route("/api/v1/devices/{device_id}/ping", post(ping))
             .route("/api/v1/devices/{device_id}/ring", post(ring))
+            .route(
+                "/api/v1/devices/{device_id}/call",
+                get(|| async { Json(json!({"state": "ringing", "phoneNumber": "555"})) }),
+            )
+            .route("/api/v1/devices/{device_id}/call/mute", post(ring))
             .route("/api/v1/pairings", post(start_pairing))
             .route(
                 "/api/v1/pairings/{pairing_id}",
@@ -368,6 +373,10 @@ async fn every_client_operation_uses_the_expected_http_contract() {
         .await
         .unwrap();
     client.ring(&device().device_id).await.unwrap();
+    let call = client.call(&device().device_id).await.unwrap().unwrap();
+    assert_eq!(call.state, ferry::plugins::telephony::CallState::Ringing);
+    assert_eq!(call.caller(), Some("555"));
+    client.mute_ringer(&device().device_id).await.unwrap();
 
     let directory = TempDir::new().unwrap();
     let file = directory.path().join("payload.txt");

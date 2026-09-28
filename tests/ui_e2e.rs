@@ -897,7 +897,7 @@ impl RecordingNotifier {
 }
 
 impl Notifier for RecordingNotifier {
-    fn show(&self, _id: u32, _title: &str, body: &str) {
+    fn show(&self, _id: u32, _title: &str, body: &str, _actions: &[String]) {
         self.shown.lock().unwrap().push(body.into());
     }
 

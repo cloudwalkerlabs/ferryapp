@@ -345,6 +345,19 @@ notifications-error-notification_not_dismissable = Sie kann von hier aus nicht v
 notifications-error-unknown_notification_action = Diese Schaltfläche gibt es nicht mehr.
 notifications-error-empty_reply = Schreib eine Nachricht.
 
+## A phone's calls (src/ui/features/telephony.rs)
+
+telephony-incoming-call = Eingehender Anruf von { $caller }
+telephony-missed-call = Verpasster Anruf von { $caller }
+telephony-unknown-caller = Unbekannter Anrufer
+telephony-mute = Stummschalten
+telephony-mute-action = Klingelton stummschalten
+telephony-muted = { $name } soll den Klingelton stummschalten.
+telephony-mute-failed = { $name } konnte nicht stummgeschaltet werden
+telephony-error-not_ringing = Gerade klingelt dort kein Anruf.
+telephony-status-ringing = Klingelt
+telephony-status-talking = Im Gespräch
+
 ## Browsing a device's files (src/ui/features/browse/)
 
 browse-action = Dateien durchsuchen

@@ -1,6 +1,7 @@
 //! Desktop notifications, for what the user should see while the window is
 //! closed or unfocused. A click on one shows the window
-//! ([`DesktopEvent::NotificationClicked`]).
+//! ([`DesktopEvent::NotificationClicked`]); a press on one of its buttons is
+//! [`DesktopEvent::NotificationAction`].
 //!
 //! On Linux the shell talks to `org.freedesktop.Notifications` itself, and on
 //! macOS to `UNUserNotificationCenter` (`mac-usernotifications`), so it can
@@ -12,9 +13,11 @@ use std::sync::Arc;
 use super::Events;
 
 /// Shows and withdraws notifications. `id` is the shell's own number for a
-/// notification, to withdraw it later.
+/// notification, to withdraw it later. `actions` are the labels of its
+/// buttons, where the system shows buttons; a press reports the id and the
+/// button's index.
 pub trait Notifier: Send + Sync + 'static {
-    fn show(&self, id: u32, title: &str, body: &str);
+    fn show(&self, id: u32, title: &str, body: &str, actions: &[String]);
     fn withdraw(&self, id: u32);
 }
 
@@ -22,7 +25,7 @@ pub trait Notifier: Send + Sync + 'static {
 pub struct NoNotifier;
 
 impl Notifier for NoNotifier {
-    fn show(&self, _id: u32, title: &str, body: &str) {
+    fn show(&self, _id: u32, title: &str, body: &str, _actions: &[String]) {
         tracing::info!(title, body, "no desktop notifications here");
     }
 
@@ -50,7 +53,7 @@ pub fn start(runtime: &tokio::runtime::Handle, events: Events) -> Arc<dyn Notifi
 mod macos {
     use std::collections::HashMap;
 
-    use mac_usernotifications::{Error, Notification};
+    use mac_usernotifications::{Action, Error, Notification};
     use tokio::sync::mpsc;
 
     use super::{super::DesktopEvent, Events, Notifier};
@@ -60,6 +63,7 @@ mod macos {
             id: u32,
             title: String,
             body: String,
+            actions: Vec<String>,
         },
         Withdraw(u32),
         /// The user clicked or dismissed it, so there is nothing to withdraw.
@@ -87,11 +91,12 @@ mod macos {
     }
 
     impl Notifier for MacNotifier {
-        fn show(&self, id: u32, title: &str, body: &str) {
+        fn show(&self, id: u32, title: &str, body: &str, actions: &[String]) {
             let _ = self.requests.send(Request::Show {
                 id,
                 title: title.into(),
                 body: body.into(),
+                actions: actions.to_vec(),
             });
         }
 
@@ -114,8 +119,20 @@ mod macos {
         let mut showing: HashMap<u32, String> = HashMap::new();
         while let Some(request) = requests.recv().await {
             match request {
-                Request::Show { id, title, body } => {
-                    let shown = Notification::new().title(title).message(body).send().await;
+                Request::Show {
+                    id,
+                    title,
+                    body,
+                    actions,
+                } => {
+                    // A button's identifier is its index.
+                    let notification = actions.into_iter().enumerate().fold(
+                        Notification::new().title(title).message(body),
+                        |notification, (index, label)| {
+                            notification.action(Action::button(index.to_string(), label))
+                        },
+                    );
+                    let shown = notification.send().await;
                     let handle = match shown {
                         Ok(handle) => handle,
                         Err(error) => {
@@ -127,12 +144,13 @@ mod macos {
                     let (events, gone) = (events.clone(), gone.clone());
                     // Resolves on a click, or once the user dismisses it.
                     tokio::spawn(async move {
-                        if handle
-                            .response()
-                            .await
-                            .is_ok_and(|response| response.is_default_action())
-                        {
-                            let _ = events.send(DesktopEvent::NotificationClicked);
+                        if let Ok(response) = handle.response().await {
+                            if response.is_default_action() {
+                                let _ = events.send(DesktopEvent::NotificationClicked);
+                            } else if let Ok(action) = response.action_identifier.parse() {
+                                let _ =
+                                    events.send(DesktopEvent::NotificationAction { id, action });
+                            }
                         }
                         if let Some(gone) = gone.upgrade() {
                             let _ = gone.send(Request::Gone(id));
@@ -175,6 +193,7 @@ mod dbus {
             id: u32,
             title: String,
             body: String,
+            actions: Vec<String>,
         },
         Withdraw(u32),
     }
@@ -198,11 +217,12 @@ mod dbus {
     }
 
     impl Notifier for DbusNotifier {
-        fn show(&self, id: u32, title: &str, body: &str) {
+        fn show(&self, id: u32, title: &str, body: &str, actions: &[String]) {
             let _ = self.requests.send(Request::Show {
                 id,
                 title: title.into(),
                 body: body.into(),
+                actions: actions.to_vec(),
             });
         }
 
@@ -225,12 +245,20 @@ mod dbus {
             tokio::select! {
                 request = requests.recv() => match request {
                     None => return Ok(()),
-                    Some(Request::Show { id, title, body }) => {
+                    Some(Request::Show { id, title, body, actions }) => {
                         // Lets the server show the app's name and icon
                         // from its `.desktop` file.
                         let hints: HashMap<&str, Value<'_>> =
                             HashMap::from([("desktop-entry", Value::from(APP_ID))]);
                         let open = fl!("notify-open");
+                        // A click on the body is `default`; a button's key
+                        // is its index.
+                        let keys: Vec<String> =
+                            (0..actions.len()).map(|index| index.to_string()).collect();
+                        let mut pairs = vec!["default", open.as_str()];
+                        for (key, label) in keys.iter().zip(&actions) {
+                            pairs.extend([key.as_str(), label.as_str()]);
+                        }
                         let shown = server
                             .call::<_, _, u32>(
                                 "Notify",
@@ -240,8 +268,7 @@ mod dbus {
                                     "",
                                     title.as_str(),
                                     body.as_str(),
-                                    // A click on the body is `default`.
-                                    vec!["default", open.as_str()],
+                                    pairs,
                                     hints,
                                     -1_i32,
                                 ),
@@ -273,8 +300,13 @@ mod dbus {
                     let Ok((server_id, action)) = signal.body().deserialize::<(u32, String)>() else {
                         continue;
                     };
-                    if showing.contains_key(&server_id) && action == "default" {
+                    let Some(&id) = showing.get(&server_id) else {
+                        continue;
+                    };
+                    if action == "default" {
                         let _ = events.send(DesktopEvent::NotificationClicked);
+                    } else if let Ok(action) = action.parse() {
+                        let _ = events.send(DesktopEvent::NotificationAction { id, action });
                     }
                 }
                 Some(signal) = closed.next() => {

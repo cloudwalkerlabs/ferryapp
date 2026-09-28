@@ -14,6 +14,7 @@ pub mod findmyphone;
 pub mod notifications;
 pub mod ping;
 pub mod share;
+pub mod telephony;
 
 use std::{fmt, path::PathBuf, sync::Arc};
 
@@ -38,6 +39,7 @@ pub enum Feature {
     Share(share::Message),
     Browse(browse::Message),
     Notifications(notifications::Message),
+    Telephony(telephony::Message),
 }
 
 /// A function the shell calls later with what it got (picked files, a
@@ -87,6 +89,7 @@ pub(crate) struct Features {
     pub clipboard: clipboard::ClipboardUi,
     pub browse: browse::BrowseUi,
     pub notifications: notifications::NotificationsUi,
+    pub telephony: telephony::TelephonyUi,
 }
 
 impl Features {
@@ -101,6 +104,7 @@ impl Features {
             clipboard: clipboard::ClipboardUi::new(clipboard),
             browse: browse::BrowseUi::new(browse),
             notifications: notifications::NotificationsUi::new(notifications),
+            telephony: telephony::TelephonyUi::default(),
         }
     }
 
@@ -119,6 +123,7 @@ impl Features {
             Feature::Share(message) => share::update(ctx, message, origin),
             Feature::Browse(message) => self.browse.update(ctx, message, origin),
             Feature::Notifications(message) => self.notifications.update(ctx, message, origin),
+            Feature::Telephony(message) => telephony::update(ctx, message, origin),
         }
     }
 
@@ -132,6 +137,7 @@ impl Features {
             share::device_actions(device),
             browse::device_actions(device),
             self.notifications.device_actions(device),
+            telephony::device_actions(device),
         ]
         .concat()
     }
@@ -141,6 +147,7 @@ impl Features {
         [
             battery::device_status(device).into_iter().collect(),
             connectivity::device_statuses(device),
+            telephony::device_status(device).into_iter().collect(),
         ]
         .concat()
     }
@@ -152,6 +159,7 @@ impl Features {
             share::on_event(event),
             self.browse.on_event(ctx, event),
             self.notifications.on_event(event),
+            self.telephony.on_event(event),
         ])
     }
 
@@ -204,8 +212,9 @@ impl Features {
 
     /// The shell took a fresh snapshot of the core, after missing events
     /// or on Reload.
-    pub(crate) fn on_snapshot(&mut self) {
+    pub(crate) fn on_snapshot(&mut self, ctx: &UiContext) -> Task<Message> {
         self.notifications.on_snapshot();
+        self.telephony.on_snapshot(ctx)
     }
 
     /// The page of `device`'s notifications ([`Route::Notifications`]).
@@ -230,6 +239,7 @@ impl Features {
             battery::demo_packets(device, tick),
             connectivity::demo_packets(device, tick),
             notifications::demo_packets(device, tick),
+            telephony::demo_packets(device, tick),
         ]
         .concat()
     }

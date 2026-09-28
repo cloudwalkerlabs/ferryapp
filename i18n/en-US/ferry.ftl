@@ -440,6 +440,27 @@ notifications-error-unknown_notification_action = It no longer has that button.
 # Also when a reply is left empty.
 notifications-error-empty_reply = Write a message.
 
+## A phone's calls (src/ui/features/telephony.rs)
+
+# A desktop notification's body while a call rings on a phone; the phone's
+# name is its title. `caller` is the contact's name, their number, or
+# telephony-unknown-caller.
+telephony-incoming-call = Incoming call from { $caller }
+# The same, once the call rang out unanswered.
+telephony-missed-call = Missed call from { $caller }
+telephony-unknown-caller = Unknown caller
+# The button on the incoming call's notification that silences the phone.
+telephony-mute = Mute
+# The device's action (and tray item) while a call rings on it.
+telephony-mute-action = Mute ringer
+# `name` is the phone's.
+telephony-muted = Asked { $name } to mute its ringer.
+telephony-mute-failed = Couldn’t mute { $name }
+telephony-error-not_ringing = No call is ringing on it now.
+# The device's status chip during a call.
+telephony-status-ringing = Ringing
+telephony-status-talking = On a call
+
 ## Browsing a device's files (src/ui/features/browse/)
 
 browse-action = Browse files

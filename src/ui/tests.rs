@@ -48,22 +48,28 @@ impl Tray for FakeTray {
     }
 }
 
-/// The notifications showing, by id: their title and body.
+/// The notifications showing, by id: their title and body, and the labels
+/// of the buttons of those that have any.
 #[derive(Default)]
 pub(super) struct FakeNotifier {
     pub(super) shown: Mutex<std::collections::BTreeMap<u32, (String, String)>>,
+    pub(super) actions: Mutex<std::collections::BTreeMap<u32, Vec<String>>>,
 }
 
 impl Notifier for FakeNotifier {
-    fn show(&self, id: u32, title: &str, body: &str) {
+    fn show(&self, id: u32, title: &str, body: &str, actions: &[String]) {
         self.shown
             .lock()
             .unwrap()
             .insert(id, (title.into(), body.into()));
+        if !actions.is_empty() {
+            self.actions.lock().unwrap().insert(id, actions.to_vec());
+        }
     }
 
     fn withdraw(&self, id: u32) {
         self.shown.lock().unwrap().remove(&id);
+        self.actions.lock().unwrap().remove(&id);
     }
 }
 
