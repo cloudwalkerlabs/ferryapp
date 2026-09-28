@@ -597,7 +597,7 @@ async fn handle_connection(
         return;
     }
 
-    if reservation.cancellation.is_cancelled() {
+    if !registry.establish(&device_id, reservation.id) {
         registry.release(&device_id, reservation.id);
         return;
     }
@@ -699,7 +699,8 @@ async fn handle_connection(
         )
         .await;
     }
-    core.unregister_connection(&device_id).await;
+    core.unregister_current_connection(&device_id, &reservation.cancellation)
+        .await;
     registry.release(&device_id, reservation.id);
 }
 
@@ -1039,6 +1040,7 @@ enum Direction {
 struct ConnectionEntry {
     id: u64,
     direction: Direction,
+    established: bool,
     cancellation: CancellationToken,
 }
 
@@ -1071,7 +1073,7 @@ impl ConnectionRegistry {
         };
         let mut entries = self.entries.lock().ok()?;
         if let Some(existing) = entries.get(peer_id) {
-            if existing.direction == preferred || direction != preferred {
+            if existing.established || existing.direction == preferred || direction != preferred {
                 return None;
             }
             existing.cancellation.cancel();
@@ -1083,10 +1085,27 @@ impl ConnectionRegistry {
             ConnectionEntry {
                 id,
                 direction,
+                established: false,
                 cancellation: cancellation.clone(),
             },
         );
         Some(Reservation { id, cancellation })
+    }
+
+    /// Tie-breaking applies to competing handshakes, never to a live
+    /// authenticated connection whose queued actions must not be lost.
+    fn establish(&self, peer_id: &str, id: u64) -> bool {
+        let Ok(mut entries) = self.entries.lock() else {
+            return false;
+        };
+        let Some(entry) = entries.get_mut(peer_id) else {
+            return false;
+        };
+        if entry.id != id || entry.cancellation.is_cancelled() {
+            return false;
+        }
+        entry.established = true;
+        true
     }
 
     fn release(&self, peer_id: &str, id: u64) -> bool {
@@ -1130,4 +1149,25 @@ pub enum LanError {
     Task(#[source] tokio::task::JoinError),
     #[error("LAN service did not shut down before its deadline")]
     ShutdownDeadline,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tie_breaking_replaces_pending_handshakes_but_preserves_live_connections() {
+        let registry = ConnectionRegistry::default();
+        let pending = registry.reserve_incoming("a", "b").unwrap();
+        let preferred = registry.reserve_outgoing("a", "b").unwrap();
+        assert!(pending.cancellation.is_cancelled());
+        assert!(!registry.establish("b", pending.id));
+        assert!(registry.establish("b", preferred.id));
+
+        let registry = ConnectionRegistry::default();
+        let live = registry.reserve_incoming("a", "b").unwrap();
+        assert!(registry.establish("b", live.id));
+        assert!(registry.reserve_outgoing("a", "b").is_none());
+        assert!(!live.cancellation.is_cancelled());
+    }
 }

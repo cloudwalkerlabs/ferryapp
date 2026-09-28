@@ -57,6 +57,9 @@ impl Core {
     ) -> Result<DeviceSnapshot, CoreError> {
         let operation = self.device_operation(device_id);
         let _operation = operation.lock().await;
+        if cancellation.is_cancelled() {
+            return Err(CoreError::DeviceNotConnected);
+        }
 
         {
             let mut state = self
@@ -99,6 +102,24 @@ impl Core {
     /// cancel any transfer in progress with it, and mark the device
     /// unreachable.
     pub async fn unregister_connection(&self, device_id: &str) {
+        self.unregister_connection_inner(device_id, None).await;
+    }
+
+    /// A superseded handshake must not tear down its replacement.
+    pub(crate) async fn unregister_current_connection(
+        &self,
+        device_id: &str,
+        token: &CancellationToken,
+    ) {
+        self.unregister_connection_inner(device_id, Some(token))
+            .await;
+    }
+
+    async fn unregister_connection_inner(
+        &self,
+        device_id: &str,
+        token: Option<&CancellationToken>,
+    ) {
         let operation = self.device_operation(device_id);
         let _operation = operation.lock().await;
 
@@ -106,6 +127,14 @@ impl Core {
             let Ok(mut state) = self.state.write() else {
                 return;
             };
+            if let Some(token) = token
+                && !state
+                    .connections
+                    .get(device_id)
+                    .is_some_and(|connection| &connection.cancellation == token)
+            {
+                return;
+            }
             let had_connection = state.connections.remove(device_id).is_some();
             let failed_pairing =
                 fail_active_pairing(&mut state, device_id, OperationErrorCode::ConnectionFailed);
@@ -298,6 +327,59 @@ impl Core {
 mod tests {
     use super::*;
     use crate::core::testing::handle;
+
+    #[tokio::test]
+    async fn stale_connection_cleanup_preserves_its_replacement() {
+        let (core, _commands) = handle().await;
+        let identity =
+            crate::core::testing::make_identity("740bd4b9b4184ee497d6caf1da8151be", Vec::new());
+        core.discover_device(&identity, false, 1).unwrap();
+        let (old_tx, _old_rx) = mpsc::channel(1);
+        let old = CancellationToken::new();
+        core.register_connection(
+            "740bd4b9b4184ee497d6caf1da8151be",
+            vec![1],
+            8,
+            old_tx,
+            old.clone(),
+            1,
+        )
+        .await
+        .unwrap();
+        old.cancel();
+        let (new_tx, _new_rx) = mpsc::channel(1);
+        let current = CancellationToken::new();
+        core.register_connection(
+            "740bd4b9b4184ee497d6caf1da8151be",
+            vec![2],
+            8,
+            new_tx,
+            current.clone(),
+            2,
+        )
+        .await
+        .unwrap();
+        core.unregister_current_connection("740bd4b9b4184ee497d6caf1da8151be", &old)
+            .await;
+        assert_eq!(
+            core.device("740bd4b9b4184ee497d6caf1da8151be")
+                .unwrap()
+                .reachability,
+            super::super::DeviceReachability::Connected
+        );
+        assert_eq!(
+            core.state.read().unwrap().connections["740bd4b9b4184ee497d6caf1da8151be"].cancellation,
+            current
+        );
+        core.unregister_current_connection("740bd4b9b4184ee497d6caf1da8151be", &current)
+            .await;
+        assert_eq!(
+            core.device("740bd4b9b4184ee497d6caf1da8151be")
+                .unwrap()
+                .reachability,
+            super::super::DeviceReachability::Unavailable
+        );
+    }
 
     #[tokio::test]
     async fn commands_are_bounded_and_observable() {

@@ -45,7 +45,9 @@ gates. Socket reading, bounded packet dispatch and writing run independently,
 so an awaited callback can still send packets. Disconnect cancels the
 active packet callback before cleanup, allowing queued packets a bounded
 one-second drain on socket EOF so a final unpair packet is not lost.
-Explicit shutdown preempts that drain. Core trust mutations and settings
+Explicit shutdown preempts that drain. Discovery tie-breaking only replaces
+pending handshakes, and stale cleanup cannot remove a newer connection.
+Core trust mutations and settings
 updates, including plugin settings, use tracked tasks to finish persistence and memory effects after
 caller cancellation; daemon shutdown drains those tasks before plugin
 shutdown.
