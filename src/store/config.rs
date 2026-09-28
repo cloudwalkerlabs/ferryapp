@@ -366,6 +366,9 @@ impl Transaction<'_> {
         let current = read(&self.inner, &entry)?;
         let existed = current.is_some();
         if current == value {
+            // A different process may have written this value since our
+            // cache was loaded. Record the touch without rewriting SQLite.
+            self.record(entry, current, value);
             return Ok(existed);
         }
         match &value {
