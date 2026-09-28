@@ -86,6 +86,76 @@ mod tests {
     }
 
     #[test]
+    fn plugin_settings_sections_become_the_clipboards_key() {
+        use crate::store::ConfigKey;
+
+        const SYNC_ENABLED: ConfigKey<bool> = ConfigKey::new("clipboard.syncEnabled");
+        let insert = |connection: &Connection, id: &str, value: &str| {
+            connection
+                .execute(
+                    "INSERT INTO configs (key, scope, id, value, updated_at)
+                     VALUES ('core.pluginSettings', 'plugin', ?1, ?2, 7)",
+                    [id, value],
+                )
+                .unwrap();
+        };
+        let rows = |connection: &Connection| -> Vec<(String, String, String, String)> {
+            let mut statement = connection
+                .prepare("SELECT key, scope, id, value FROM configs ORDER BY key, id")
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        let row = |key: &str, scope: &str, id: &str, value: &str| {
+            (key.into(), scope.into(), id.into(), value.into())
+        };
+
+        // A database from before, with sync turned off, a section of a
+        // plugin that is gone, and another config.
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(FILE_NAME);
+        let mut connection = Connection::open(&path).unwrap();
+        MIGRATIONS.to_version(&mut connection, 1).unwrap();
+        insert(&connection, "clipboard", r#"{"syncEnabled":false}"#);
+        insert(&connection, "gone", r#"{"enabled":true}"#);
+        connection
+            .execute(
+                "INSERT INTO configs (key, scope, id, value, updated_at)
+                 VALUES ('core.deviceName', '', '', '\"Desk\"', 7)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let store = Store::open(directory.path()).unwrap();
+        assert_eq!(store.get(&SYNC_ENABLED).unwrap(), Some(false));
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        assert_eq!(
+            rows(&connection),
+            [
+                row("clipboard.syncEnabled", "", "", "false"),
+                row("core.deviceName", "", "", "\"Desk\""),
+            ]
+        );
+
+        // Nothing to move: a section without the field, or one that isn't
+        // JSON, is dropped without failing the migration.
+        for value in [r#"{}"#, r#"{"syncEnabled":"no"}"#, "not json"] {
+            let mut connection = Connection::open_in_memory().unwrap();
+            MIGRATIONS.to_version(&mut connection, 1).unwrap();
+            insert(&connection, "clipboard", value);
+            migrate(&mut connection).unwrap();
+            assert_eq!(rows(&connection), [], "{value}");
+        }
+    }
+
+    #[test]
     fn processes_opening_a_new_database_together_both_succeed() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(FILE_NAME);

@@ -18,7 +18,7 @@ use std::{
 use axum::Router;
 use futures_util::future::{BoxFuture, join_all};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use super::{Core, CoreError, DeviceSnapshot, EventData, PayloadPeer, Transfers};
 use crate::{protocol::Packet, store::Store};
@@ -64,12 +64,6 @@ pub trait Plugin: Send + Sync + 'static {
     /// time it hands out a snapshot, never while holding its own lock. A
     /// plugin whose answer changes calls [`PluginContext::device_changed`].
     fn device_state(&self, _device_id: &str) -> Option<Value> {
-        None
-    }
-
-    /// This plugin's section of the settings, if it has one: see
-    /// [`PluginSettings`].
-    fn settings(&self) -> Option<SettingsSection> {
         None
     }
 
@@ -141,19 +135,10 @@ impl PluginContext {
     }
 
     /// Where the plugin keeps its data: configs under keys it declares,
-    /// named `<plugin id>.<name>` (see [`crate::store::ConfigKey`]). Its
-    /// settings section is kept for it; read that with [`Self::settings`].
+    /// named `<plugin id>.<name>` (see [`crate::store::ConfigKey`]),
+    /// settings included.
     pub fn store(&self) -> &Store {
         self.core.store()
-    }
-
-    /// The plugin's settings section, as in effect now: stored values over
-    /// the section's defaults.
-    pub fn settings<T: PluginSettings>(&self) -> T {
-        self.core
-            .plugin_settings(T::ID)
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default()
     }
 
     /// The device as clients see it, if it is known. Calls into every
@@ -225,46 +210,6 @@ impl PluginEvent {
     }
 }
 
-/// A plugin's settings: a section of the stored settings and of
-/// `GET`/`PATCH /settings`, under `plugins.<ID>`.
-///
-/// Every field has a default (`#[serde(default)]` on the type), so a section
-/// stores only what the user changed. A `PATCH` merges fields into the
-/// stored section, `null` resetting one to its default; the result must
-/// deserialize as `Self` to be accepted, so `#[serde(deny_unknown_fields)]`
-/// is how a plugin rejects unknown fields. The plugin reads the settings in
-/// effect with [`PluginContext::settings`].
-pub trait PluginSettings: Serialize + DeserializeOwned + Default {
-    /// The plugin's [`Plugin::id`].
-    const ID: &'static str;
-}
-
-/// A settings section, as the core handles it: [`PluginSettings`] with the
-/// type erased.
-#[derive(Clone, Copy, Debug)]
-pub struct SettingsSection {
-    pub(super) id: &'static str,
-    resolve: fn(&Map<String, Value>) -> Option<Value>,
-}
-
-impl SettingsSection {
-    pub fn of<T: PluginSettings>() -> Self {
-        Self {
-            id: T::ID,
-            resolve: |stored| {
-                let settings: T = serde_json::from_value(Value::Object(stored.clone())).ok()?;
-                serde_json::to_value(settings).ok()
-            },
-        }
-    }
-
-    /// The section in effect given what is stored: every field, defaults
-    /// filled in. `None` if `stored` isn't valid.
-    pub(super) fn resolve(&self, stored: &Map<String, Value>) -> Option<Value> {
-        (self.resolve)(stored)
-    }
-}
-
 /// The capability strings a device advertises in its identity packet's
 /// `incomingCapabilities` and `outgoingCapabilities`: the union over its
 /// plugins.
@@ -293,13 +238,6 @@ impl PluginRegistry {
                 .any(|other| other.id() == plugin.id())
             {
                 panic!("two plugins are called {:?}", plugin.id());
-            }
-            if let Some(section) = plugin.settings() {
-                assert_eq!(
-                    section.id,
-                    plugin.id(),
-                    "a plugin's settings section is named after it"
-                );
             }
             for packet_type in plugin.incoming() {
                 if let Some(other) = by_packet_type.insert(*packet_type, index) {
@@ -355,14 +293,6 @@ impl PluginRegistry {
                 let state = plugin.device_state(device_id)?;
                 Some((plugin.id().to_owned(), state))
             })
-            .collect()
-    }
-
-    /// Every plugin's settings section.
-    pub fn settings_sections(&self) -> Vec<SettingsSection> {
-        self.plugins
-            .iter()
-            .filter_map(|plugin| plugin.settings())
             .collect()
     }
 

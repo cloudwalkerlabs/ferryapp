@@ -11,10 +11,11 @@
 //! it is newer than its own. `POST /devices/{id}/clipboard` sends the text
 //! to one device on request.
 //!
-//! Sync can be turned off with the `plugins.clipboard.syncEnabled` setting
-//! ([`ClipboardSettings`]). That only stops text going to and coming from
-//! peers; the clipboard stays readable and writable through the API, and a
-//! send on request still works.
+//! Sync can be turned off ([`ClipboardPlugin::set_sync_enabled`], `PATCH
+//! /clipboard`), which the plugin keeps as [`SYNC_ENABLED`] and shows in its
+//! snapshot. That only stops text going to and coming from peers; the
+//! clipboard stays readable and writable through the API, and a send on
+//! request still works.
 //!
 //! Never log clipboard text, only its length.
 
@@ -43,15 +44,17 @@ pub use packet::{
 };
 
 use crate::{
-    core::{
-        CoreError, DeviceSnapshot, Plugin, PluginContext, PluginEventKind, PluginSettings,
-        SettingsPatch, SettingsSection, SettingsSnapshot,
-    },
+    core::{CoreError, DeviceSnapshot, Plugin, PluginContext, PluginEventKind},
     protocol::Packet,
+    store::ConfigKey,
 };
 
-/// The plugin's id, and the key of its settings section.
+/// The plugin's id.
 pub const ID: &str = "clipboard";
+
+/// Whether text is sent to, and taken from, paired devices; on unless the
+/// user turned it off.
+pub const SYNC_ENABLED: ConfigKey<bool> = ConfigKey::new("clipboard.syncEnabled");
 
 /// Conservative upper bound on synchronized clipboard text, in UTF-8 bytes.
 /// Text clipboard content is small by nature; this bound exists to keep a
@@ -62,9 +65,9 @@ pub const ID: &str = "clipboard";
 /// rather than a generic body-too-large rejection.
 pub const MAX_CLIPBOARD_TEXT_BYTES: usize = 32 * 1024;
 
-/// The synced clipboard text: `GET /clipboard`, and the data of
-/// `clipboard.changed`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The synced clipboard text and whether sync is on: `GET /clipboard`, and
+/// the data of `clipboard.changed`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipboardSnapshot {
     pub text: String,
@@ -73,47 +76,32 @@ pub struct ClipboardSnapshot {
     /// this machine.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_device_id: Option<String>,
+    /// Whether text is sent to, and taken from, paired devices
+    /// ([`SYNC_ENABLED`]).
+    pub sync_enabled: bool,
 }
 
 impl PluginEventKind for ClipboardSnapshot {
     const TYPE: &'static str = "clipboard.changed";
 }
 
-/// The plugin's settings: `plugins.clipboard` in `GET`/`PATCH /settings`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
-pub struct ClipboardSettings {
-    /// Whether text is sent to, and taken from, paired devices.
-    pub sync_enabled: bool,
+/// The synced text, as the plugin holds it: a [`ClipboardSnapshot`]
+/// without the setting, which is in the store.
+#[derive(Clone, Default)]
+struct Synced {
+    text: String,
+    updated_at: u64,
+    source_device_id: Option<String>,
 }
 
-impl Default for ClipboardSettings {
-    fn default() -> Self {
-        Self { sync_enabled: true }
-    }
-}
-
-impl PluginSettings for ClipboardSettings {
-    const ID: &'static str = ID;
-}
-
-impl ClipboardSettings {
-    /// The clipboard's section of `settings`, or the defaults if it has
-    /// none this build can read.
-    pub fn of(settings: &SettingsSnapshot) -> Self {
-        settings
-            .plugins
-            .get(ID)
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .unwrap_or_default()
-    }
-
-    /// A settings change that turns sync on or off.
-    pub fn sync_enabled_patch(enabled: bool) -> SettingsPatch {
-        SettingsPatch::plugin(
-            ID,
-            serde_json::Map::from_iter([("syncEnabled".into(), enabled.into())]),
-        )
+impl Synced {
+    fn snapshot(&self, sync_enabled: bool) -> ClipboardSnapshot {
+        ClipboardSnapshot {
+            text: self.text.clone(),
+            updated_at: self.updated_at,
+            source_device_id: self.source_device_id.clone(),
+            sync_enabled,
+        }
     }
 }
 
@@ -141,7 +129,7 @@ impl ClipboardSyncError {
 
 pub struct ClipboardPlugin {
     backend: Arc<dyn ClipboardService + Send + Sync>,
-    snapshot: Mutex<ClipboardSnapshot>,
+    synced: Mutex<Synced>,
     /// Following the backend's local changes, once the daemon has started.
     follower: Mutex<Option<JoinHandle<()>>>,
     /// Stops the follower at shutdown.
@@ -152,15 +140,38 @@ impl ClipboardPlugin {
     pub fn new(backend: Arc<dyn ClipboardService + Send + Sync>) -> Self {
         Self {
             backend,
-            snapshot: Mutex::default(),
+            synced: Mutex::default(),
             follower: Mutex::default(),
             shutdown: CancellationToken::new(),
         }
     }
 
-    /// The synced clipboard text.
-    pub fn snapshot(&self) -> ClipboardSnapshot {
-        self.lock().clone()
+    /// The synced clipboard text, and whether sync is on.
+    pub fn snapshot(&self, ctx: &PluginContext) -> ClipboardSnapshot {
+        self.lock().snapshot(sync_enabled(ctx))
+    }
+
+    /// Turn sync on or off, keeping the choice in the store. Setting what
+    /// is already in effect changes nothing and publishes no event.
+    pub fn set_sync_enabled(
+        &self,
+        ctx: &PluginContext,
+        enabled: bool,
+    ) -> Result<ClipboardSnapshot, ClipboardSyncError> {
+        let snapshot = {
+            // Held across the write, so that two changes can't both see
+            // the old value.
+            let synced = self.lock();
+            if sync_enabled(ctx) == enabled {
+                return Ok(synced.snapshot(enabled));
+            }
+            ctx.store()
+                .set(&SYNC_ENABLED, &enabled)
+                .map_err(CoreError::Store)?;
+            synced.snapshot(enabled)
+        };
+        ctx.publish(&snapshot)?;
+        Ok(snapshot)
     }
 
     /// Set the clipboard text and, while sync is on, send it to every
@@ -176,21 +187,22 @@ impl ClipboardPlugin {
                 limit: MAX_CLIPBOARD_TEXT_BYTES,
             });
         }
+        let sync_enabled = sync_enabled(ctx);
         let snapshot = {
-            let mut snapshot = self.lock();
-            if snapshot.text == text {
-                return Ok(snapshot.clone());
+            let mut synced = self.lock();
+            if synced.text == text {
+                return Ok(synced.snapshot(sync_enabled));
             }
-            *snapshot = ClipboardSnapshot {
+            *synced = Synced {
                 text: text.clone(),
                 updated_at: unix_millis(),
                 source_device_id: None,
             };
-            snapshot.clone()
+            synced.snapshot(sync_enabled)
         };
         let _ = self.backend.set(&text);
         ctx.publish(&snapshot)?;
-        if sync_enabled(ctx) {
+        if sync_enabled {
             broadcast(ctx, text, None);
         }
         Ok(snapshot)
@@ -278,23 +290,23 @@ impl ClipboardPlugin {
             return;
         }
         let snapshot = {
-            let mut snapshot = self.lock();
-            if content == snapshot.text {
+            let mut synced = self.lock();
+            if content == synced.text {
                 return;
             }
             if let Some(timestamp) = timestamp
-                && timestamp <= snapshot.updated_at as i64
+                && timestamp <= synced.updated_at as i64
             {
                 return;
             }
-            *snapshot = ClipboardSnapshot {
+            *synced = Synced {
                 text: content.clone(),
                 updated_at: timestamp
                     .map(|value| value.max(0) as u64)
                     .unwrap_or_else(unix_millis),
                 source_device_id: Some(device_id.to_owned()),
             };
-            snapshot.clone()
+            synced.snapshot(true)
         };
         let _ = self.backend.set(&content);
         let _ = ctx.publish(&snapshot);
@@ -303,8 +315,8 @@ impl ClipboardPlugin {
         broadcast(ctx, content, Some(device_id));
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, ClipboardSnapshot> {
-        self.snapshot.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> std::sync::MutexGuard<'_, Synced> {
+        self.synced.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -384,30 +396,32 @@ impl Plugin for ClipboardPlugin {
         })
     }
 
-    fn settings(&self) -> Option<SettingsSection> {
-        Some(SettingsSection::of::<ClipboardSettings>())
-    }
-
     /// Offer the device our text, so it can adopt it if it is newer than
     /// its own. Nothing is sent while sync is off or before there is text.
     fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
         if !sync_enabled(ctx) {
             return;
         }
-        let snapshot = self.snapshot();
-        if snapshot.text.is_empty() {
+        let synced = self.lock().clone();
+        if synced.text.is_empty() {
             return;
         }
         if let Ok(packet) =
-            build_connect_packet(unix_millis(), snapshot.text, snapshot.updated_at as i64)
+            build_connect_packet(unix_millis(), synced.text, synced.updated_at as i64)
         {
             let _ = ctx.send(&device.device_id, packet);
         }
     }
 }
 
+/// Whether sync is on: [`SYNC_ENABLED`], or on if it can't be read.
 fn sync_enabled(ctx: &PluginContext) -> bool {
-    ctx.settings::<ClipboardSettings>().sync_enabled
+    ctx.store()
+        .get(&SYNC_ENABLED)
+        .inspect_err(|error| tracing::warn!(%error, "ignoring unreadable clipboard sync setting"))
+        .ok()
+        .flatten()
+        .unwrap_or(true)
 }
 
 /// Send `text` to every paired, connected device that accepts it, except
@@ -460,10 +474,8 @@ mod tests {
         rx
     }
 
-    fn set_sync_enabled(handle: &Core, enabled: bool) {
-        handle
-            .update_settings(ClipboardSettings::sync_enabled_patch(enabled))
-            .unwrap();
+    fn set_sync_enabled(plugin: &ClipboardPlugin, ctx: &PluginContext, enabled: bool) {
+        plugin.set_sync_enabled(ctx, enabled).unwrap();
     }
 
     fn content(packet: &Packet) -> String {
@@ -482,7 +494,7 @@ mod tests {
         let snapshot = plugin.set_text(&ctx, "hello".into()).unwrap();
         assert_eq!(snapshot.text, "hello");
         assert_eq!(snapshot.source_device_id, None);
-        assert_eq!(plugin.snapshot(), snapshot);
+        assert_eq!(plugin.snapshot(&ctx), snapshot);
         assert_eq!(content(&rx.try_recv().unwrap()), "hello");
 
         let EventData::Plugin(event) = events.try_recv().unwrap().event else {
@@ -518,13 +530,13 @@ mod tests {
 
     #[test]
     fn remote_text_is_applied_and_forwarded_but_not_echoed_back() {
-        let (handle, plugin, _ctx) = clipboard();
+        let (handle, plugin, ctx) = clipboard();
         let mut sender_rx = connect_paired_peer(&handle, DEVICE_ID);
         let mut other_rx = connect_paired_peer(&handle, OTHER_ID);
 
         handle.handle_peer_packet(DEVICE_ID, build_packet(1_u64, "from peer".into()).unwrap());
 
-        let snapshot = plugin.snapshot();
+        let snapshot = plugin.snapshot(&ctx);
         assert_eq!(snapshot.text, "from peer");
         assert_eq!(snapshot.source_device_id.as_deref(), Some(DEVICE_ID));
         assert_eq!(plugin.backend.get().unwrap().as_deref(), Some("from peer"));
@@ -536,12 +548,12 @@ mod tests {
 
     #[test]
     fn text_from_unpaired_devices_is_ignored() {
-        let (handle, plugin, _ctx) = clipboard();
+        let (handle, plugin, ctx) = clipboard();
         handle
             .discover_device(&make_identity(DEVICE_ID, Vec::new()), false, 1)
             .unwrap();
         handle.handle_peer_packet(DEVICE_ID, build_packet(1_u64, "sneaky".into()).unwrap());
-        assert_eq!(plugin.snapshot().text, "");
+        assert_eq!(plugin.snapshot(&ctx).text, "");
     }
 
     #[test]
@@ -554,7 +566,7 @@ mod tests {
         assert_eq!(offered.packet_type, CONNECT_PACKET_TYPE);
         let body: ClipboardConnectBody = offered.body_as().unwrap();
         assert_eq!(body.content, "hello");
-        assert_eq!(body.timestamp, plugin.snapshot().updated_at as i64);
+        assert_eq!(body.timestamp, plugin.snapshot(&ctx).updated_at as i64);
 
         let mut events = handle.subscribe();
         handle.handle_peer_packet(DEVICE_ID, build_packet(1_u64, "hello".into()).unwrap());
@@ -571,12 +583,12 @@ mod tests {
         let stale =
             build_connect_packet(1_u64, "older".into(), newer.updated_at as i64 - 1000).unwrap();
         handle.handle_peer_packet(DEVICE_ID, stale);
-        assert_eq!(plugin.snapshot().text, "newer");
+        assert_eq!(plugin.snapshot(&ctx).text, "newer");
 
         let fresh =
             build_connect_packet(1_u64, "fresh".into(), newer.updated_at as i64 + 1000).unwrap();
         handle.handle_peer_packet(DEVICE_ID, fresh);
-        let snapshot = plugin.snapshot();
+        let snapshot = plugin.snapshot(&ctx);
         assert_eq!(snapshot.text, "fresh");
         assert_eq!(snapshot.updated_at, newer.updated_at + 1000);
     }
@@ -601,7 +613,7 @@ mod tests {
 
         // Unlike automatic sync, it resends unchanged text, and works while
         // sync is off.
-        set_sync_enabled(&handle, false);
+        set_sync_enabled(&plugin, &ctx, false);
         plugin.send_to(&ctx, DEVICE_ID).unwrap();
         rx.try_recv().unwrap();
     }
@@ -633,8 +645,8 @@ mod tests {
     fn turning_sync_off_stops_sending_and_applying() {
         let (handle, plugin, ctx) = clipboard();
         let mut rx = connect_paired_peer(&handle, DEVICE_ID);
-        set_sync_enabled(&handle, false);
-        assert!(!ClipboardSettings::of(&handle.settings().unwrap()).sync_enabled);
+        set_sync_enabled(&plugin, &ctx, false);
+        assert!(!plugin.snapshot(&ctx).sync_enabled);
 
         // A local change no longer reaches the peer...
         plugin.set_text(&ctx, "local only".into()).unwrap();
@@ -642,32 +654,41 @@ mod tests {
 
         // ...and text from the peer is not applied...
         handle.handle_peer_packet(DEVICE_ID, build_packet(1_u64, "from peer".into()).unwrap());
-        assert_eq!(plugin.snapshot().text, "local only");
+        assert_eq!(plugin.snapshot(&ctx).text, "local only");
 
         // ...nor offered to a device that connects.
         let mut late_rx = connect_paired_peer(&handle, OTHER_ID);
         assert!(late_rx.try_recv().is_err());
 
-        set_sync_enabled(&handle, true);
+        set_sync_enabled(&plugin, &ctx, true);
         plugin.set_text(&ctx, "resumed".into()).unwrap();
         assert_eq!(content(&rx.try_recv().unwrap()), "resumed");
     }
 
     #[test]
-    fn settings_show_the_section_with_its_default() {
-        let (handle, _plugin, _ctx) = clipboard();
-        let settings = handle.settings().unwrap();
+    fn sync_is_on_by_default_and_a_change_is_stored_and_announced() {
+        let (handle, plugin, ctx) = clipboard();
+        plugin.set_text(&ctx, "hello".into()).unwrap();
+        assert!(plugin.snapshot(&ctx).sync_enabled, "on by default");
         assert_eq!(
-            serde_json::to_value(&settings).unwrap()["plugins"],
-            serde_json::json!({"clipboard": {"syncEnabled": true}})
+            serde_json::to_value(plugin.snapshot(&ctx)).unwrap()["syncEnabled"],
+            true
         );
-        assert!(matches!(
-            handle.update_settings(SettingsPatch::plugin(
-                ID,
-                serde_json::Map::from_iter([("syncEnabled".into(), "no".into())]),
-            )),
-            Err(CoreError::InvalidSettings)
-        ));
+        let mut events = handle.subscribe();
+
+        let snapshot = plugin.set_sync_enabled(&ctx, false).unwrap();
+        assert!(!snapshot.sync_enabled);
+        assert_eq!(snapshot.text, "hello", "the text is left alone");
+        assert_eq!(ctx.store().get(&SYNC_ENABLED).unwrap(), Some(false));
+        assert_eq!(plugin.snapshot(&ctx), snapshot);
+        let EventData::Plugin(event) = events.try_recv().unwrap().event else {
+            panic!("expected a plugin event");
+        };
+        assert_eq!(event.decode::<ClipboardSnapshot>(), Some(snapshot));
+
+        // Setting it again changes nothing.
+        plugin.set_sync_enabled(&ctx, false).unwrap();
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -678,7 +699,7 @@ mod tests {
         let shutdown = CancellationToken::new();
         let follower = plugin
             .clone()
-            .follow_local_changes(ctx, receiver, shutdown.clone());
+            .follow_local_changes(ctx.clone(), receiver, shutdown.clone());
 
         changes.send_replace(Some("copied".into()));
         let sent = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -687,10 +708,10 @@ mod tests {
             .unwrap();
         assert_eq!(content(&sent), "copied");
 
-        set_sync_enabled(&handle, false);
+        set_sync_enabled(&plugin, &ctx, false);
         changes.send_replace(Some("private".into()));
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(plugin.snapshot().text, "copied");
+        assert_eq!(plugin.snapshot(&ctx).text, "copied");
         assert!(rx.try_recv().is_err());
 
         shutdown.cancel();

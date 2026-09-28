@@ -81,7 +81,10 @@ impl MockServer {
             .route("/api/v1/pairings/{pairing_id}/accept", post(accept_pairing))
             .route("/api/v1/devices/{device_id}/share", post(start_transfer))
             .route("/api/v1/transfers/{transfer_id}", get(transfer))
-            .route("/api/v1/clipboard", get(clipboard).put(set_clipboard))
+            .route(
+                "/api/v1/clipboard",
+                get(clipboard).put(set_clipboard).patch(set_clipboard_sync),
+            )
             .route("/api/v1/events", get(events))
             .layer(middleware::from_fn(authorize))
             .with_state(state.clone());
@@ -296,6 +299,7 @@ async fn clipboard(State(state): State<MockState>) -> Json<ClipboardSnapshot> {
         text: "current".into(),
         updated_at: 10,
         source_device_id: None,
+        sync_enabled: true,
     })
 }
 
@@ -316,8 +320,24 @@ async fn set_clipboard(Json(request): Json<SetClipboard>) -> Response {
         text: request.text,
         updated_at: 11,
         source_device_id: None,
+        sync_enabled: true,
     })
     .into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SetClipboardSync {
+    sync_enabled: bool,
+}
+
+async fn set_clipboard_sync(Json(request): Json<SetClipboardSync>) -> Json<ClipboardSnapshot> {
+    Json(ClipboardSnapshot {
+        text: "current".into(),
+        updated_at: 10,
+        source_device_id: None,
+        sync_enabled: request.sync_enabled,
+    })
 }
 
 async fn events() -> Response {
@@ -329,6 +349,7 @@ async fn events() -> Response {
                 text: "changed".into(),
                 updated_at: 12,
                 source_device_id: None,
+                sync_enabled: true,
             })
             .unwrap(),
         ),
@@ -398,6 +419,7 @@ async fn every_client_operation_uses_the_expected_http_contract() {
         client.set_clipboard("updated").await.unwrap().text,
         "updated"
     );
+    assert!(!client.set_clipboard_sync(false).await.unwrap().sync_enabled);
     let mut events = client.events().await.unwrap();
     let EventData::Plugin(event) = events.next().await.unwrap().unwrap().event else {
         panic!("expected a plugin event");
@@ -575,6 +597,7 @@ async fn start_racing_daemon() -> (String, JoinHandle<()>) {
                         text: "changed".into(),
                         updated_at: 12,
                         source_device_id: None,
+                        sync_enabled: true,
                     };
                     publish(
                         &events,
@@ -584,6 +607,7 @@ async fn start_racing_daemon() -> (String, JoinHandle<()>) {
                         text: "current".into(),
                         updated_at: 10,
                         source_device_id: None,
+                        sync_enabled: true,
                     })
                 },
             ),

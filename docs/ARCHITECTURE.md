@@ -71,9 +71,9 @@ the three instances it hands to them. `core` and `plugins` never import
 | | `src/core/connections.rs` | Registering and dropping authenticated control channels, routing each incoming packet to the plugin that claims its type (only from paired devices), sending to devices that advertised a packet type, and `LanCommand`, the channel to the LAN transport. |
 | | `src/core/pairing.rs` | The pairing state machine (§4) in both directions, its timeouts, and the trust it writes or removes. |
 | | `src/core/transfers.rs`, `src/core/payload.rs` | The transfers service (`Transfers`, `TransferHandle`: the state machine, progress throttling, cancellation and cleanup, for every feature that moves a file, §5), and payload connections for plugins (`PayloadPeer`: listen or dial with this device's certificate, or sign in to an SSH server on the device with its key, without handing out the key). |
-| | `src/core/{plugin,events,settings,error}.rs` | The plugin API (`Plugin`, `PluginContext`, `PluginRegistry`, `Capabilities`, plugin events and settings sections), the bounded event bus (plugin events travel as `EventData::Plugin` with the same `{type, data}` shape), user settings with a section per plugin that has settings (§7), and `CoreError`. |
+| | `src/core/{plugin,events,settings,error}.rs` | The plugin API (`Plugin`, `PluginContext`, `PluginRegistry`, `Capabilities`, plugin events), the bounded event bus (plugin events travel as `EventData::Plugin` with the same `{type, data}` shape), the core's user settings (§7), and `CoreError`. |
 | | `src/core/testing.rs` | A real core for unit tests: an in-memory store, no plugins or just the one under test, no LAN. |
-| `plugins` | `src/plugins/mod.rs`, `src/plugins/{ping,findmyphone}/{mod,packet,http}.rs`, `src/plugins/{battery,connectivity}/{mod,packet}.rs`, `src/plugins/clipboard/{mod,packet,http,backend}.rs`, `src/plugins/clipboard/backend/system.rs`, `src/plugins/share/{mod,packet,http}.rs`, `src/plugins/browse/{mod,packet,http,session,ssh,files}.rs`, `src/plugins/notifications/{mod,packet,http}.rs`, `src/plugins/telephony/{mod,packet,http}.rs` | The features, each a `core::Plugin`. `builtin()` lists them; `builtin_parts()` builds the same list and also returns the clipboard, browse and notifications instances the UI keeps. Nothing here is behind `gui`. **Ping** owns its packet handling, the `ping.received` event and `POST /devices/{id}/ping`. **Find my phone** only sends, and owns `POST /devices/{id}/ring`. **Battery** adds `plugins.battery` to device snapshots and clears it in the `disconnected`/`unpaired` hooks. **Connectivity** does the same with `plugins.connectivity`, the peer's mobile signal per SIM. **Clipboard** owns the synced text, `/clipboard`, the `plugins.clipboard` settings section, and its backends (the `ClipboardService` trait, `SystemClipboard` over `arboard` for the desktop clipboard, an in-memory one); it follows the desktop clipboard from its `started` hook and releases it in `shutdown` (§6). **Share** sends files through its streaming route `POST /devices/{id}/share` and saves files peers send, both as core transfers (§5); it also sends text and links (`POST /devices/{id}/share/text` and `/share/url`) and publishes those a peer shares as `share.received` (the app opens web links and copies text to the clipboard). **Browse** owns the per-device SFTP sessions with peers' file servers and the `/devices/{id}/files` routes (the upload as a streaming route), and closes its sessions in the `disconnected`/`unpaired`/`shutdown` hooks (§12). **Notifications** keeps each paired, connected device's notifications in memory (`/devices/{id}/notifications`, `notification.posted`/`notification.removed`), asks for them in the `connected` and `paired` hooks, fetches their icons over payload connections, and drops them in `disconnected`/`unpaired`. **Telephony** adds the call going on on a phone to its snapshot as `plugins.telephony` (`GET /devices/{id}/call`), publishes `call.missed`, mutes the ringer (`POST /devices/{id}/call/mute`), and clears the call in `disconnected`/`unpaired`; it never logs callers' names or numbers. The capabilities advertised in the identity packet are the union over the plugins: ping, clipboard and share both ways; `kdeconnect.sftp.request` outgoing and `kdeconnect.sftp` incoming only (browses peers, serves no files); `kdeconnect.battery` incoming only (reads peers' batteries, reports none); `kdeconnect.connectivity_report` incoming only (reads peers' mobile signal, reports none); `kdeconnect.findmyphone.request` outgoing only (asks peers to ring, doesn't ring itself); `kdeconnect.notification` incoming and its `.request`, `.reply` and `.action` outgoing (shows peers' notifications, shares none of its own); `kdeconnect.telephony` incoming and `kdeconnect.telephony.request_mute` outgoing (shows a phone's calls; SMS is not handled). |
+| `plugins` | `src/plugins/mod.rs`, `src/plugins/{ping,findmyphone}/{mod,packet,http}.rs`, `src/plugins/{battery,connectivity}/{mod,packet}.rs`, `src/plugins/clipboard/{mod,packet,http,backend}.rs`, `src/plugins/clipboard/backend/system.rs`, `src/plugins/share/{mod,packet,http}.rs`, `src/plugins/browse/{mod,packet,http,session,ssh,files}.rs`, `src/plugins/notifications/{mod,packet,http}.rs`, `src/plugins/telephony/{mod,packet,http}.rs` | The features, each a `core::Plugin`. `builtin()` lists them; `builtin_parts()` builds the same list and also returns the clipboard, browse and notifications instances the UI keeps. Nothing here is behind `gui`. **Ping** owns its packet handling, the `ping.received` event and `POST /devices/{id}/ping`. **Find my phone** only sends, and owns `POST /devices/{id}/ring`. **Battery** adds `plugins.battery` to device snapshots and clears it in the `disconnected`/`unpaired` hooks. **Connectivity** does the same with `plugins.connectivity`, the peer's mobile signal per SIM. **Clipboard** owns the synced text, `/clipboard` (with its `clipboard.syncEnabled` setting), and its backends (the `ClipboardService` trait, `SystemClipboard` over `arboard` for the desktop clipboard, an in-memory one); it follows the desktop clipboard from its `started` hook and releases it in `shutdown` (§6). **Share** sends files through its streaming route `POST /devices/{id}/share` and saves files peers send, both as core transfers (§5); it also sends text and links (`POST /devices/{id}/share/text` and `/share/url`) and publishes those a peer shares as `share.received` (the app opens web links and copies text to the clipboard). **Browse** owns the per-device SFTP sessions with peers' file servers and the `/devices/{id}/files` routes (the upload as a streaming route), and closes its sessions in the `disconnected`/`unpaired`/`shutdown` hooks (§12). **Notifications** keeps each paired, connected device's notifications in memory (`/devices/{id}/notifications`, `notification.posted`/`notification.removed`), asks for them in the `connected` and `paired` hooks, fetches their icons over payload connections, and drops them in `disconnected`/`unpaired`. **Telephony** adds the call going on on a phone to its snapshot as `plugins.telephony` (`GET /devices/{id}/call`), publishes `call.missed`, mutes the ringer (`POST /devices/{id}/call/mute`), and clears the call in `disconnected`/`unpaired`; it never logs callers' names or numbers. The capabilities advertised in the identity packet are the union over the plugins: ping, clipboard and share both ways; `kdeconnect.sftp.request` outgoing and `kdeconnect.sftp` incoming only (browses peers, serves no files); `kdeconnect.battery` incoming only (reads peers' batteries, reports none); `kdeconnect.connectivity_report` incoming only (reads peers' mobile signal, reports none); `kdeconnect.findmyphone.request` outgoing only (asks peers to ring, doesn't ring itself); `kdeconnect.notification` incoming and its `.request`, `.reply` and `.action` outgoing (shows peers' notifications, shares none of its own); `kdeconnect.telephony` incoming and `kdeconnect.telephony.request_mute` outgoing (shows a phone's calls; SMS is not handled). |
 | `daemon` | `src/daemon.rs` | The composition root: `RunningService` builds the core with `plugins::builtin()`, applies the stored settings, starts the plugins, the LAN transport (advertising the core's capabilities) and the API, and stops them in order. Used by the CLI's `run` and the desktop app. `start_with` takes the plugin list from the caller (the desktop app, which keeps each plugin's UI half), and `core()` hands the running core to a frontend in the same process. |
 | `api` | `src/api.rs`, `src/api/upload.rs` | The Axum server: the core's routes (`/status`, `/discovery`, `/devices`, `/pairings`, `/transfers`, `/settings`, `/events`), every plugin's routes merged in, `ApiProblem` (the `application/problem+json` error every handler returns, with `From<CoreError>`), optional bearer-token auth, body-size limits, request deadline and SSE. Streaming routes (every plugin's `streaming_routes`) get the transfer-sized body limit and no request deadline; `upload` holds their shared helpers (idle timeout, forwarding a multipart file part into a transfer until the part or the transfer ends, and the lingering close that drains an upload a handler answered before reading to its end). |
 | `client` | `src/client.rs` | Typed HTTP client the CLI (and any future frontend) uses to talk to `api`. |
@@ -85,14 +85,13 @@ the three instances it hands to them. `core` and `plugins` never import
 
 ```rust
 pub trait Plugin: Send + Sync + 'static {
-    fn id(&self) -> &'static str;                          // "ping"; names its settings and device state
+    fn id(&self) -> &'static str;                          // "ping"; names its config keys and device state
     fn incoming(&self) -> &'static [&'static str] { &[] }  // packet types it handles
     fn outgoing(&self) -> &'static [&'static str];         // packet types it sends
     fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {}
     fn routes(self: Arc<Self>, ctx: PluginContext) -> Router { Router::new() }
     fn streaming_routes(self: Arc<Self>, ctx: PluginContext) -> Router { Router::new() }
     fn device_state(&self, device_id: &str) -> Option<Value> { None }
-    fn settings(&self) -> Option<SettingsSection> { None }
     fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {}
     fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) {}
     fn disconnected(&self, ctx: &PluginContext, device_id: &str) {}
@@ -129,17 +128,18 @@ between the core and its plugins. The rules the core keeps:
   (`/devices/{id}/ping`) or a top-level resource of the plugin's own
   (`/clipboard`), never a `/plugins/<id>/` prefix. Overlapping routes
   panic when the router is built.
-- **Device state and settings.** A plugin adds to a device's snapshot
-  under `plugins.<id>` by answering `device_state` (pulled whenever a
-  snapshot leaves the core) and calls `ctx.device_changed(id)` when its
-  answer changes. It owns a typed settings section, stored and exposed
-  under `plugins.<id>` (§7), and reads it with `ctx.settings::<T>()`.
-- **Data.** A plugin keeps anything else in the store (`ctx.store()`),
-  under `ConfigKey`s it declares as `<id>.<name>`, per device where the
+- **Device state.** A plugin adds to a device's snapshot under
+  `plugins.<id>` by answering `device_state` (pulled whenever a snapshot
+  leaves the core) and calls `ctx.device_changed(id)` when its answer
+  changes.
+- **Data and settings.** A plugin keeps what it stores, its settings
+  included, in the store (`ctx.store()`), under `ConfigKey`s it declares
+  as `<id>.<name>` (e.g. `clipboard.syncEnabled`), per device where the
   value belongs to one (`PerDevice`, removed when the device is
-  unpaired). It can `watch` a key, its settings section included
-  (`PLUGIN_SETTINGS.of(id)`). It never writes files of its own in the data
-  directory.
+  unpaired). It can `watch` a key. The core's settings (§7) know nothing
+  of plugins: a plugin serves its settings on its own resource, with its
+  own snapshot and events, like any other state of its own. It never
+  writes files of its own in the data directory.
 - **Events and errors.** A plugin publishes its own event types
   (`ctx.publish(&T)` for `T: PluginEventKind`); on the wire they look like
   core events. Its errors map to `ApiProblem` inside the plugin; core
@@ -148,7 +148,7 @@ between the core and its plugins. The rules the core keeps:
 `PluginContext` offers: `device(id)` and `device_changed(id)`;
 `send(device, packet)` (paired, connected, and the peer advertised the
 type), `can_send` and `broadcast(packet, except)`; `publish`;
-`settings::<T>()`; `store()`; `transfers()`; and `payload_peer(device)`
+`store()`; `transfers()`; and `payload_peer(device)`
 for payload connections and SSH sign-in without the private key.
 
 A new feature is:
@@ -297,8 +297,8 @@ States: `queued → connecting → transferring → completed | cancelled | fail
   and applies only if strictly newer than the last known update, so stale
   or replayed packets are ignored.
 - Clipboard is a plugin (`src/plugins/clipboard/`): it holds the synced
-  text behind its own lock, reads `plugins.clipboard.syncEnabled` from the
-  core when it acts, offers its text to a device from the `connected`
+  text behind its own lock, reads its `clipboard.syncEnabled` key (default
+  `true`) from the store when it acts, offers its text to a device from the `connected`
   hook, and sends to all other devices with `PluginContext::broadcast`.
 - A feedback-loop guard tracks the last-applied content and source, so
   content just received from a peer is never sent back to it, and
@@ -322,6 +322,11 @@ States: `queued → connecting → transferring → completed | cancelled | fail
   bounces back. Text already on the clipboard at start, empty text and
   non-text content (images) aren't reported, and copies made while sync
   is off are dropped.
+- Sync is turned on or off with `ClipboardPlugin::set_sync_enabled`
+  (`PATCH /clipboard`, `ferry-cli clipboard sync <true|false>`, "Sync
+  clipboard" on the app's Settings page). The clipboard's snapshot
+  carries it as `syncEnabled`, and a change publishes `clipboard.changed`
+  like a change of text.
 - Sending to one device on request (`POST /devices/{deviceId}/clipboard`,
   `ferry-cli clipboard send`, "Send clipboard" in the app and tray) covers
   what automatic sync can miss, e.g. text already on the clipboard at
@@ -359,16 +364,10 @@ system's light or dark mode, followed as it changes).
   another data dir never touches the default one's. While it's on, the
   app rewrites it at each start, in case the app moved.
 
-- **Plugin sections.** A plugin with settings owns a section under
-  `plugins.<id>` in `GET`/`PATCH /settings`, stored under the key
-  `core.pluginSettings` for the plugin's id (the `PerPlugin` scope); so
-  far only `plugins.clipboard.syncEnabled` (default `true`). The plugin
-  defines the fields, their defaults and what is valid (`PluginSettings`);
-  the core stores only the fields the user set, merges a patch into them
-  (`null` resets a field, a `null` section the section) and answers
-  `400 invalid_settings` for an unknown section or a value the plugin
-  can't read. `GET /settings` always lists every section, defaults filled
-  in.
+- **Plugins' settings** aren't here: a plugin keeps each as a config key
+  of its own and serves it on its own resource (§2), e.g. the clipboard's
+  `syncEnabled` on `/clipboard` (§6). The Settings page still shows them,
+  as the features' sections (`ui::features::Features::settings_sections`).
 - **Precedence.** A start option (`ferry-cli run --device-name` /
   `--download-dir`, or the app's flags of the same names) overrides the
   stored value for that run only and isn't saved. Changing that setting
@@ -437,11 +436,12 @@ the event stream.
 | `POST` | `/devices/{deviceId}/notifications/reply` | `{"id": ..., "message": ...}`: answer a notification that takes a reply; `202`. `400 empty_reply`, `409 notification_not_repliable`. |
 | `POST` | `/devices/{deviceId}/notifications/action` | `{"id": ..., "action": ...}`: press one of its buttons, by label; `202`. `409 unknown_notification_action`. |
 | `DELETE` | `/devices/{deviceId}/notifications` | `?id=`: dismiss it on the device; `202`, and it is removed at once. `409 notification_not_dismissable`. Besides the device errors, these calls fail with `404 notification_not_found` for an id the device doesn't show. |
-| `GET` | `/clipboard` | Current synchronized text and metadata. |
+| `GET` | `/clipboard` | Current synchronized text and metadata: `{text, updatedAt, sourceDeviceId?, syncEnabled}`, the data of `clipboard.changed`. |
 | `PUT` | `/clipboard` | Set text and send to eligible paired devices. |
+| `PATCH` | `/clipboard` | Turn sync with paired devices on or off: JSON body `{"syncEnabled": bool}`, unknown fields rejected. Returns the snapshot; a change publishes `clipboard.changed`. §6. |
 | `POST` | `/devices/{deviceId}/clipboard` | Send this machine's clipboard text to one paired, connected device now; `202`. `409 clipboard_empty` when there is no text, `409 unsupported_by_peer` without `kdeconnect.clipboard`. §6. |
-| `GET` | `/settings` | The settings in effect (§7): `deviceName`, `downloadDir`, `closeToTray`, `language` (the app's, a BCP 47 tag such as `"de"`, or `null` for the system's), `appearance` (the app's, `"light"` or `"dark"`, or `null` for the system's), and `plugins`, an object keyed by plugin id holding each plugin's section (so far `{"clipboard": {"syncEnabled": bool}}`). |
-| `PATCH` | `/settings` | Change the fields present in the JSON body; `null` resets one to its default, unknown fields are rejected. A plugin's fields go under `plugins.<id>`, e.g. `{"plugins": {"clipboard": {"syncEnabled": false}}}`. `400 invalid_device_name` / `invalid_download_dir` / `invalid_settings` (a plugin section, or a `language` that isn't a tag) for bad values. Returns the new settings. |
+| `GET` | `/settings` | The settings in effect (§7): `deviceName`, `downloadDir`, `closeToTray`, `language` (the app's, a BCP 47 tag such as `"de"`, or `null` for the system's), `appearance` (the app's, `"light"` or `"dark"`, or `null` for the system's). |
+| `PATCH` | `/settings` | Change the fields present in the JSON body; `null` resets one to its default, unknown fields are rejected. `400 invalid_device_name` / `invalid_download_dir` / `invalid_settings` (a `language` that isn't a tag) for bad values. Returns the new settings. |
 | `GET` | `/events` | Server-Sent Events: `device.discovered/connected/updated/disconnected/forgotten`, `pairing.requested/updated`, `transfer.started/progress/completed/failed`, `clipboard.changed`, `settings.changed`, `notification.posted` (`{deviceId, deviceName, notification, alert}`: a notification posted or changed, including its icon arriving; `alert` is set for news, i.e. new or with new text, and not marked as already shown by the device) and `notification.removed` (`{deviceId, id}`), `ping.received` (`{deviceId, deviceName, message?}` from a paired device; a one-off with no snapshot endpoint, so one missed during a gap is lost), `share.received` (`{deviceId, deviceName, kind: "text", text}` or `{..., kind: "link", url}`: text or an `http(s)` link a paired device shared; a one-off like `ping.received`), `call.missed` (`{deviceId, deviceName, contactName?, phoneNumber?}`: a call that rang out unanswered; a one-off like `ping.received`). Not durable: clients refetch a snapshot after a gap or reconnect. |
 
 Mutations that need a network round-trip return `202` and are tracked

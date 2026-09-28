@@ -20,7 +20,7 @@ use ferry::{
     plugins::{
         battery::BatteryStatus,
         browse::{DirectoryListing, FileEntry, FileKind},
-        clipboard::{ClipboardSettings, ClipboardSnapshot},
+        clipboard::ClipboardSnapshot,
         connectivity::{Connectivity, MAX_STRENGTH},
         notifications::{Notification, NotificationPosted, NotificationRemoved},
         ping::ReceivedPing,
@@ -183,9 +183,6 @@ enum Command {
         /// Absolute path where received files are saved.
         #[arg(long, value_name = "DIRECTORY")]
         download_dir: Option<PathBuf>,
-        /// Whether to sync the clipboard with paired devices.
-        #[arg(long, value_name = "BOOL")]
-        clipboard_sync: Option<bool>,
         /// Whether the desktop app keeps running in the tray when its
         /// window is closed.
         #[arg(long, value_name = "BOOL")]
@@ -261,6 +258,12 @@ enum ClipboardAction {
     /// missed an automatic sync.
     Send {
         device_id: String,
+    },
+    /// Show whether the clipboard syncs with paired devices, or turn that
+    /// on or off.
+    Sync {
+        #[arg(value_name = "BOOL")]
+        enabled: Option<bool>,
     },
 }
 
@@ -598,10 +601,22 @@ impl Cli {
                     })
                     .await?;
             }
+            Command::Clipboard {
+                action: ClipboardAction::Sync { enabled },
+            } => {
+                let clipboard = match enabled {
+                    Some(enabled) => client.set_clipboard_sync(enabled).await?,
+                    None => client.clipboard().await?,
+                };
+                if json {
+                    print_clipboard(&clipboard, json);
+                } else {
+                    println!("Clipboard sync: {}", clipboard.sync_enabled);
+                }
+            }
             Command::Settings {
                 device_name,
                 download_dir,
-                clipboard_sync,
                 close_to_tray,
                 language,
                 appearance,
@@ -616,9 +631,6 @@ impl Cli {
                         "dark" => Some(Appearance::Dark),
                         _ => None,
                     }),
-                    ..clipboard_sync
-                        .map(ClipboardSettings::sync_enabled_patch)
-                        .unwrap_or_default()
                 };
                 let settings = if patch == SettingsPatch::default() {
                     client.settings().await?
@@ -832,10 +844,6 @@ fn print_settings(settings: &SettingsSnapshot, json_output: bool) {
     } else {
         println!("Device name: {}", settings.device_name);
         println!("Download directory: {}", settings.download_dir.display());
-        println!(
-            "Clipboard sync: {}",
-            ClipboardSettings::of(settings).sync_enabled
-        );
         println!("Close to tray: {}", settings.close_to_tray);
         println!(
             "Language: {}",
@@ -1111,15 +1119,10 @@ mod tests {
             vec!["ferry-cli", "clipboard", "set", "hello"],
             vec!["ferry-cli", "clipboard", "watch"],
             vec!["ferry-cli", "clipboard", "send", "device-id"],
+            vec!["ferry-cli", "clipboard", "sync"],
+            vec!["ferry-cli", "clipboard", "sync", "false"],
             vec!["ferry-cli", "settings"],
-            vec![
-                "ferry-cli",
-                "settings",
-                "--device-name",
-                "Desk",
-                "--clipboard-sync",
-                "false",
-            ],
+            vec!["ferry-cli", "settings", "--device-name", "Desk"],
             vec!["ferry-cli", "--json", "devices"],
         ];
         for arguments in cases {

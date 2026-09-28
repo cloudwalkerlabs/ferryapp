@@ -144,10 +144,14 @@ fn set_clipboard(
     clipboard.set_text(&application.plugin_context(), text.into())
 }
 
-async fn wait_for_clipboard_text(clipboard: &ClipboardPlugin, expected_text: &str) {
+async fn wait_for_clipboard_text(
+    application: &Core,
+    clipboard: &ClipboardPlugin,
+    expected_text: &str,
+) {
     timeout(Duration::from_secs(3), async {
         loop {
-            if clipboard.snapshot().text == expected_text {
+            if clipboard.snapshot(&application.plugin_context()).text == expected_text {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -236,12 +240,12 @@ async fn discovery_pairing_and_clipboard_sync_are_bidirectional() {
     // Local-to-remote: A sets its clipboard and B observes the same text
     // over the encrypted connection.
     set_clipboard(&a.application, &a.clipboard, "hello from A").unwrap();
-    wait_for_clipboard_text(&b.clipboard, "hello from A").await;
+    wait_for_clipboard_text(&b.application, &b.clipboard, "hello from A").await;
 
     // Remote-to-local: B sets its clipboard and A observes it, proving the
     // dispatch path is symmetric.
     set_clipboard(&b.application, &b.clipboard, "hello from B").unwrap();
-    wait_for_clipboard_text(&a.clipboard, "hello from B").await;
+    wait_for_clipboard_text(&a.application, &a.clipboard, "hello from B").await;
 
     // Setting the same text again on B must not disturb A (duplicate
     // content is ignored, not resent). The bus also carries unrelated
@@ -299,7 +303,7 @@ async fn remote_clipboard_update_is_not_echoed_back_to_its_source() {
     // infinite feedback loop between exactly two paired peers.
     let mut a_events = a.application.subscribe();
     set_clipboard(&a.application, &a.clipboard, "from A").unwrap();
-    wait_for_clipboard_text(&b.clipboard, "from A").await;
+    wait_for_clipboard_text(&b.application, &b.clipboard, "from A").await;
 
     // A must not observe a second `clipboard.changed` event caused by its
     // own content bouncing back from B. The first, expected event (from A's

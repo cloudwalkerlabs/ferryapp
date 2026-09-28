@@ -50,11 +50,10 @@ pub use pairing::{
 pub use payload::{AcceptedPayload, DialedPayload, PayloadListener, PayloadPeer, SshAuthError};
 pub use plugin::{
     Capabilities, Plugin, PluginContext, PluginEvent, PluginEventKind, PluginRegistry,
-    PluginSettings, SettingsSection,
 };
 pub use settings::{
-    APPEARANCE, Appearance, CLOSE_TO_TRAY, DEVICE_NAME, DOWNLOAD_DIR, LANGUAGE, PLUGIN_SETTINGS,
-    PerPlugin, SettingsDefaults, SettingsPatch, SettingsSnapshot,
+    APPEARANCE, Appearance, CLOSE_TO_TRAY, DEVICE_NAME, DOWNLOAD_DIR, LANGUAGE, SettingsDefaults,
+    SettingsPatch, SettingsSnapshot,
 };
 pub use transfers::{
     DEFAULT_MAX_TRANSFER_BYTES, FileNameError, PROGRESS_EVENT_INTERVAL, Transfer, TransferConfig,
@@ -118,8 +117,7 @@ impl Core {
         let settings = Settings::new(SettingsDefaults {
             device_name: local_device.device_name.clone(),
             download_dir: transfer_config.download_dir.clone(),
-        })
-        .with_sections(plugins.settings_sections());
+        });
         let settings = Arc::new(Mutex::new(settings));
         let transfers = Transfers::new(transfer_config, events.clone(), settings.clone());
         Ok((
@@ -224,7 +222,7 @@ impl Core {
         let Ok(mut current) = self.settings.lock() else {
             return;
         };
-        *current = settings.with_sections(self.plugins.settings_sections());
+        *current = settings;
         self.apply_settings(&current.snapshot());
     }
 
@@ -234,11 +232,6 @@ impl Core {
             .lock()
             .map_err(|_| CoreError::StateUnavailable)?
             .snapshot())
-    }
-
-    /// A plugin's settings section in effect, if it has one.
-    pub(super) fn plugin_settings(&self, id: &str) -> Option<serde_json::Value> {
-        self.settings.lock().ok()?.section(id)
     }
 
     /// Validate, persist, and apply a settings change, then publish
