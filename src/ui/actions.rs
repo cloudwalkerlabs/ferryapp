@@ -176,6 +176,51 @@ impl App {
         .and_then(Task::done)
     }
 
+    /// Open a link a device shared in the browser, off the UI thread, then
+    /// notify whether it opened. Neither the link nor the opener's error
+    /// (which may quote it) is logged.
+    pub(super) fn open_shared_link(&self, url: String, device_name: String) -> Task<Message> {
+        let opener = self.desktop.opener.clone();
+        context::on_runtime(&self.options.runtime, async move {
+            let result = tokio::task::spawn_blocking(move || opener.browse(&url))
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()));
+            let body = match result {
+                Ok(()) => fl!("share-link-opened"),
+                Err(_) => {
+                    tracing::warn!("couldn't open a shared link");
+                    fl!("share-link-failed")
+                }
+            };
+            Some(Message::Notify {
+                title: device_name,
+                body,
+            })
+        })
+        .and_then(Task::done)
+    }
+
+    /// Put text a device shared on the clipboard, through the clipboard
+    /// feature, then notify whether it went.
+    pub(super) fn copy_shared_text(&mut self, text: String, device_name: String) -> Task<Message> {
+        let Some(running) = self.running() else {
+            return Task::none();
+        };
+        running
+            .features
+            .copy_text(&running.ctx, text, move |copied| {
+                let body = if copied {
+                    fl!("share-text-copied")
+                } else {
+                    fl!("share-text-not-copied")
+                };
+                Message::Notify {
+                    title: device_name,
+                    body,
+                }
+            })
+    }
+
     /// Ask for a new name for this computer. The dialog stays open, with
     /// the daemon's objection under the field, until a name is accepted.
     pub(super) fn rename(&mut self) -> Task<Message> {
@@ -430,7 +475,11 @@ mod tests {
             Appearance, LanCommand, PairingDirection, PairingSnapshot, PairingStatus,
             SettingsSnapshot, TransferDirection, testing::handle,
         },
-        plugins::{browse::BrowsePlugin, notifications::NotificationsPlugin},
+        plugins::{
+            browse::BrowsePlugin,
+            clipboard::{ClipboardPlugin, ClipboardService, InMemoryClipboard},
+            notifications::NotificationsPlugin,
+        },
         ui::{
             KeyCommand, Origin, Snapshot,
             desktop::{autostart::LoginItem, open::Open},
@@ -807,6 +856,65 @@ mod tests {
         assert_eq!(
             app.toasts.items()[0].text,
             "Couldn’t open https://broken.example"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_shared_link_opens_and_notifies_either_way() {
+        let mut app = running();
+        let opener = Arc::new(FakeOpener::default());
+        app.desktop.opener = opener.clone();
+
+        let shared = |url: &str| Message::OpenSharedLink {
+            url: url.into(),
+            device_name: "Pixel".into(),
+        };
+        // The window is focused, so the notifications show as toasts.
+        settle(&mut app, shared("https://kde.org")).await;
+        assert_eq!(*opener.browsed.lock().unwrap(), ["https://kde.org"]);
+        assert_eq!(
+            app.toasts.items()[0].text,
+            "Pixel: Opened a shared link in your browser."
+        );
+
+        settle(&mut app, shared("https://broken.example")).await;
+        assert!(
+            app.toasts
+                .items()
+                .iter()
+                .any(|toast| toast.text == "Pixel: Couldn’t open a shared link in your browser.")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shared_text_goes_on_the_clipboard_and_says_so() {
+        let clipboard = InMemoryClipboard::shared();
+        let features = Features::new(
+            Arc::new(ClipboardPlugin::new(clipboard.clone())),
+            Arc::new(BrowsePlugin::default()),
+            Arc::new(NotificationsPlugin::default()),
+        );
+        let mut app = running_with(handle().0, features, &Fakes::default());
+        let shared = |text: String| Message::CopySharedText {
+            text,
+            device_name: "Pixel".into(),
+        };
+
+        settle(&mut app, shared("hello".into())).await;
+        assert_eq!(clipboard.get().unwrap().as_deref(), Some("hello"));
+        assert_eq!(
+            app.toasts.items()[0].text,
+            "Pixel: Shared text copied to the clipboard."
+        );
+
+        settle(&mut app, shared("a".repeat(64 * 1024))).await;
+        assert_eq!(clipboard.get().unwrap().as_deref(), Some("hello"));
+        assert!(
+            app.toasts
+                .items()
+                .iter()
+                .any(|toast| toast.text
+                    == "Pixel: Shared text was too long to copy to the clipboard.")
         );
     }
 

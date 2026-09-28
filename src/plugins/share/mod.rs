@@ -1,4 +1,5 @@
-//! Share: send a file to a paired device, and save files it sends here.
+//! Share: send a file, text or a link to a paired device, and save files
+//! it sends here.
 //!
 //! Sending (`POST /devices/{id}/share`, a streamed upload, or
 //! [`send_path`], a local file, for the UI) offers the file with a `kdeconnect.share.request` that advertises a payload port, and
@@ -11,7 +12,15 @@
 //! One file per request, in both directions. `kdeconnect.share.request.update`
 //! (the size of a multi-file batch) isn't claimed, so the core drops it.
 //!
-//! Never log a file name or file contents.
+//! A request with `text` or `url` instead of a file ([`send_text`],
+//! [`send_url`], `POST /devices/{id}/share/text` and `/share/url`) has no
+//! payload. One received is published as `share.received`
+//! ([`ReceivedShare`]), a one-off like `ping.received`: a web link
+//! ([`is_web_link`]) as a link, anything else, other links included, as
+//! text. What happens then is the app's: it opens links in the browser
+//! and copies text to the clipboard.
+//!
+//! Never log a file name, file contents, or shared text or links.
 
 mod http;
 pub mod packet;
@@ -25,20 +34,22 @@ use std::{
 
 use axum::Router;
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, sync::mpsc};
 use uuid::Uuid;
 
 pub use packet::{
-    PACKET_TYPE, ShareRequestBody, ShareRequestUpdateBody, UPDATE_PACKET_TYPE,
-    build_request_packet, build_update_packet, payload_port,
+    PACKET_TYPE, ShareRequestBody, ShareRequestUpdateBody, ShareTextBody, ShareUrlBody,
+    UPDATE_PACKET_TYPE, build_request_packet, build_text_packet, build_update_packet,
+    build_url_packet, payload_port,
 };
 
 use crate::{
     core::{
         CoreError, DeviceSnapshot, OperationErrorCode, PayloadPeer, Plugin, PluginContext,
-        TransferDirection, TransferHandle, TransferSnapshot, forward_reader, sanitize_file_name,
-        upload_channel,
+        PluginEventKind, TransferDirection, TransferHandle, TransferSnapshot, forward_reader,
+        sanitize_file_name, upload_channel,
     },
     protocol::Packet,
 };
@@ -62,12 +73,165 @@ impl Plugin for SharePlugin {
     }
 
     fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
-        receive(ctx, device, packet);
+        // KDE Connect checks for a file first, then text, then a link.
+        if packet.body.contains_key("filename") || packet.payload_size.is_some() {
+            receive(ctx, device, packet);
+        } else if let Ok(ShareTextBody { text }) = packet.body_as() {
+            receive_content(ctx, device, SharedContent::Text { text });
+        } else if let Ok(ShareUrlBody { url }) = packet.body_as() {
+            let content = if is_web_link(&url) {
+                SharedContent::Link {
+                    url: url.trim().to_owned(),
+                }
+            } else {
+                SharedContent::Text { text: url }
+            };
+            receive_content(ctx, device, content);
+        } else {
+            tracing::debug!(
+                device_id = device.device_id,
+                "dropping share request with nothing to share"
+            );
+        }
+    }
+
+    fn routes(self: Arc<Self>, ctx: PluginContext) -> Router {
+        http::routes(ctx)
     }
 
     fn streaming_routes(self: Arc<Self>, ctx: PluginContext) -> Router {
         http::streaming_routes(ctx)
     }
+}
+
+/// The most text, or the longest link, sent in one request, in UTF-8
+/// bytes. A request is one line on the control channel, which a peer
+/// reads up to 64 KiB, so this leaves room for the rest of the packet.
+pub const MAX_SHARED_TEXT_BYTES: usize = 32 * 1024;
+
+/// Text or a link shared by a paired device, published as
+/// `share.received`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceivedShare {
+    pub device_id: String,
+    pub device_name: String,
+    #[serde(flatten)]
+    pub content: SharedContent,
+}
+
+impl PluginEventKind for ReceivedShare {
+    const TYPE: &'static str = "share.received";
+}
+
+/// What a device shared: `{"kind": "text", "text": ...}` or
+/// `{"kind": "link", "url": ...}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SharedContent {
+    Text {
+        text: String,
+    },
+    /// An `http` or `https` link ([`is_web_link`]), trimmed.
+    Link {
+        url: String,
+    },
+}
+
+/// Whether `text`, trimmed, is one `http` or `https` link: the only links
+/// safe to hand to the browser without asking. Anything else a device
+/// sends as a link (`file:`, `javascript:`, an app's own scheme) is treated
+/// as text.
+pub fn is_web_link(text: &str) -> bool {
+    let text = text.trim();
+    let rest = ["https://", "http://"].iter().find_map(|scheme| {
+        text.get(..scheme.len())
+            .filter(|prefix| prefix.eq_ignore_ascii_case(scheme))
+            .map(|_| &text[scheme.len()..])
+    });
+    rest.is_some_and(|rest| {
+        !rest.is_empty()
+            && !rest.starts_with('/')
+            && !rest
+                .chars()
+                .any(|char| char.is_whitespace() || char.is_control())
+    })
+}
+
+/// Why text or a link wasn't sent.
+#[derive(Debug, Error)]
+pub enum ShareTextError {
+    #[error("there is nothing to share")]
+    Empty,
+    #[error("shared text exceeds the {limit}-byte limit")]
+    TooLarge { limit: usize },
+    #[error(transparent)]
+    Core(#[from] CoreError),
+}
+
+impl ShareTextError {
+    /// The code clients see for this error, as [`CoreError::code`].
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Empty => "share_empty",
+            Self::TooLarge { .. } => "share_too_large",
+            Self::Core(error) => error.code(),
+        }
+    }
+}
+
+/// Send `text` to a paired, connected device that accepts
+/// `kdeconnect.share.request`. KDE Connect for Android copies it to its
+/// clipboard. Refused, with a typed error, if it is blank or over
+/// [`MAX_SHARED_TEXT_BYTES`].
+pub fn send_text(ctx: &PluginContext, device_id: &str, text: String) -> Result<(), ShareTextError> {
+    check_shared(&text)?;
+    let packet = build_text_packet(unix_millis(), text).map_err(|_| CoreError::Internal)?;
+    Ok(ctx.send(device_id, packet)?)
+}
+
+/// Send a link to a paired, connected device that accepts
+/// `kdeconnect.share.request`, trimmed. KDE Connect opens it with the app
+/// for its scheme (a browser for a web page). Refused, with a typed error,
+/// if it is blank or over [`MAX_SHARED_TEXT_BYTES`].
+pub fn send_url(ctx: &PluginContext, device_id: &str, url: &str) -> Result<(), ShareTextError> {
+    let url = url.trim();
+    check_shared(url)?;
+    let packet =
+        build_url_packet(unix_millis(), url.to_owned()).map_err(|_| CoreError::Internal)?;
+    Ok(ctx.send(device_id, packet)?)
+}
+
+fn check_shared(text: &str) -> Result<(), ShareTextError> {
+    if text.trim().is_empty() {
+        return Err(ShareTextError::Empty);
+    }
+    if text.len() > MAX_SHARED_TEXT_BYTES {
+        return Err(ShareTextError::TooLarge {
+            limit: MAX_SHARED_TEXT_BYTES,
+        });
+    }
+    Ok(())
+}
+
+/// Publish text or a link a paired device shared, unless it is blank.
+/// Only its kind and length are logged.
+fn receive_content(ctx: &PluginContext, device: &DeviceSnapshot, content: SharedContent) {
+    let (kind, shared) = match &content {
+        SharedContent::Text { text } => ("text", text),
+        SharedContent::Link { url } => ("link", url),
+    };
+    let length = shared.len();
+    if shared.trim().is_empty() {
+        tracing::debug!(device_id = device.device_id, kind, "dropping a blank share");
+        return;
+    }
+    tracing::debug!(device_id = device.device_id, kind, length, "share received");
+    let _ = ctx.publish(&ReceivedShare {
+        device_id: device.device_id.clone(),
+        device_name: device.device_name.clone(),
+        content,
+    });
 }
 
 /// Start sending a file of `declared_size` bytes to a paired, connected
@@ -259,7 +423,7 @@ mod tests {
 
     use super::*;
     use crate::core::{
-        Core, TransferStatus,
+        Core, EventData, TransferStatus,
         testing::{handle_with_plugin, make_identity},
     };
 
@@ -387,6 +551,151 @@ mod tests {
                 Some(OperationErrorCode::ProtocolError),
                 Some(OperationErrorCode::Unavailable)
             ]
+        );
+    }
+
+    #[test]
+    fn only_single_http_and_https_links_are_web_links() {
+        for link in [
+            "https://kde.org",
+            "  HTTP://example.com/a?b=c#d \n",
+            "https://[::1]:8080/",
+        ] {
+            assert!(is_web_link(link), "{link:?}");
+        }
+        for other in [
+            "",
+            "https://",
+            "http:///etc/passwd",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "intent://scan/#Intent;scheme=zxing;end",
+            "ftp://example.com",
+            "https://a.example b.example",
+            "see https://kde.org",
+            "https://kde.org\nhttps://example.com",
+        ] {
+            assert!(!is_web_link(other), "{other:?}");
+        }
+    }
+
+    #[test]
+    fn text_and_links_are_sent_without_a_payload() {
+        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin);
+        let mut packets = paired_peer(&handle);
+        let ctx = handle.plugin_context();
+
+        send_text(&ctx, PEER, "hello".into()).unwrap();
+        let sent = packets.try_recv().unwrap();
+        assert_eq!(sent.packet_type, PACKET_TYPE);
+        assert_eq!(sent.body_as::<ShareTextBody>().unwrap().text, "hello");
+        assert_eq!(sent.payload_size, None);
+
+        send_url(&ctx, PEER, " https://kde.org \n").unwrap();
+        let sent = packets.try_recv().unwrap();
+        assert_eq!(
+            sent.body_as::<ShareUrlBody>().unwrap().url,
+            "https://kde.org"
+        );
+        assert!(!sent.body.contains_key("text"));
+    }
+
+    #[test]
+    fn blank_oversized_or_undeliverable_shares_are_refused() {
+        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin);
+        let ctx = handle.plugin_context();
+        assert!(matches!(
+            send_text(&ctx, PEER, "hi".into()),
+            Err(ShareTextError::Core(CoreError::UnknownDevice))
+        ));
+        let mut packets = paired_peer(&handle);
+        assert!(matches!(
+            send_text(&ctx, PEER, " \n".into()),
+            Err(ShareTextError::Empty)
+        ));
+        assert!(matches!(
+            send_url(&ctx, PEER, ""),
+            Err(ShareTextError::Empty)
+        ));
+        let long = "a".repeat(MAX_SHARED_TEXT_BYTES + 1);
+        let error = send_text(&ctx, PEER, long.clone()).unwrap_err();
+        assert_eq!(error.code(), "share_too_large");
+        assert!(matches!(
+            send_url(&ctx, PEER, &long),
+            Err(ShareTextError::TooLarge { .. })
+        ));
+        assert!(packets.try_recv().is_err());
+    }
+
+    #[test]
+    fn shared_text_and_web_links_are_published_and_other_links_become_text() {
+        let (handle, _plugin, _commands) = handle_with_plugin(SharePlugin);
+        let _packets = paired_peer(&handle);
+        let mut events = handle.event_bus().subscribe();
+        let mut received = |packet: Packet| {
+            handle.handle_peer_packet(PEER, packet);
+            // The test bus holds one event, so check each as it lands.
+            match events.try_recv() {
+                Ok(event) => match event.event {
+                    EventData::Plugin(event) => event.decode::<ReceivedShare>().map(|share| {
+                        assert_eq!(
+                            (share.device_id.as_str(), share.device_name.as_str()),
+                            (PEER, "Peer")
+                        );
+                        share.content
+                    }),
+                    other => panic!("unexpected event {other:?}"),
+                },
+                Err(_) => None,
+            }
+        };
+        let text = |text: &str| SharedContent::Text { text: text.into() };
+
+        assert_eq!(
+            received(build_text_packet(1_u64, "hello\nworld".into()).unwrap()),
+            Some(text("hello\nworld"))
+        );
+        assert_eq!(
+            received(build_url_packet(2_u64, "https://kde.org/ ".into()).unwrap()),
+            Some(SharedContent::Link {
+                url: "https://kde.org/".into()
+            })
+        );
+        assert_eq!(
+            received(build_url_packet(3_u64, "file:///etc/passwd".into()).unwrap()),
+            Some(text("file:///etc/passwd"))
+        );
+        assert_eq!(
+            received(build_text_packet(4_u64, " ".into()).unwrap()),
+            None
+        );
+        let empty = Packet::from_body(5_u64, PACKET_TYPE, &serde_json::json!({})).unwrap();
+        assert_eq!(received(empty), None);
+        assert!(handle.transfers().list().is_empty());
+    }
+
+    #[test]
+    fn a_received_share_serializes_with_its_kind() {
+        let share = ReceivedShare {
+            device_id: PEER.into(),
+            device_name: "Peer".into(),
+            content: SharedContent::Link {
+                url: "https://kde.org".into(),
+            },
+        };
+        let value = serde_json::to_value(&share).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "deviceId": PEER,
+                "deviceName": "Peer",
+                "kind": "link",
+                "url": "https://kde.org",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ReceivedShare>(value).unwrap(),
+            share
         );
     }
 }

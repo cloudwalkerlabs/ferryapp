@@ -245,6 +245,37 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Send text to a paired, connected device.
+    pub async fn share_text(&self, device_id: &str, text: &str) -> Result<(), ClientError> {
+        self.share_content(device_id, "text", &serde_json::json!({ "text": text }))
+            .await
+    }
+
+    /// Send a link to a paired, connected device, which opens it.
+    pub async fn share_url(&self, device_id: &str, url: &str) -> Result<(), ClientError> {
+        self.share_content(device_id, "url", &serde_json::json!({ "url": url }))
+            .await
+    }
+
+    async fn share_content(
+        &self,
+        device_id: &str,
+        kind: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), ClientError> {
+        let response = self
+            .authorized(
+                self.http
+                    .post(self.url(&format!("api/v1/devices/{device_id}/share/{kind}"))?),
+            )
+            .json(body)
+            .send()
+            .await
+            .map_err(map_transport)?;
+        checked(response, "device").await?;
+        Ok(())
+    }
+
     /// Send a file to a paired, connected device. The response comes once
     /// the whole file has been handed to the daemon, not when the device
     /// has it; follow the transfer to see it finish.

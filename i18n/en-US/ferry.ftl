@@ -360,6 +360,27 @@ share-pick-title = Send files to { $name }
 # The title of a failure; why is its body.
 share-failed = Couldn’t send to { $name }
 share-error-file-unreadable = The file couldn’t be read.
+# A device's action (a button, and an item in the tray) that asks for text
+# or a link to send; a web link is sent as a link, which the device opens.
+share-text-action = Send text
+# The dialog asking for it: its title, the line under the title (`name`
+# is the device's), the field's label and the confirm button.
+share-text-title = Send text or a link
+share-text-to = To { $name }
+share-text-label = Text or link
+share-text-send = Send
+# Under the field when it is blank, and why sending failed.
+share-error-share_empty = Type the text or link to send.
+share-error-share_too_large = The text is too long to send.
+# `name` is the device's name.
+share-text-sent = Sent the text to { $name }.
+share-link-sent = Sent the link to { $name }.
+# Notification bodies when a device shares text or a link with this
+# computer; the device's name is the title.
+share-text-copied = Shared text copied to the clipboard.
+share-text-not-copied = Shared text was too long to copy to the clipboard.
+share-link-opened = Opened a shared link in your browser.
+share-link-failed = Couldn’t open a shared link in your browser.
 
 ## The clipboard (src/ui/features/clipboard.rs)
 

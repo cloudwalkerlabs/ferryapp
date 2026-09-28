@@ -23,6 +23,7 @@ use ferry::{
         clipboard::{ClipboardSettings, ClipboardSnapshot},
         notifications::{Notification, NotificationPosted, NotificationRemoved},
         ping::ReceivedPing,
+        share::{ReceivedShare, SharedContent},
     },
     transport::lan::DISCOVERY_PORT,
 };
@@ -131,6 +132,11 @@ enum Command {
     },
     /// Make a paired device ring so you can find it.
     Ring { device_id: String },
+    /// Send text to a paired device (KDE Connect copies it to the
+    /// clipboard).
+    ShareText { device_id: String, text: String },
+    /// Send a link to a paired device, which opens it.
+    ShareUrl { device_id: String, url: String },
     /// Send a file to a paired device.
     Send {
         device_id: String,
@@ -377,6 +383,22 @@ impl Cli {
                     println!("{}", json!({"deviceId": device_id, "status": "sent"}));
                 } else {
                     println!("Asked {device_id} to ring");
+                }
+            }
+            Command::ShareText { device_id, text } => {
+                client.share_text(&device_id, &text).await?;
+                if json {
+                    println!("{}", json!({"deviceId": device_id, "status": "sent"}));
+                } else {
+                    println!("Text sent to {device_id}");
+                }
+            }
+            Command::ShareUrl { device_id, url } => {
+                client.share_url(&device_id, &url).await?;
+                if json {
+                    println!("{}", json!({"deviceId": device_id, "status": "sent"}));
+                } else {
+                    println!("Link sent to {device_id}");
                 }
             }
             Command::Send {
@@ -817,6 +839,17 @@ fn print_event(event: &CoreEvent, json_output: bool) {
                     println!("Removed {}", removed.id);
                     return;
                 }
+                if let Some(share) = event.decode::<ReceivedShare>() {
+                    match share.content {
+                        SharedContent::Text { text } => {
+                            println!("Text from {}: {text}", share.device_name)
+                        }
+                        SharedContent::Link { url } => {
+                            println!("Link from {}: {url}", share.device_name)
+                        }
+                    }
+                    return;
+                }
                 match event.decode::<ReceivedPing>() {
                     Some(ReceivedPing {
                         device_name,
@@ -938,6 +971,8 @@ mod tests {
             vec!["ferry-cli", "ping", "device-id"],
             vec!["ferry-cli", "ping", "device-id", "hello"],
             vec!["ferry-cli", "ring", "device-id"],
+            vec!["ferry-cli", "share-text", "device-id", "hello there"],
+            vec!["ferry-cli", "share-url", "device-id", "https://kde.org"],
             vec!["ferry-cli", "pair", "device-id"],
             vec!["ferry-cli", "pair", "accept", ID],
             vec!["ferry-cli", "pair", "reject", ID],

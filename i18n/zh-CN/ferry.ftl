@@ -265,6 +265,19 @@ share-drop-hint = 拖放以发送到 { $name }
 share-pick-title = 发送文件到 { $name }
 share-failed = 无法发送到 { $name }
 share-error-file-unreadable = 无法读取该文件。
+share-text-action = 发送文本
+share-text-title = 发送文本或链接
+share-text-to = 发送到 { $name }
+share-text-label = 文本或链接
+share-text-send = 发送
+share-error-share_empty = 请输入要发送的文本或链接。
+share-error-share_too_large = 文本太长，无法发送。
+share-text-sent = 已将文本发送到 { $name }。
+share-link-sent = 已将链接发送到 { $name }。
+share-text-copied = 共享的文本已复制到剪贴板。
+share-text-not-copied = 共享的文本太长，无法复制到剪贴板。
+share-link-opened = 已在浏览器中打开共享的链接。
+share-link-failed = 无法在浏览器中打开共享的链接。
 
 ## The clipboard (src/ui/features/clipboard.rs)
 
