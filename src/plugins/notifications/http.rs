@@ -5,9 +5,9 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header::CONTENT_TYPE},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{Notification, NotificationError, NotificationsPlugin};
 use crate::{api::ApiProblem, core::PluginContext};
@@ -26,6 +26,10 @@ pub(super) fn routes(plugin: Arc<NotificationsPlugin>, ctx: PluginContext) -> Ro
         .route(
             "/devices/{device_id}/notifications",
             get(get_notifications).delete(delete_notification),
+        )
+        .route(
+            "/devices/{device_id}/notifications/enabled",
+            put(put_notifications_enabled),
         )
         .route(
             "/devices/{device_id}/notifications/icon",
@@ -74,6 +78,26 @@ async fn get_notifications(
     Path(device_id): Path<String>,
 ) -> Result<Json<Vec<Notification>>, ApiProblem> {
     Ok(Json(state.plugin.notifications(&state.ctx, &device_id)?))
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Enabled {
+    enabled: bool,
+}
+
+/// Turn showing the device's notifications here on or off. Answers with
+/// the setting, as the device's snapshot now has it under
+/// `plugins.notifications`.
+async fn put_notifications_enabled(
+    State(state): State<NotificationsState>,
+    Path(device_id): Path<String>,
+    Json(request): Json<Enabled>,
+) -> Result<Json<Enabled>, ApiProblem> {
+    state
+        .plugin
+        .set_enabled(&state.ctx, &device_id, request.enabled)?;
+    Ok(Json(request))
 }
 
 /// Dismiss one on the device: `?id=`.

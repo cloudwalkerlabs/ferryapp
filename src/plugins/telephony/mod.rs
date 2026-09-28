@@ -217,9 +217,9 @@ impl Plugin for TelephonyPlugin {
         http::routes(ctx)
     }
 
-    fn device_state(&self, device_id: &str) -> Option<Value> {
+    fn device_state(&self, _ctx: &PluginContext, device: &DeviceSnapshot) -> Option<Value> {
         let calls = self.calls.lock().unwrap_or_else(PoisonError::into_inner);
-        serde_json::to_value(calls.get(device_id)?).ok()
+        serde_json::to_value(calls.get(&device.device_id)?).ok()
     }
 
     fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {

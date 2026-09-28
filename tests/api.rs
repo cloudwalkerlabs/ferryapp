@@ -720,6 +720,86 @@ async fn a_ringing_call_shows_and_its_ringer_can_be_muted() {
     server.server.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn notifications_can_be_turned_off_for_one_device() {
+    let server = TestServer::start().await;
+    let device_id = "cccccccccccccccccccccccccccccccc";
+    let _packets = server.connect_and_pair(device_id);
+    let device_path = format!("/api/v1/devices/{device_id}");
+    let enabled_path = format!("/api/v1/devices/{device_id}/notifications/enabled");
+    let notifications_of = || async {
+        let device = request(&server, "GET", &device_path, true).await;
+        let device: serde_json::Value = serde_json::from_str(body(&device)).unwrap();
+        device["plugins"]["notifications"].clone()
+    };
+    assert_eq!(
+        notifications_of().await,
+        serde_json::json!({"enabled": true})
+    );
+
+    let mut events = server.application.subscribe();
+    let off = request_with_body(&server, "PUT", &enabled_path, r#"{"enabled":false}"#).await;
+    assert!(off.starts_with("HTTP/1.1 200 OK"), "{off}");
+    assert_eq!(body(&off), r#"{"enabled":false}"#);
+    assert!(matches!(
+        events.try_recv().unwrap().event,
+        EventData::DeviceUpdated(device)
+            if device.plugins["notifications"] == serde_json::json!({"enabled": false})
+    ));
+    assert_eq!(
+        notifications_of().await,
+        serde_json::json!({"enabled": false})
+    );
+
+    // What the device sends meanwhile isn't listed.
+    let posted = ferry::protocol::Packet::from_body(
+        1_u64,
+        "kdeconnect.notification",
+        &serde_json::json!({"id": "a", "appName": "Messages", "title": "Ana"}),
+    )
+    .unwrap();
+    server.application.handle_peer_packet(device_id, posted);
+    let listed = request(
+        &server,
+        "GET",
+        &format!("/api/v1/devices/{device_id}/notifications"),
+        true,
+    )
+    .await;
+    assert_eq!(body(&listed), "[]");
+
+    let on = request_with_body(&server, "PUT", &enabled_path, r#"{"enabled":true}"#).await;
+    assert!(on.starts_with("HTTP/1.1 200 OK"), "{on}");
+    assert_eq!(
+        notifications_of().await,
+        serde_json::json!({"enabled": true})
+    );
+
+    let unknown = request_with_body(
+        &server,
+        "PUT",
+        "/api/v1/devices/dddddddddddddddddddddddddddddddd/notifications/enabled",
+        r#"{"enabled":false}"#,
+    )
+    .await;
+    assert!(unknown.starts_with("HTTP/1.1 404 Not Found"), "{unknown}");
+    assert!(body(&unknown).contains("device_not_found"));
+    // The peer discovered at startup is not paired.
+    let unpaired = request_with_body(
+        &server,
+        "PUT",
+        "/api/v1/devices/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/notifications/enabled",
+        r#"{"enabled":false}"#,
+    )
+    .await;
+    assert!(unpaired.starts_with("HTTP/1.1 409 Conflict"), "{unpaired}");
+    assert!(body(&unpaired).contains("device_not_paired"));
+    let malformed = request_with_body(&server, "PUT", &enabled_path, r#"{"enabled":"no"}"#).await;
+    assert!(malformed.starts_with("HTTP/1.1 4"), "{malformed}");
+
+    server.server.shutdown().await.unwrap();
+}
+
 #[test]
 fn kde_connect_ports_are_rejected() {
     for port in 1716..=1764 {

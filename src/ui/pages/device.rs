@@ -1,5 +1,6 @@
 //! One device: what it is, what can be done with it (the features'
-//! actions), its recent transfers, and Unpair.
+//! actions), the features' settings for it, its recent transfers, and
+//! Unpair.
 
 use iced::{
     Alignment, Background, Border, Element, Length, Theme,
@@ -38,10 +39,12 @@ pub struct Actions<M> {
     pub transfer: transfers::Actions<M>,
 }
 
-/// What the features show for a device: its chips and its actions.
+/// What the features show for a device: its chips, its actions, and their
+/// settings for it (switches, sending the feature's messages).
 pub struct DeviceFeatures<'a> {
     pub statuses: &'a dyn Fn(&DeviceSnapshot) -> Vec<DeviceStatus>,
     pub actions: &'a dyn Fn(&DeviceSnapshot) -> Vec<DeviceAction>,
+    pub settings: &'a dyn Fn(&DeviceSnapshot) -> Vec<Element<'static, Feature>>,
 }
 
 /// The page of the device `device_id`, from what `store` holds, with the
@@ -74,6 +77,11 @@ pub fn view<'a, Message: Clone + 'a>(
         action_buttons((features.actions)(device), *feature),
     ]
     .spacing(16);
+    let settings = (features.settings)(device);
+    if !settings.is_empty() {
+        let settings = settings.into_iter().map(|setting| setting.map(*feature));
+        content = content.push(column(settings).spacing(8));
+    }
 
     let transfers = store.transfers(Some(device_id)).into_loaded();
     if let Some(transfers) = transfers.filter(|transfers| !transfers.is_empty()) {
@@ -268,6 +276,19 @@ mod tests {
         actions
     }
 
+    /// Stand in for any feature's setting: "Accept hugs", on for paired
+    /// devices, off otherwise; toggling it hugs.
+    fn hugs(device: &DeviceSnapshot) -> Vec<Element<'static, Feature>> {
+        let hug = gesture("Hug", device);
+        vec![widgets::switch_setting(
+            lucide::heart,
+            "Accept hugs",
+            "Hugs from this device",
+            device.paired,
+            move |_| hug.clone(),
+        )]
+    }
+
     /// A gesture at `device`, as some feature's message.
     fn gesture(gesture: &str, device: &DeviceSnapshot) -> Feature {
         Feature::Ping(ping::Message::Ping {
@@ -295,6 +316,7 @@ mod tests {
             &DeviceFeatures {
                 statuses: &waving,
                 actions: &wave_actions,
+                settings: &hugs,
             },
             device_id,
             unpairing,
@@ -340,6 +362,7 @@ mod tests {
             "8",
             "Wave",
             "Hug",
+            "Accept hugs",
             "Unpair",
         ] {
             assert!(ui.find(shown).is_ok(), "{shown} is shown");
@@ -384,6 +407,16 @@ mod tests {
         let store = testing::store("Desk", vec![laptop.clone()]);
         let mut ui = Simulator::new(page(&store, &laptop.device_id, false));
         assert!(ui.find("Hug").is_err());
+    }
+
+    #[test]
+    fn a_setting_sends_its_features_message() {
+        let device = pixel(&[], DeviceReachability::Connected);
+        let store = testing::store("Desk", vec![device.clone()]);
+        assert_eq!(
+            click(&store, &device, "Accept hugs"),
+            [Asked::Feature(format!("{:?}", gesture("Hug", &device)))]
+        );
     }
 
     #[test]

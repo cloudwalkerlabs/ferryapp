@@ -142,6 +142,11 @@ impl Features {
         .concat()
     }
 
+    /// The switches on the device page, of settings kept per device.
+    pub fn device_settings(&self, device: &DeviceSnapshot) -> Vec<Element<'static, Feature>> {
+        self.notifications.device_settings(device)
+    }
+
     /// The chips on the device card, the detail header and the tray label.
     pub fn device_statuses(&self, device: &DeviceSnapshot) -> Vec<DeviceStatus> {
         [

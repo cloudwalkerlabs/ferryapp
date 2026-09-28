@@ -41,6 +41,16 @@ pub(crate) fn handle_with_plugin<P: Plugin>(
     (core, plugin, commands)
 }
 
+/// [`handle_with_plugin`], with an event bus holding `capacity` events.
+pub(crate) fn handle_with_plugin_and_event_capacity<P: Plugin>(
+    plugin: P,
+    capacity: usize,
+) -> (Core, Arc<P>, mpsc::Receiver<LanCommand>) {
+    let plugin = Arc::new(plugin);
+    let (core, commands) = build(Vec::new(), vec![plugin.clone()], capacity);
+    (core, plugin, commands)
+}
+
 fn build(
     paired: Vec<TrustedDevice>,
     plugins: Vec<Arc<dyn Plugin>>,

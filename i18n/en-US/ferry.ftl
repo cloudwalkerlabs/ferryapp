@@ -414,6 +414,11 @@ notifications-offline = { $name } isn’t connected.
 notifications-offline-detail = Its notifications show here while it is.
 notifications-empty = No notifications from { $name }.
 notifications-empty-detail = On the phone, let KDE Connect read notifications, and choose which apps share them.
+# The switch on a device's page turning its notifications here on or off.
+# `name` is the device's.
+notifications-sync = Show notifications
+notifications-sync-detail = List and announce the notifications { $name } shares.
+notifications-sync-failed = Couldn’t change the setting
 # A notification's buttons.
 notifications-reply = Reply
 notifications-dismiss = Dismiss

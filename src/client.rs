@@ -513,6 +513,31 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Turn showing a paired device's notifications here on or off. The
+    /// device's snapshot says which, under `plugins.notifications`.
+    pub async fn set_notifications_enabled(
+        &self,
+        device_id: &str,
+        enabled: bool,
+    ) -> Result<(), ClientError> {
+        #[derive(Serialize)]
+        struct Enabled {
+            enabled: bool,
+        }
+
+        let response = self
+            .authorized(
+                self.http
+                    .put(self.url(&format!("api/v1/devices/{device_id}/notifications/enabled"))?),
+            )
+            .json(&Enabled { enabled })
+            .send()
+            .await
+            .map_err(map_transport)?;
+        checked(response, "device").await?;
+        Ok(())
+    }
+
     /// Like [`ApiClient::watch_devices`], for one device's notifications:
     /// the list, then each `notification.*` event about the device.
     pub async fn watch_notifications<F>(

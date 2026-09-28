@@ -881,6 +881,7 @@ impl App {
                 &device::DeviceFeatures {
                     statuses: &|device| running.features.device_statuses(device),
                     actions: &|device| running.features.device_actions(device),
+                    settings: &|device| running.features.device_settings(device),
                 },
                 id,
                 self.unpairing.as_deref() == Some(id.as_str()),
