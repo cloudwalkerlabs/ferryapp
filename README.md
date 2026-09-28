@@ -134,7 +134,7 @@ src/
 ├── store/           # the SQLite store: configs, paired devices, migrations
 ├── transport/       # UDP discovery, TCP/TLS, auxiliary payload connections
 ├── core(.rs/*)      # devices, connections, pairing, transfers, settings, events, plugin API
-├── plugins/         # features: ping, findmyphone, battery, clipboard, share, browse, notifications
+├── plugins/         # features: ping, findmyphone, battery, connectivity, clipboard, share, browse, notifications
 ├── daemon(.rs/*)    # composition root: core + built-in plugins + LAN + API switch
 ├── api(.rs/*)       # local HTTP control plane (optional token auth)
 ├── client.rs        # HTTP client used by the CLI

@@ -21,6 +21,7 @@ use ferry::{
         battery::BatteryStatus,
         browse::{DirectoryListing, FileEntry, FileKind},
         clipboard::{ClipboardSettings, ClipboardSnapshot},
+        connectivity::{Connectivity, MAX_STRENGTH},
         notifications::{Notification, NotificationPosted, NotificationRemoved},
         ping::ReceivedPing,
         share::{ReceivedShare, SharedContent},
@@ -664,13 +665,29 @@ fn print_devices(devices: &[DeviceSnapshot], json_output: bool) {
                 Some(battery) => format!("{}%", battery.charge),
                 None => "-".to_owned(),
             };
+            // One entry per SIM: "LTE 3/4, HSPA 2/4".
+            let signal = match Connectivity::of(device) {
+                Some(connectivity) => connectivity
+                    .subscriptions
+                    .iter()
+                    .map(|sim| {
+                        format!(
+                            "{} {}/{MAX_STRENGTH}",
+                            sim.network_type, sim.signal_strength
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                None => "-".to_owned(),
+            };
             println!(
-                "{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}",
                 device.device_id,
                 device.device_name,
                 enum_name(device.reachability),
                 trust,
-                battery
+                battery,
+                signal
             );
         }
     }

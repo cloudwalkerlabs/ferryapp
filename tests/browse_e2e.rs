@@ -28,6 +28,7 @@ use ferry::{
     plugins::{
         battery::BatteryStatus,
         browse::{BrowseError, BrowsePlugin, FileKind, UploadPathError},
+        connectivity::Connectivity,
     },
     protocol::DeviceType,
     store::Store,
@@ -37,7 +38,9 @@ use ferry::{
     },
 };
 use futures_util::StreamExt;
-use support::fake_phone::{BrowseReply, FakePhone, FakePhoneConfig, PHONE_BATTERY, PHONE_NAME};
+use support::fake_phone::{
+    BrowseReply, FakePhone, FakePhoneConfig, PHONE_BATTERY, PHONE_NAME, PHONE_NETWORK, PHONE_SIGNAL,
+};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -823,6 +826,56 @@ async fn the_phones_battery_is_shown_while_it_is_connected() {
             .iter()
             .find(|device| device.device_id == phone_id)
             .and_then(BatteryStatus::of),
+        None
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_phones_signal_is_shown_while_it_is_connected() {
+    let harness = harness(android_roots(), false).await;
+    let (desktop, phone_id, client) = (&harness.desktop, &harness.phone_id, &harness.client);
+    let network_of = |device: &ferry::core::DeviceSnapshot| {
+        Connectivity::of(device).map(|connectivity| {
+            let sim = &connectivity.subscriptions[0];
+            (sim.network_type.clone(), i64::from(sim.signal_strength))
+        })
+    };
+    // Reported on its own once paired, as Android does.
+    wait_for_device(desktop, phone_id, |device| {
+        network_of(device) == Some((PHONE_NETWORK.into(), PHONE_SIGNAL))
+    })
+    .await;
+
+    harness.phone.report_connectivity("5G", 4).await;
+    wait_for_device(desktop, phone_id, |device| {
+        network_of(device) == Some(("5G".into(), 4))
+    })
+    .await;
+    let devices = client.devices().await.unwrap();
+    let phone = devices
+        .iter()
+        .find(|device| &device.device_id == phone_id)
+        .unwrap();
+    assert_eq!(network_of(phone), Some(("5G".into(), 4)));
+
+    let Harness {
+        desktop,
+        phone,
+        phone_id,
+        client,
+        ..
+    } = harness;
+    phone.stop().await;
+    wait_for_device(&desktop, &phone_id, |device| {
+        device.reachability != DeviceReachability::Connected
+    })
+    .await;
+    let devices = client.devices().await.unwrap();
+    assert_eq!(
+        devices
+            .iter()
+            .find(|device| device.device_id == phone_id)
+            .and_then(Connectivity::of),
         None
     );
 }

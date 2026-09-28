@@ -1,8 +1,8 @@
 //! The daemon's features.
 //!
 //! Each feature implements [`crate::core::Plugin`] and is listed in
-//! [`builtin`]: ping, find my phone, battery, clipboard, share, browse and
-//! notifications.
+//! [`builtin`]: ping, find my phone, battery, connectivity, clipboard,
+//! share, browse and notifications.
 //! The set is fixed at compile time; nothing is loaded at runtime. A plugin
 //! reaches the core through its [`crate::core::PluginContext`], never another
 //! plugin. See `docs/ARCHITECTURE.md` §2.
@@ -10,6 +10,7 @@
 pub mod battery;
 pub mod browse;
 pub mod clipboard;
+pub mod connectivity;
 pub mod findmyphone;
 pub mod notifications;
 pub mod ping;
@@ -47,6 +48,7 @@ pub fn builtin_parts(clipboard: Arc<dyn clipboard::ClipboardService + Send + Syn
             Arc::new(ping::PingPlugin),
             Arc::new(findmyphone::FindMyPhonePlugin),
             Arc::new(battery::BatteryPlugin::default()),
+            Arc::new(connectivity::ConnectivityPlugin::default()),
             clipboard.clone(),
             Arc::new(share::SharePlugin),
             browse.clone(),
@@ -89,6 +91,7 @@ mod tests {
                     &[
                         browse::PACKET_TYPE,
                         battery::PACKET_TYPE,
+                        connectivity::PACKET_TYPE,
                         notifications::PACKET_TYPE
                     ]
                 ]

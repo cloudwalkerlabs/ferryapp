@@ -258,6 +258,10 @@ findmyphone-failed = 无法让 { $name } 响铃
 
 battery-charge = { $charge }%
 
+## Connectivity (src/ui/features/connectivity.rs)
+
+connectivity-unknown-network = 移动网络
+
 ## Sending files (src/ui/features/share.rs)
 
 share-action = 发送文件
