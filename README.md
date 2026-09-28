@@ -30,9 +30,7 @@ Packages for each release are on the
 [GitHub Releases](https://github.com/simophin/ferryapp/releases).
 
 - **macOS:** `brew install simophin/tap/ferry` (the app, and `ferry-cli`
-  on your PATH). The app isn't notarized, so a DMG downloaded in a browser
-  is blocked until you allow it in System Settings → Privacy & Security;
-  the Homebrew cask clears that mark.
+  on your PATH).
 - **Debian and Ubuntu:** add the apt repository, then `apt install ferry`:
 
   ```sh
