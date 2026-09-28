@@ -98,12 +98,12 @@ impl Plugin for BatteryPlugin {
         }
     }
 
-    fn device_state(&self, device_id: &str) -> Option<Value> {
+    fn device_state(&self, _ctx: &PluginContext, device: &DeviceSnapshot) -> Option<Value> {
         let battery = *self
             .batteries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .get(device_id)?;
+            .get(&device.device_id)?;
         serde_json::to_value(battery).ok()
     }
 

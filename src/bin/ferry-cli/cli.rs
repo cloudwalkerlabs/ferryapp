@@ -245,6 +245,12 @@ enum NotificationsAction {
     Action { id: String, action: String },
     /// Dismiss one on the device.
     Dismiss { id: String },
+    /// Show the device's notifications here again (the default), asking
+    /// it for the ones it shows.
+    Enable,
+    /// Stop showing the device's notifications here, forgetting the ones
+    /// listed.
+    Disable,
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
@@ -543,6 +549,14 @@ impl Cli {
                     NotificationsAction::Dismiss { id } => {
                         client.dismiss_notification(&device_id, &id).await?;
                         done("dismissed", "Dismissed".into());
+                    }
+                    NotificationsAction::Enable => {
+                        client.set_notifications_enabled(&device_id, true).await?;
+                        done("enabled", "Notifications enabled".into());
+                    }
+                    NotificationsAction::Disable => {
+                        client.set_notifications_enabled(&device_id, false).await?;
+                        done("disabled", "Notifications disabled".into());
                     }
                 }
             }
@@ -1115,6 +1129,8 @@ mod tests {
             vec!["ferry-cli", "files", "device-id", "mkdir", "/a/new"],
             vec!["ferry-cli", "files", "device-id", "mv", "/a/x", "/a/y"],
             vec!["ferry-cli", "files", "device-id", "rm", "/a/x"],
+            vec!["ferry-cli", "notifications", "device-id", "enable"],
+            vec!["ferry-cli", "notifications", "device-id", "disable"],
             vec!["ferry-cli", "clipboard", "get"],
             vec!["ferry-cli", "clipboard", "set", "hello"],
             vec!["ferry-cli", "clipboard", "watch"],

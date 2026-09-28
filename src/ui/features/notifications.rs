@@ -1,6 +1,7 @@
 //! Notifications' UI: a desktop notification for each one that is news, the
-//! *Notifications* action, and the page listing a device's notifications
-//! ([`Route::Notifications`]) with Reply, their buttons, and Dismiss.
+//! *Notifications* action, the page listing a device's notifications
+//! ([`Route::Notifications`]) with Reply, their buttons, and Dismiss, and
+//! the switch on a device's page turning them off for that device.
 //!
 //! The page shows a copy of the plugin's list, taken again whenever one of
 //! the device's notifications changes, the device's connection changes,
@@ -19,7 +20,7 @@ use super::{DeviceAction, Feature};
 use crate::{
     core::{CoreEvent, DeviceReachability, DeviceSnapshot, EventData},
     plugins::notifications::{
-        Notification, NotificationError, NotificationPosted, NotificationRemoved,
+        self as plugin, Notification, NotificationError, NotificationPosted, NotificationRemoved,
         NotificationsPlugin, PACKET_TYPE,
     },
     protocol::{DeviceType, Packet},
@@ -66,6 +67,11 @@ pub enum Message {
         device_id: String,
         id: String,
     },
+    /// Turn showing the device's notifications here on or off.
+    SetEnabled {
+        device_id: String,
+        enabled: bool,
+    },
 }
 
 /// A notification as the page shows it: the plugin's, and its icon ready
@@ -92,7 +98,7 @@ impl NotificationsUi {
     }
 
     /// Listed for a device that shares its notifications, enabled while it
-    /// is connected, with how many it shows.
+    /// is connected and they are on, with how many it shows.
     pub fn device_actions(&self, device: &DeviceSnapshot) -> Vec<DeviceAction> {
         if !shares_notifications(device) {
             return Vec::new();
@@ -102,12 +108,37 @@ impl NotificationsUi {
             id: "notifications",
             label: fl!("notifications-action", count = count),
             icon: lucide::inbox,
-            enabled: device.reachability == DeviceReachability::Connected,
+            enabled: device.reachability == DeviceReachability::Connected
+                && plugin::enabled(device),
             visible_in_tray: false,
             message: Feature::Notifications(Message::Open {
                 device_id: device.device_id.clone(),
             }),
         }]
+    }
+
+    /// The switch turning a paired device's notifications here on or off,
+    /// for one that shares them.
+    pub fn device_settings(&self, device: &DeviceSnapshot) -> Vec<Element<'static, Feature>> {
+        if !device.paired || !shares_notifications(device) {
+            return Vec::new();
+        }
+        let device_id = device.device_id.clone();
+        vec![widgets::switch_setting(
+            lucide::bell,
+            fl!("notifications-sync"),
+            fl!(
+                "notifications-sync-detail",
+                name = device.device_name.as_str()
+            ),
+            plugin::enabled(device),
+            move |enabled| {
+                Feature::Notifications(Message::SetEnabled {
+                    device_id: device_id.clone(),
+                    enabled,
+                })
+            },
+        )]
     }
 
     pub(crate) fn on_event(&mut self, event: &CoreEvent) -> Task<ui::Message> {
@@ -253,6 +284,18 @@ impl NotificationsUi {
                         fl!("notifications-dismiss-failed"),
                         describe(&error),
                     ),
+                }
+            }
+            // The device's `device.updated` brings the switch's new state.
+            Message::SetEnabled { device_id, enabled } => {
+                match self.plugin.set_enabled(&plugin_ctx, &device_id, enabled) {
+                    Ok(()) => {
+                        self.refresh(&device_id);
+                        Task::none()
+                    }
+                    Err(error) => {
+                        shell::failed(origin, fl!("notifications-sync-failed"), describe(&error))
+                    }
                 }
             }
         }
@@ -633,6 +676,37 @@ mod tests {
             panic!("unexpected outcomes: {outcomes:?}");
         };
         assert_eq!(text, "It’s no longer on the device.");
+    }
+
+    #[tokio::test]
+    async fn the_switch_turns_them_off_for_a_paired_device_that_shares_them() {
+        let (core, mut ui, device, _sent) = phone();
+        assert_eq!(ui.device_settings(&device).len(), 1);
+        let mut other = device.clone();
+        other.outgoing_capabilities.clear();
+        assert!(ui.device_settings(&other).is_empty());
+        let mut unpaired = device.clone();
+        unpaired.paired = false;
+        assert!(ui.device_settings(&unpaired).is_empty());
+
+        post(&core, "a", "Dinner?");
+        ui.on_route(&Route::Notifications(PEER.into()));
+        let [action] = ui.device_actions(&device).try_into().unwrap();
+        assert_eq!(action.label, "Notifications (1)");
+        let ctx = UiContext::new(core.clone(), tokio::runtime::Handle::current());
+        let mut switch = Simulator::new(ui.device_settings(&device).remove(0));
+        switch.click("Show notifications").unwrap();
+        let [Feature::Notifications(off)] = &switch.into_messages().collect::<Vec<_>>()[..] else {
+            panic!("a notifications message");
+        };
+        let outcomes = testing::outputs(ui.update(&ctx, off.clone(), Origin::Window)).await;
+        assert!(outcomes.is_empty(), "{outcomes:?}");
+        let mut device = core.device(PEER).unwrap();
+        device.outgoing_capabilities = vec![PACKET_TYPE.into()];
+        assert!(!plugin::enabled(&device));
+        let [action] = ui.device_actions(&device).try_into().unwrap();
+        assert_eq!(action.label, "Notifications");
+        assert!(!action.enabled);
     }
 
     #[test]

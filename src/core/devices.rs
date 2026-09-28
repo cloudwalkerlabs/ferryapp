@@ -342,7 +342,7 @@ impl Core {
     /// `snapshot` as clients see it, with what each plugin adds. Call it
     /// without holding the state lock: it calls into plugins.
     pub(super) fn with_plugin_state(&self, mut snapshot: DeviceSnapshot) -> DeviceSnapshot {
-        snapshot.plugins = self.plugins.device_state(&snapshot.device_id);
+        snapshot.plugins = self.plugins.device_state(&self.plugin_context(), &snapshot);
         snapshot
     }
 

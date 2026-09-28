@@ -20,6 +20,12 @@
 //! An icon comes as the packet's payload, and only when it changed for that
 //! notification; it is fetched in the background, kept by its hash, and
 //! announced with another `notification.posted` once it is here.
+//!
+//! Syncing can be turned off per device ([`NotificationsPlugin::set_enabled`],
+//! `PUT /devices/{id}/notifications/enabled`), kept as [`ENABLED`]. While
+//! it is off, the device's notifications are ignored as they arrive and
+//! never asked for. Each paired device's snapshot says whether it is on,
+//! as `plugins.notifications.enabled`.
 
 mod http;
 pub mod packet;
@@ -33,6 +39,7 @@ use std::{
 use axum::Router;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 
@@ -43,10 +50,25 @@ pub use packet::{
 use crate::{
     core::{CoreError, DeviceSnapshot, PayloadPeer, Plugin, PluginContext, PluginEventKind},
     protocol::Packet,
+    store::{ConfigKey, PerDevice},
 };
 
 /// The plugin's id, as the core and the UI know it.
 pub const ID: &str = "notifications";
+
+/// Whether a device's notifications are shown here; on when unset.
+pub const ENABLED: ConfigKey<bool, PerDevice> = ConfigKey::new("notifications.enabled");
+
+/// Whether `device`'s snapshot says its notifications are shown here: on
+/// unless it says otherwise, as only a paired device's can.
+pub fn enabled(device: &DeviceSnapshot) -> bool {
+    device
+        .plugins
+        .get(ID)
+        .and_then(|state| state.get("enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
 
 /// How many notifications are kept per device; the oldest go first.
 const MAX_NOTIFICATIONS: usize = 100;
@@ -210,6 +232,9 @@ impl Plugin for NotificationsPlugin {
     }
 
     fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
+        if !is_enabled(ctx, &device.device_id) {
+            return;
+        }
         let Ok(body) = packet.body_as::<NotificationBody>() else {
             tracing::debug!(
                 device_id = device.device_id,
@@ -228,7 +253,9 @@ impl Plugin for NotificationsPlugin {
             .clone()
             .zip(icon_payload(packet))
             .filter(|_| tokio::runtime::Handle::try_current().is_ok());
-        self.post(ctx, device, body);
+        if !self.post(ctx, device, body) {
+            return;
+        }
         if let Some((hash, (port, size))) = icon_payload
             && let Ok(peer) = ctx.payload_peer(&device.device_id)
         {
@@ -256,12 +283,22 @@ impl Plugin for NotificationsPlugin {
         http::routes(self, ctx)
     }
 
+    fn device_state(&self, ctx: &PluginContext, device: &DeviceSnapshot) -> Option<Value> {
+        device
+            .paired
+            .then(|| json!({"enabled": is_enabled(ctx, &device.device_id)}))
+    }
+
     fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
-        request_all(ctx, &device.device_id);
+        if is_enabled(ctx, &device.device_id) {
+            request_all(ctx, &device.device_id);
+        }
     }
 
     fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
-        request_all(ctx, &device.device_id);
+        if is_enabled(ctx, &device.device_id) {
+            request_all(ctx, &device.device_id);
+        }
     }
 
     fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
@@ -392,8 +429,47 @@ impl NotificationsPlugin {
         Ok(())
     }
 
-    /// Record a posted or updated notification, and publish it.
-    fn post(&self, ctx: &PluginContext, device: &DeviceSnapshot, body: NotificationBody) {
+    /// Turn showing `device_id`'s notifications here on or off. Off forgets
+    /// the ones here, publishing each removal; on asks the device, if
+    /// connected, for the ones it shows. Either way the device's snapshot
+    /// changes (`device.updated`). Setting what is already set does
+    /// nothing.
+    pub fn set_enabled(
+        &self,
+        ctx: &PluginContext,
+        device_id: &str,
+        enabled: bool,
+    ) -> Result<(), NotificationError> {
+        let device = ctx.device(device_id).ok_or(CoreError::UnknownDevice)?;
+        if !device.paired {
+            return Err(CoreError::NotPaired.into());
+        }
+        if is_enabled(ctx, device_id) == enabled {
+            return Ok(());
+        }
+        ctx.store()
+            .set(&ENABLED.of(device_id), &enabled)
+            .map_err(CoreError::Store)?;
+        if enabled {
+            request_all(ctx, device_id);
+        } else {
+            // After the write, so a notification being posted meanwhile
+            // is either removed here or refused by `post`.
+            let removed = self.lock().remove(device_id).unwrap_or_default();
+            for stored in removed.notifications {
+                let _ = ctx.publish(&NotificationRemoved {
+                    device_id: device_id.to_owned(),
+                    id: stored.notification.id,
+                });
+            }
+        }
+        ctx.device_changed(device_id);
+        Ok(())
+    }
+
+    /// Record a posted or updated notification, and publish it; `false` if
+    /// the device's notifications were turned off meanwhile.
+    fn post(&self, ctx: &PluginContext, device: &DeviceSnapshot, body: NotificationBody) -> bool {
         let NotificationBody {
             id,
             app_name,
@@ -412,6 +488,9 @@ impl NotificationsPlugin {
         let text = text.or(if title.is_none() { ticker } else { None });
         let notification = {
             let mut devices = self.lock();
+            if !is_enabled(ctx, &device.device_id) {
+                return false;
+            }
             let entry = devices.entry(device.device_id.clone()).or_default();
             let previous = entry.remove(&id);
             let news = previous.as_ref().is_none_or(|previous| {
@@ -450,6 +529,7 @@ impl NotificationsPlugin {
             notification,
             alert,
         });
+        true
     }
 
     /// Forget notification `id`, publishing its removal if it was here.
@@ -465,6 +545,16 @@ impl NotificationsPlugin {
             });
         }
     }
+}
+
+/// Whether `device_id`'s notifications are shown here ([`ENABLED`]). A
+/// store that can't be read counts as on, the default.
+fn is_enabled(ctx: &PluginContext, device_id: &str) -> bool {
+    ctx.store()
+        .get(&ENABLED.of(device_id))
+        .ok()
+        .flatten()
+        .unwrap_or(true)
 }
 
 /// Ask a paired, connected device for every notification it shows, as KDE
@@ -551,7 +641,7 @@ mod tests {
     use super::*;
     use crate::core::{
         Core, CoreEvent, EventData,
-        testing::{handle_with_plugin, make_identity},
+        testing::{handle_with_plugin, handle_with_plugin_and_event_capacity, make_identity},
     };
 
     const PEER: &str = "740bd4b9b4184ee497d6caf1da8151be";
@@ -838,5 +928,102 @@ mod tests {
         }
         core.handle_peer_packet(PEER, notification(json!({"id": "d", "payloadHash": "h1"})));
         assert_eq!(plugin.icon(PEER, "d"), None);
+    }
+
+    #[test]
+    fn syncing_is_on_by_default_and_shown_on_paired_devices() {
+        let (core, _plugin, _sent, _events) = connected(&[]);
+        let device = core.device(PEER).unwrap();
+        assert_eq!(device.plugins[ID], json!({"enabled": true}));
+
+        let (core, _plugin, _commands) = handle_with_plugin(NotificationsPlugin::default());
+        core.discover_device(&make_identity(PEER, Vec::new()), false, 1)
+            .unwrap();
+        assert!(!core.device(PEER).unwrap().plugins.contains_key(ID));
+    }
+
+    #[test]
+    fn turning_it_off_forgets_them_and_ignores_new_ones() {
+        let (core, plugin, _commands) =
+            handle_with_plugin_and_event_capacity(NotificationsPlugin::default(), 8);
+        core.discover_device(
+            &make_identity(PEER, vec![REQUEST_PACKET_TYPE.into()]),
+            true,
+            1,
+        )
+        .unwrap();
+        let (tx, mut sent) = mpsc::channel(8);
+        core.register_connection(PEER, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .unwrap();
+        let _request_all = sent.try_recv().unwrap();
+        core.handle_peer_packet(PEER, message("a", "Dinner?"));
+        let ctx = core.plugin_context();
+
+        let mut events = core.subscribe();
+        plugin.set_enabled(&ctx, PEER, false).unwrap();
+        let EventData::Plugin(removed) = events.try_recv().unwrap().event else {
+            panic!("expected the removal");
+        };
+        assert_eq!(
+            removed.decode::<NotificationRemoved>(),
+            Some(NotificationRemoved {
+                device_id: PEER.into(),
+                id: "a".into()
+            })
+        );
+        let EventData::DeviceUpdated(device) = events.try_recv().unwrap().event else {
+            panic!("expected the device's update");
+        };
+        assert_eq!(device.plugins[ID], json!({"enabled": false}));
+        assert_eq!(core.store().get(&ENABLED.of(PEER)).unwrap(), Some(false));
+        assert!(plugin.list(PEER).is_empty());
+
+        // What the device sends now is dropped, and it isn't asked again
+        // when it reconnects.
+        core.handle_peer_packet(PEER, message("b", "Still there?"));
+        assert!(events.try_recv().is_err());
+        assert!(plugin.list(PEER).is_empty());
+        assert!(matches!(
+            plugin.reply(&ctx, PEER, "b", "Yes"),
+            Err(NotificationError::NotFound)
+        ));
+        let (tx, mut sent) = mpsc::channel(8);
+        core.register_connection(PEER, vec![1, 2, 3], 8, tx, CancellationToken::new(), 2)
+            .unwrap();
+        assert!(sent.try_recv().is_err());
+
+        // Turning it off again changes nothing.
+        let mut events = core.subscribe();
+        plugin.set_enabled(&ctx, PEER, false).unwrap();
+        assert!(events.try_recv().is_err());
+
+        // On again, the device is asked for what it shows.
+        plugin.set_enabled(&ctx, PEER, true).unwrap();
+        let request = sent.try_recv().unwrap();
+        assert_eq!(request.packet_type, REQUEST_PACKET_TYPE);
+        assert_eq!(request.body["request"], json!(true));
+        assert!(matches!(
+            events.try_recv().unwrap().event,
+            EventData::DeviceUpdated(device) if device.plugins[ID] == json!({"enabled": true})
+        ));
+        core.handle_peer_packet(PEER, message("b", "Still there?"));
+        assert_eq!(plugin.list(PEER).len(), 1);
+    }
+
+    #[test]
+    fn only_a_paired_device_can_be_turned_off() {
+        let (core, plugin, _commands) = handle_with_plugin(NotificationsPlugin::default());
+        let ctx = core.plugin_context();
+        assert!(matches!(
+            plugin.set_enabled(&ctx, PEER, false),
+            Err(NotificationError::Core(CoreError::UnknownDevice))
+        ));
+        core.discover_device(&make_identity(PEER, Vec::new()), false, 1)
+            .unwrap();
+        assert!(matches!(
+            plugin.set_enabled(&ctx, PEER, false),
+            Err(NotificationError::Core(CoreError::NotPaired))
+        ));
+        assert_eq!(core.store().get(&ENABLED.of(PEER)).unwrap(), None);
     }
 }

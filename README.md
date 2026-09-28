@@ -124,8 +124,9 @@ variables for a script run elsewhere.
 - `ferry-cli ring <device-id>` - Make a paired device ring so you can find it.
 - `ferry-cli send <device-id> <file> [--watch]` - Stream a file to a device.
 - `ferry-cli notifications <device-id> [ls [--watch] | reply <id> <message> |
-  action <id> <label> | dismiss <id>]` - List a phone's notifications, or
-  answer, press a button on, or dismiss one.
+  action <id> <label> | dismiss <id> | enable | disable]` - List a phone's
+  notifications, answer, press a button on, or dismiss one, or turn
+  showing them here on or off for that phone.
 - `ferry-cli call <device-id> [--watch]` - Show the call going on on a phone
   (`--watch` also prints missed calls).
 - `ferry-cli mute <device-id>` - Mute a phone's ringer while a call rings.

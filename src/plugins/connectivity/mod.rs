@@ -113,9 +113,9 @@ impl Plugin for ConnectivityPlugin {
         }
     }
 
-    fn device_state(&self, device_id: &str) -> Option<Value> {
+    fn device_state(&self, _ctx: &PluginContext, device: &DeviceSnapshot) -> Option<Value> {
         let reports = self.reports.lock().unwrap_or_else(PoisonError::into_inner);
-        serde_json::to_value(reports.get(device_id)?).ok()
+        serde_json::to_value(reports.get(&device.device_id)?).ok()
     }
 
     fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {

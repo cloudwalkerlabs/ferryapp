@@ -17,7 +17,7 @@ use ferry::{
     core::{Core, DeviceReachability, LocalDeviceSnapshot, TransferConfig},
     plugins::{
         clipboard::InMemoryClipboard,
-        notifications::{Notification, REPLY_PACKET_TYPE, REQUEST_PACKET_TYPE},
+        notifications::{self, Notification, REPLY_PACKET_TYPE, REQUEST_PACKET_TYPE},
     },
     protocol::{DeviceType, Packet},
     store::Store,
@@ -274,4 +274,74 @@ async fn a_phones_notifications_are_listed_answered_and_dismissed() {
         .post_notification(json!({"id": "b", "isCancel": true}), None)
         .await;
     eventually(|| async { harness.notifications().await.is_empty() }).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_device_whose_notifications_are_off_isnt_listed_until_turned_on() {
+    let harness = harness().await;
+    let requests = || {
+        harness
+            .received(REQUEST_PACKET_TYPE)
+            .iter()
+            .filter(|packet| packet.body.get("request") == Some(&json!(true)))
+            .count()
+    };
+    eventually(|| async { requests() == 1 }).await;
+    let enabled = || async {
+        let devices = harness.client.devices().await.unwrap();
+        let phone = devices
+            .iter()
+            .find(|device| device.device_id == harness.phone_id)
+            .unwrap();
+        notifications::enabled(phone)
+    };
+    assert!(enabled().await);
+    harness
+        .phone
+        .post_notification(
+            json!({"id": "a", "appName": "Clock", "title": "Alarm"}),
+            None,
+        )
+        .await;
+    eventually(|| async { harness.notifications().await.len() == 1 }).await;
+
+    harness
+        .client
+        .set_notifications_enabled(&harness.phone_id, false)
+        .await
+        .unwrap();
+    assert!(!enabled().await);
+    assert!(harness.notifications().await.is_empty());
+    harness
+        .phone
+        .post_notification(
+            json!({"id": "b", "appName": "Clock", "title": "Timer"}),
+            None,
+        )
+        .await;
+
+    // On again, the phone is asked for what it shows; what it sent while
+    // off was dropped, and what it sends now is listed.
+    harness
+        .client
+        .set_notifications_enabled(&harness.phone_id, true)
+        .await
+        .unwrap();
+    assert!(enabled().await);
+    eventually(|| async { requests() == 2 }).await;
+    harness
+        .phone
+        .post_notification(
+            json!({"id": "c", "appName": "Clock", "title": "Bedtime"}),
+            None,
+        )
+        .await;
+    eventually(|| async { !harness.notifications().await.is_empty() }).await;
+    let listed: Vec<_> = harness
+        .notifications()
+        .await
+        .into_iter()
+        .map(|notification| notification.id)
+        .collect();
+    assert_eq!(listed, ["c"]);
 }

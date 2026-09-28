@@ -59,11 +59,13 @@ pub trait Plugin: Send + Sync + 'static {
         Router::new()
     }
 
-    /// What this plugin adds to a device's snapshot, under its
-    /// [`Self::id`] in `plugins`; `None` to add nothing. The core asks each
-    /// time it hands out a snapshot, never while holding its own lock. A
-    /// plugin whose answer changes calls [`PluginContext::device_changed`].
-    fn device_state(&self, _device_id: &str) -> Option<Value> {
+    /// What this plugin adds to `device`'s snapshot, under its
+    /// [`Self::id`] in `plugins`; `None` to add nothing. `device` is the
+    /// snapshot without it. The core asks each time it hands out a
+    /// snapshot, never while holding its own lock; don't call
+    /// [`PluginContext::device`] from here, which would ask again. A plugin
+    /// whose answer changes calls [`PluginContext::device_changed`].
+    fn device_state(&self, _ctx: &PluginContext, _device: &DeviceSnapshot) -> Option<Value> {
         None
     }
 
@@ -286,11 +288,15 @@ impl PluginRegistry {
     }
 
     /// What every plugin adds to a device's snapshot, keyed by plugin id.
-    pub fn device_state(&self, device_id: &str) -> BTreeMap<String, Value> {
+    pub fn device_state(
+        &self,
+        ctx: &PluginContext,
+        device: &DeviceSnapshot,
+    ) -> BTreeMap<String, Value> {
         self.plugins
             .iter()
             .filter_map(|plugin| {
-                let state = plugin.device_state(device_id)?;
+                let state = plugin.device_state(ctx, device)?;
                 Some((plugin.id().to_owned(), state))
             })
             .collect()
