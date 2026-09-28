@@ -20,9 +20,8 @@ cask "ferry" do
 
   # The app is signed with a self-signed certificate, not notarized, so
   # Gatekeeper would refuse the copy Homebrew marked as downloaded.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Ferry.app"]
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Ferry.app"]
   end
 
   uninstall quit: "dev.fanchao.Ferry"
