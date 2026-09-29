@@ -202,7 +202,21 @@ taught.
    to that IPv4 address on port 1716, and the peer dials back as after a
    broadcast. Only unicast addresses are accepted, and the port and
    payload are fixed, so the endpoint can't be used as a general UDP
-   sender.
+   sender. A paired device can also keep addresses (`core.addresses`, a
+   `PerDevice` config of IPv4 addresses, in the device snapshot as
+   `addresses`): on its announce interval the transport announces to those
+   of every paired device that isn't connected (`Core::fallback_addresses`),
+   so a peer that only a tailnet or another subnet reaches is found again
+   after a restart or an outage. Broadcast still wins: a connected device's
+   addresses aren't used. Adding a device by address is
+   `Core::connect_address` (`POST /devices/connect`): it announces to the
+   address every two seconds until a device connects from it (the peer
+   address of a live connection), for at most ten seconds, then answers
+   with the device, ready to pair, or `504 address_unreachable`. Dropping
+   the future cancels it. The address is kept only once the device is
+   paired (at once if it already is): until then it waits in memory
+   beside the connection, and is dropped if the connection ends first, so
+   an address that never led to a paired device is never stored.
 2. **Plaintext identity, then TLS** (`transport::tls`): the peer that
    received a UDP announcement dials the announced `tcpPort` (only UDP
    announcements carry it) and sends its identity once in plaintext, with
@@ -426,6 +440,8 @@ the event stream.
 | --- | --- | --- |
 | `GET` | `/status` | Version, uptime, local device summary, protocol version. |
 | `POST` | `/discovery` | Announce identity now; `202`. An optional `{"address": "192.168.1.20"}` sends it to that unicast IPv4 address only; anything else is `400 invalid_address`. |
+| `POST` | `/devices/connect` | `{"address": "100.64.0.7"}`: announce to that unicast IPv4 address until a device connects from it (up to 10 s, under the request deadline), and answer `200` with the device, ready to pair (`POST /pairings`). `504 address_unreachable` if none did, `400 invalid_address` for anything but a unicast IPv4 address. The address is saved once that device is paired, or now if it already is; nothing is saved on failure. |
+| `PUT` | `/devices/{id}/addresses` | `{"addresses": ["100.64.0.7", …]}`: replace the addresses a paired device is reached at when broadcast doesn't find it (at most 8, repeats dropped, unicast IPv4 only: `400 invalid_address` or `too_many_addresses`, `409 device_not_paired`). Answers with what is saved; the snapshot's `addresses` and `device.updated` carry it. Unpairing removes them. |
 | `GET` | `/devices` | Snapshot of known devices. Each carries `plugins`, an object keyed by plugin id with what that plugin adds to the device; a plugin with nothing to add has no key, so it is often `{}`. So far `battery`: `{"charge": 0-100, "charging": bool}` from the peer's latest `kdeconnect.battery` report, and `connectivity`: `{"subscriptions": [{"id": "6", "networkType": "LTE", "signalStrength": 0-4}]}` from its latest `kdeconnect.connectivity_report` (one entry per SIM, in id order; `networkType` as the phone names it, `"Unknown"` when it doesn't know). Each is present once a paired, connected peer has reported and removed when it disconnects or is unpaired; and `telephony`: `{"state": "ringing"|"talking", "contactName"?, "phoneNumber"?}`, the call going on on a phone, removed when it ends. A change publishes `device.updated`. Clients should ignore unknown keys. |
 | `GET` | `/devices/{deviceId}` | One device, or `404`. |
 | `DELETE` | `/devices/{deviceId}` | Unpair, remove trust, forget the device. |
@@ -573,10 +589,10 @@ Prioritized next work, with notes for each item, is in
   separate Xvfb displays), not on a Wayland compositor. Compositors
   without data-control (e.g. GNOME) fall back to XWayland, which is
   untested.
-- Devices added by IP address aren't remembered: after a restart, a device
-  reachable only that way must be added again (or reach this one first).
-  Adding by address has been checked between Ferry instances only, not
-  against KDE Connect.
+- Adding by address and reaching a device at its saved addresses have been
+  checked between Ferry instances only, not against KDE Connect or over a
+  real tailnet. Saved addresses are announced to on the 30-second announce
+  interval, so a peer that comes back is found within that.
 - No Bluetooth transport, no multi-file/directory transfer, no durable
   event replay, no remote/LAN exposure of the control API: explicit
   non-goals for the current scope, not oversights.

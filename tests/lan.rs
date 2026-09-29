@@ -302,6 +302,90 @@ async fn a_peer_added_by_address_connects_without_broadcast() {
     b_service.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn a_paired_peer_is_announced_to_at_its_saved_address_until_it_connects() {
+    let b = peer("Peer B").await;
+    let b_id = b.identity.device_id().to_owned();
+    let b_udp = free_udp_addr();
+
+    // A trusts B from the start, so B is a known device that isn't connected.
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::open(directory.path()).await.unwrap();
+    let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
+    store
+        .put_device(&ferry::store::TrustedDevice {
+            device_id: b_id.clone(),
+            certificate_der: b.identity.certificate_der().to_vec(),
+            last_trusted_protocol_version: 8,
+            last_identity: None,
+        })
+        .await
+        .unwrap();
+    let a_id = identity.device_id().to_owned();
+    let (a_core, a_commands) = Core::new(
+        LocalDeviceSnapshot {
+            device_id: a_id.clone(),
+            device_name: "Peer A".into(),
+        },
+        8,
+        subject_public_key_info(identity.certificate_der()).unwrap(),
+        store.clone(),
+        ferry::plugins::builtin(InMemoryClipboard::shared()),
+        32,
+        128,
+        identity.clone(),
+        ferry::core::TransferConfig::new(directory.path().join("downloads"))
+            .with_payload_bind_ip(Ipv4Addr::LOCALHOST),
+    )
+    .await
+    .unwrap();
+    assert!(a_core.device(&b_id).unwrap().paired);
+
+    // Neither side broadcasts, so only A's announcements to a saved
+    // address can bring them together.
+    let a_service = LanService::start(
+        test_config(free_udp_addr(), b_udp)
+            .with_announcement_targets(Vec::new())
+            .with_peer_discovery_port(b_udp.port()),
+        local(&a_id, "Peer A"),
+        a_core.clone(),
+        a_commands,
+        identity.clone(),
+        store.clone(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let b_service = LanService::start(
+        test_config(b_udp, b_udp).with_announcement_targets(Vec::new()),
+        local(&b_id, "Peer B"),
+        b.application.clone(),
+        b.commands,
+        b.identity.clone(),
+        b.store.clone(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_ne!(
+        a_core.device(&b_id).unwrap().reachability,
+        DeviceReachability::Connected,
+        "nothing brings them together without an address"
+    );
+
+    a_core
+        .set_device_addresses(&b_id, vec![Ipv4Addr::LOCALHOST])
+        .await
+        .unwrap();
+    wait_for_reachability(&a_core, &b_id, DeviceReachability::Connected).await;
+    wait_for_reachability(&b.application, &a_id, DeviceReachability::Connected).await;
+
+    a_service.shutdown().await.unwrap();
+    b_service.shutdown().await.unwrap();
+}
+
 /// `LanConfig::loopback` as the daemon's `--discovery-loopback` uses it,
 /// on a private port: nothing binds an address a LAN interface receives
 /// on, and two instances still find each other, by broadcast and by

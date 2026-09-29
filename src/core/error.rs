@@ -33,6 +33,10 @@ pub enum CoreError {
     UnknownDevice,
     #[error("discovery address must be a unicast IPv4 address")]
     InvalidDiscoveryAddress,
+    #[error("no device answered at that address")]
+    AddressUnreachable,
+    #[error("a device keeps at most 8 addresses")]
+    TooManyAddresses,
     #[error("device is already paired")]
     AlreadyPaired,
     #[error("a pairing session is already in progress for this device")]
@@ -84,6 +88,8 @@ impl CoreError {
             Self::CommandQueueClosed => "application_unavailable",
             Self::UnknownDevice => "device_not_found",
             Self::InvalidDiscoveryAddress => "invalid_address",
+            Self::AddressUnreachable => "address_unreachable",
+            Self::TooManyAddresses => "too_many_addresses",
             Self::UnknownPairing => "pairing_not_found",
             Self::AlreadyPaired => "already_paired",
             Self::PairingInProgress => "pairing_in_progress",

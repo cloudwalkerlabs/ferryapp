@@ -37,6 +37,8 @@ pub fn describe_code(code: &str) -> String {
         "invalid_device_name" => fl!("error-invalid_device_name"),
         "invalid_download_dir" => fl!("error-invalid_download_dir"),
         "invalid_address" => fl!("error-invalid_address"),
+        "address_unreachable" => fl!("error-address_unreachable"),
+        "too_many_addresses" => fl!("error-too_many_addresses"),
         code => fl!("error-unknown", code = code),
     }
 }
@@ -154,6 +156,11 @@ mod tests {
                 "invalid_address",
                 "Enter an IPv4 address, like 192.168.1.20.",
             ),
+            (
+                "address_unreachable",
+                "No device answered at that address. Make sure Ferry or KDE Connect is running there.",
+            ),
+            ("too_many_addresses", "A device can keep up to 8 addresses."),
             ("teapot", "Something went wrong (teapot)."),
         ] {
             assert_eq!(describe_code(code), message, "{code}");

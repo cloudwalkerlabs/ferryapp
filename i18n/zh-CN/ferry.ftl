@@ -54,6 +54,8 @@ error-request_timeout = Ferry 响应超时。
 error-invalid_device_name = 请使用 1 到 32 个字符，不含 . , : ; ! ? ( ) [ ] < > 或引号。
 error-invalid_download_dir = 该文件夹不能用于保存下载。
 error-invalid_address = 请输入 IPv4 地址，例如 192.168.1.20。
+error-address_unreachable = 该地址没有设备应答。请确认那里正在运行 Ferry 或 KDE Connect。
+error-too_many_addresses = 每台设备最多保存 8 个地址。
 error-unknown = 出了点问题（{ $code }）。
 error-send-file-failed = 无法发送 { $file }：{ $reason }
 error-send-files-failed = 无法发送 { $count } 个文件：{ $reason }
@@ -80,8 +82,12 @@ shell-open-link-failed = 无法打开 { $url }
 shell-start-on-login-failed = 无法更改登录时启动的设置。
 shell-add-by-address-title = 通过 IP 地址添加
 shell-add-by-address-label = IP 地址
-shell-add-by-address-helper = 该设备上必须正在运行 Ferry 或 KDE Connect。它应答后会出现在列表中。
+shell-add-by-address-helper = 该设备上必须正在运行 Ferry 或 KDE Connect。Ferry 会连接并配对，然后记住该地址。
 shell-add-by-address-confirm = 添加
+shell-address-add-title = 添加地址
+shell-address-edit-title = 编辑地址
+shell-address-body = 当在网络中找不到 { $name } 时，Ferry 会尝试此地址。
+shell-address-save = 保存
 shell-rename-title = 设备名称
 shell-rename-helper = 此电脑在你的其他设备上显示的名称
 shell-rename-confirm = 保存
@@ -145,6 +151,12 @@ device-type-phone = 手机
 device-type-tablet = 平板电脑
 device-type-tv = 电视
 device-unpair = 取消配对
+device-addresses-title = 地址
+device-addresses-detail = 当在网络中找不到该设备时，Ferry 会尝试这些地址。
+device-addresses-none = 没有已保存的地址
+device-address-add = 添加地址
+device-address-edit = 编辑
+device-address-remove = 移除
 
 ## Adding a device (src/ui/pages/add_device.rs)
 
@@ -157,6 +169,9 @@ add-device-not-connected = 未连接
 add-device-pair = 配对
 add-device-by-address = 通过 IP 地址添加
 add-device-by-address-detail = 适用于设备不会自动出现的网络
+add-device-connecting = 正在连接 { $address }…
+add-device-connecting-detail = 正在等待设备应答
+add-device-cancel = 取消
 
 ## Pairing with a device (src/ui/pages/pairing.rs)
 

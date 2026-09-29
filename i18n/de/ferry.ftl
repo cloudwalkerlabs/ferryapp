@@ -65,6 +65,8 @@ error-request_timeout = Ferry hat zu lange für eine Antwort gebraucht.
 error-invalid_device_name = Verwende 1 bis 32 Zeichen, ohne . , : ; ! ? ( ) [ ] < > oder Anführungszeichen.
 error-invalid_download_dir = Dieser Ordner kann nicht für Downloads verwendet werden.
 error-invalid_address = Gib eine IPv4-Adresse ein, etwa 192.168.1.20.
+error-address_unreachable = Unter dieser Adresse hat kein Gerät geantwortet. Prüfe, ob dort Ferry oder KDE Connect läuft.
+error-too_many_addresses = Ein Gerät kann höchstens 8 Adressen speichern.
 error-unknown = Etwas ist schiefgelaufen ({ $code }).
 error-send-file-failed = { $file } konnte nicht gesendet werden: { $reason }
 error-send-files-failed =
@@ -99,8 +101,12 @@ shell-open-link-failed = { $url } konnte nicht geöffnet werden
 shell-start-on-login-failed = Der Start bei der Anmeldung konnte nicht geändert werden.
 shell-add-by-address-title = Über IP-Adresse hinzufügen
 shell-add-by-address-label = IP-Adresse
-shell-add-by-address-helper = Auf dem Gerät muss Ferry oder KDE Connect laufen. Es erscheint in der Liste, sobald es antwortet.
+shell-add-by-address-helper = Auf dem Gerät muss Ferry oder KDE Connect laufen. Ferry verbindet sich, koppelt und merkt sich die Adresse.
 shell-add-by-address-confirm = Hinzufügen
+shell-address-add-title = Adresse hinzufügen
+shell-address-edit-title = Adresse bearbeiten
+shell-address-body = Ferry versucht diese Adresse, wenn { $name } im Netzwerk nicht gefunden wird.
+shell-address-save = Speichern
 shell-rename-title = Gerätename
 shell-rename-helper = So erscheint dieser Computer auf deinen anderen Geräten
 shell-rename-confirm = Speichern
@@ -168,6 +174,12 @@ device-type-phone = Smartphone
 device-type-tablet = Tablet
 device-type-tv = Fernseher
 device-unpair = Kopplung aufheben
+device-addresses-title = Adressen
+device-addresses-detail = Ferry versucht diese Adressen, wenn das Gerät im Netzwerk nicht gefunden wird.
+device-addresses-none = Keine Adressen gespeichert
+device-address-add = Adresse hinzufügen
+device-address-edit = Bearbeiten
+device-address-remove = Entfernen
 
 ## Adding a device (src/ui/pages/add_device.rs)
 
@@ -180,6 +192,9 @@ add-device-not-connected = Nicht verbunden
 add-device-pair = Koppeln
 add-device-by-address = Über IP-Adresse hinzufügen
 add-device-by-address-detail = Für Netzwerke, in denen das Gerät nicht von selbst erscheint
+add-device-connecting = Verbinde mit { $address } …
+add-device-connecting-detail = Warte auf die Antwort des Geräts
+add-device-cancel = Abbrechen
 
 ## Pairing with a device (src/ui/pages/pairing.rs)
 

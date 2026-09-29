@@ -21,7 +21,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -238,6 +238,8 @@ fn router(state: ApiState, token: Option<ApiToken>, config: &ApiServerConfig) ->
         .route("/status", get(get_status))
         .route("/discovery", post(post_discovery))
         .route("/devices", get(get_devices))
+        .route("/devices/connect", post(post_connect))
+        .route("/devices/{device_id}/addresses", put(put_addresses))
         .route(
             "/devices/{device_id}",
             get(get_device).delete(delete_device),
@@ -397,6 +399,54 @@ async fn post_discovery(
         None => state.core.announce()?,
     }
     Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Deserialize)]
+struct ConnectRequest {
+    address: String,
+}
+
+/// Wait for a device to answer at an IPv4 address, announcing to it until
+/// one does (up to `CONNECT_TIMEOUT`), and answer with the device, ready to
+/// pair. A device that pairs afterwards keeps the address. `504
+/// address_unreachable` if nothing answered; nothing is saved then.
+async fn post_connect(
+    State(state): State<ApiState>,
+    Json(request): Json<ConnectRequest>,
+) -> Result<Json<DeviceSnapshot>, ApiProblem> {
+    let address = request
+        .address
+        .trim()
+        .parse()
+        .map_err(|_| ApiProblem::bad_request("invalid_address"))?;
+    Ok(Json(state.core.connect_address(address).await?))
+}
+
+#[derive(Serialize, Deserialize)]
+struct Addresses {
+    addresses: Vec<String>,
+}
+
+/// Replace the addresses a paired device is reached at when it isn't found
+/// by broadcast. Answers with what is saved.
+async fn put_addresses(
+    State(state): State<ApiState>,
+    Path(device_id): Path<String>,
+    Json(request): Json<Addresses>,
+) -> Result<Json<Addresses>, ApiProblem> {
+    let addresses = request
+        .addresses
+        .iter()
+        .map(|address| address.trim().parse())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ApiProblem::bad_request("invalid_address"))?;
+    let saved = state
+        .core
+        .set_device_addresses(&device_id, addresses)
+        .await?;
+    Ok(Json(Addresses {
+        addresses: saved.iter().map(ToString::to_string).collect(),
+    }))
 }
 
 async fn delete_device(
@@ -566,7 +616,11 @@ fn map_error(error: CoreError) -> ApiProblem {
         CoreError::UnknownDevice | CoreError::UnknownPairing | CoreError::UnknownTransfer => {
             ApiProblem::not_found(code)
         }
+        CoreError::AddressUnreachable => {
+            ApiProblem::new(StatusCode::GATEWAY_TIMEOUT, "Address unreachable", code)
+        }
         CoreError::InvalidDiscoveryAddress
+        | CoreError::TooManyAddresses
         | CoreError::InvalidFileName
         | CoreError::InvalidDeviceName
         | CoreError::InvalidDownloadDir

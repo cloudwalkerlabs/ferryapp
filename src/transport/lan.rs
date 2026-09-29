@@ -283,22 +283,19 @@ async fn run(
             _ = cancellation.cancelled() => break,
             _ = announcements.tick() => {
                 announce(&udp, &config.announcement_targets, &announcement).await;
+                // Paired devices that aren't connected and were given an
+                // address: broadcast doesn't reach them (a tailnet, another
+                // subnet), so ask them directly.
+                for address in core.fallback_addresses() {
+                    announce_to(&udp, &config, &announcement, address).await;
+                }
             }
             command = commands.recv(), if commands_open => match command {
                 Some(LanCommand::AnnounceDiscovery) => {
                     announce(&udp, &config.announcement_targets, &announcement).await;
                 }
-                Some(LanCommand::AnnounceTo { address }) if config.loopback_only => {
-                    if address.is_loopback() {
-                        let target = SocketAddr::V4(SocketAddrV4::new(LOOPBACK_BROADCAST, config.peer_discovery_port));
-                        announce(&udp, &[target], &announcement).await;
-                    } else {
-                        debug!(%address, "not announcing off loopback in loopback-only mode");
-                    }
-                }
                 Some(LanCommand::AnnounceTo { address }) => {
-                    let target = SocketAddr::V4(SocketAddrV4::new(address, config.peer_discovery_port));
-                    announce(&udp, &[target], &announcement).await;
+                    announce_to(&udp, &config, &announcement, address).await;
                 }
                 None => commands_open = false,
             },
@@ -367,6 +364,22 @@ async fn run(
 
     registry.cancel_all();
     connections.shutdown().await;
+}
+
+/// Send the identity to one address, on the peer's discovery port. In
+/// loopback-only mode only a loopback address is announced to, and it goes
+/// to the loopback broadcast address, which is where such peers listen.
+async fn announce_to(udp: &UdpSocket, config: &LanConfig, announcement: &[u8], address: Ipv4Addr) {
+    let target = if !config.loopback_only {
+        address
+    } else if address.is_loopback() {
+        LOOPBACK_BROADCAST
+    } else {
+        debug!(%address, "not announcing off loopback in loopback-only mode");
+        return;
+    };
+    let target = SocketAddr::V4(SocketAddrV4::new(target, config.peer_discovery_port));
+    announce(udp, &[target], announcement).await;
 }
 
 async fn is_trusted(store: &Store, device_id: &str) -> bool {

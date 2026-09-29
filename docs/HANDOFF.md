@@ -222,7 +222,6 @@ CC_aarch64_apple_darwin=fakecc AR_aarch64_apple_darwin=fakear \
 **The rest of the UI's open work:**
 
 - Drag files out of the browser to the desktop (ADR 0008).
-- Remembered add-by-IP addresses ("Smaller follow-ups").
 - A low-battery notification (`thresholdEvent`).
 - Accessibility: check what iced 0.14 exposes to screen readers and
   record the gap against Flutter.
@@ -279,11 +278,11 @@ and that the Downloads folder permission survives a `brew upgrade`.
   in `ferry-cli devices`) were checked against the fake phone only. The
   tray shows only the network type ("LTE"), since its items have no
   icons for the bars.
-- Devices added by IP address are forgotten on restart. KDE Connect keeps
-  a list of such addresses and announces to them periodically; here that
-  would be a daemon setting (a list of addresses, as a config key) that
-  `LanService` announces to on its interval, plus a way to remove entries
-  in the UI.
+- Saved device addresses (Add device's "Add by IP address" waits for the
+  device, pairs, and keeps the address; the device page edits them) were
+  checked between Ferry instances and in tests only. Worth checking against
+  KDE Connect for Android over a real tailnet. The device page's gallery
+  screenshots (`site/img/device-*`) predate its Addresses section.
 - `plugins::clipboard::backend::system::tests::clearing_the_clipboard_is_not_reported`
   failed once in a full `cargo test --workspace` run and passed on every
   rerun and alone; it looks timing-sensitive under load.

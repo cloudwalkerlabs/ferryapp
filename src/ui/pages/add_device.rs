@@ -1,6 +1,8 @@
 //! Add device: devices nearby that could be paired, a scan, and adding a
 //! device by its IP address.
 
+use std::net::Ipv4Addr;
+
 use iced::{
     Alignment, Element, Length, Theme,
     widget::{Space, button, column, container, row, rule, scrollable, space, text},
@@ -29,6 +31,8 @@ pub struct Actions<M> {
     pub scan: M,
     /// Open the "Add by IP address" dialog.
     pub add_by_address: M,
+    /// Stop trying the address being connected to.
+    pub cancel_connect: M,
     /// Read the core again after a failed snapshot.
     pub retry: M,
     /// Pair with the device of this id.
@@ -37,11 +41,14 @@ pub struct Actions<M> {
 
 /// The page, from what `store` holds. `searching` shows the bar under the
 /// header and disables Scan again; `starting` names the device a pairing
-/// is being started with, which disables every Pair button.
+/// is being started with, which disables every Pair button; `connecting`
+/// is the address being tried, which replaces the "Add by IP address" row
+/// with a card that can be cancelled.
 pub fn view<'a, M: Clone + 'a>(
     store: &'a Store,
     searching: bool,
     starting: Option<&str>,
+    connecting: Option<Ipv4Addr>,
     actions: Actions<M>,
 ) -> Element<'a, M> {
     let header = widgets::page_header(
@@ -86,9 +93,13 @@ pub fn view<'a, M: Clone + 'a>(
                     .then(|| (actions.pair)(device.device_id.clone()));
                 list = list.push(candidate(device, is_starting, pair));
             }
+            let by_address = match connecting {
+                Some(address) => connecting_card(address, actions.cancel_connect),
+                None => add_by_address(actions.add_by_address),
+            };
             list = list
                 .push(container(rule::horizontal(1)).padding([8, 0]))
-                .push(add_by_address(actions.add_by_address));
+                .push(by_address);
             scrollable(list.padding(iced::Padding::default().right(12)))
                 .spacing(4)
                 .height(Length::Fill)
@@ -140,6 +151,31 @@ fn candidate<'a, M: Clone + 'a>(
             .spacing(2),
             space::horizontal(),
             trailing,
+        ]
+        .spacing(14)
+        .align_y(Alignment::Center),
+    )
+    .into()
+}
+
+/// The address being tried: what for, a bar while it waits, and Cancel.
+fn connecting_card<'a, M: Clone + 'a>(address: Ipv4Addr, cancel: M) -> Element<'a, M> {
+    widgets::card(
+        row![
+            lucide::network().size(22),
+            column![
+                text(fl!("add-device-connecting", address = address.to_string())).size(15),
+                text(fl!("add-device-connecting-detail"))
+                    .size(13)
+                    .style(text::secondary),
+                container(activity_bar(Length::Fill, 4.0)).padding([6, 0]),
+            ]
+            .spacing(2)
+            .width(Length::Fill),
+            button(text(fl!("add-device-cancel")))
+                .padding([6, 16])
+                .style(widgets::outlined)
+                .on_press(cancel),
         ]
         .spacing(14)
         .align_y(Alignment::Center),
@@ -200,6 +236,7 @@ mod tests {
         Back,
         Scan,
         AddByAddress,
+        CancelConnect,
         Retry,
         Pair(String),
     }
@@ -209,13 +246,14 @@ mod tests {
             back: Asked::Back,
             scan: Asked::Scan,
             add_by_address: Asked::AddByAddress,
+            cancel_connect: Asked::CancelConnect,
             retry: Asked::Retry,
             pair: Asked::Pair,
         }
     }
 
     fn page<'a>(store: &'a Store, searching: bool, starting: Option<&str>) -> Element<'a, Asked> {
-        view(store, searching, starting, actions())
+        view(store, searching, starting, None, actions())
     }
 
     fn unpaired(name: &str, reachability: DeviceReachability, pairing: bool) -> DeviceSnapshot {
@@ -344,6 +382,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn trying_an_address_shows_it_and_can_be_cancelled() {
+        let store = candidates();
+        let address = Ipv4Addr::new(100, 64, 0, 7);
+        let connecting = || view(&store, false, None, Some(address), actions());
+        let mut ui = Simulator::new(connecting());
+        assert!(ui.find("Connecting to 100.64.0.7…").is_ok());
+        assert!(
+            ui.find("Add by IP address").is_err(),
+            "replaced by the card"
+        );
+        ui.click("Cancel").unwrap();
+        assert_eq!(
+            ui.into_messages().collect::<Vec<_>>(),
+            [Asked::CancelConnect]
+        );
+    }
+
     fn failed() -> Store {
         let mut store = Store::default();
         store.apply_snapshot(Snapshot {
@@ -370,6 +426,15 @@ mod tests {
         let empty = testing::store("Desk", Vec::new());
         testing::snapshot("add-device-empty", (440.0, 400.0), || {
             page(&empty, false, None)
+        });
+        testing::snapshot("add-device-connecting", (440.0, 400.0), || {
+            view(
+                &empty,
+                false,
+                None,
+                Some(Ipv4Addr::new(100, 64, 0, 7)),
+                actions(),
+            )
         });
     }
 }

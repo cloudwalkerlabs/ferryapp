@@ -532,6 +532,7 @@ impl Core {
 
     /// Tell the plugins `device_id` is now paired, as it is connected.
     async fn run_paired_hooks(&self, device_id: &str) {
+        self.commit_pending_address(device_id).await;
         if let Some(device) = self.device(device_id) {
             self.plugins.paired(&self.plugin_context(), &device).await;
         }

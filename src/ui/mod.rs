@@ -44,6 +44,7 @@ pub mod widgets;
 
 use std::{
     fmt,
+    net::Ipv4Addr,
     path::PathBuf,
     rc::Rc,
     sync::{Arc, Mutex, PoisonError},
@@ -59,7 +60,7 @@ use iced_fonts::lucide;
 use uuid::Uuid;
 
 use crate::{
-    core::{Appearance, PairingSnapshot, SettingsPatch, SettingsSnapshot},
+    core::{Appearance, DeviceSnapshot, PairingSnapshot, SettingsPatch, SettingsSnapshot},
     daemon::{ApiStatus, ApiSwitch},
 };
 use context::UiContext;
@@ -207,12 +208,38 @@ pub(crate) enum Message {
     DialogFinished(u64, Result<Box<Message>, String>),
     /// Announce this computer so devices nearby answer.
     Scan,
-    /// Show the "searching" bar for a while.
-    ShowSearching,
     /// The "searching" bar of this scan has shown long enough.
     SearchEnded(u64),
-    /// Ask for an address to announce this computer to.
+    /// Ask for the address of a device to add.
     AddByAddress,
+    /// Wait for a device to answer at this address, then pair with it.
+    Connect(Ipv4Addr),
+    /// Reaching a device at an address finished, or why it didn't; `attempt`
+    /// says which try, so a cancelled one's answer is ignored.
+    Connected {
+        attempt: u64,
+        result: Result<DeviceSnapshot, String>,
+    },
+    /// Stop waiting for the address being tried.
+    CancelConnect,
+    /// Ask for a new saved address of a device.
+    AddAddress {
+        device_id: String,
+        name: String,
+    },
+    /// Ask for a new value for one of a device's saved addresses.
+    EditAddress {
+        device_id: String,
+        name: String,
+        address: Ipv4Addr,
+    },
+    /// Forget one of a device's saved addresses.
+    RemoveAddress {
+        device_id: String,
+        address: Ipv4Addr,
+    },
+    /// A device's saved addresses changed, or why they couldn't.
+    AddressesSaved(Result<DeviceSnapshot, String>),
     /// Start pairing with a device.
     Pair(String),
     /// Starting a pairing finished, or why it didn't.
@@ -338,6 +365,10 @@ struct App {
     scan: u64,
     /// The device a pairing is being started with, if any.
     starting: Option<String>,
+    /// The address being tried for a device to add, if any.
+    connecting: Option<actions::Connecting>,
+    /// How many addresses have been tried, to tell one from the last.
+    attempts: u64,
     /// The outgoing pairing being cancelled, if any.
     cancelling: Option<Uuid>,
     /// The incoming request being answered, if any.
@@ -604,7 +635,6 @@ impl App {
                 }
             }
             Message::Scan => self.scan(),
-            Message::ShowSearching => self.show_searching(),
             Message::SearchEnded(scan) => {
                 if scan == self.scan {
                     self.searching = false;
@@ -612,6 +642,30 @@ impl App {
                 Task::none()
             }
             Message::AddByAddress => self.add_by_address(),
+            Message::Connect(address) => self.connect(address),
+            Message::Connected { attempt, result } => self.connected(attempt, result),
+            Message::CancelConnect => self.cancel_connect(),
+            Message::AddAddress { device_id, name } => self.ask_address(device_id, name, None),
+            Message::EditAddress {
+                device_id,
+                name,
+                address,
+            } => self.ask_address(device_id, name, Some(address)),
+            Message::RemoveAddress { device_id, address } => {
+                self.remove_address(device_id, address)
+            }
+            Message::AddressesSaved(result) => match result {
+                Ok(device) => {
+                    if let Some(running) = self.running() {
+                        running
+                            .ctx
+                            .store_mut()
+                            .apply_event(&crate::core::EventData::DeviceUpdated(device));
+                    }
+                    Task::none()
+                }
+                Err(error) => self.toast(error, None),
+            },
             Message::Pair(device_id) => self.pair(device_id),
             Message::PairStarted(result) => {
                 self.starting = None;
@@ -823,6 +877,9 @@ impl App {
     fn go(&mut self, route: Route) -> Task<Message> {
         let entering_add_device = route == Route::AddDevice
             && !matches!(self.route, Route::AddDevice | Route::Pairing(_));
+        if !matches!(route, Route::AddDevice | Route::Pairing(_)) {
+            self.abandon_connect();
+        }
         self.route = route;
         let told = match &mut self.phase {
             Phase::Running(running) => running.features.on_route(&running.ctx, &self.route),
@@ -904,6 +961,19 @@ impl App {
                         device_id: device.device_id.clone(),
                         name: device.device_name.clone(),
                     },
+                    add_address: |device| Message::AddAddress {
+                        device_id: device.device_id.clone(),
+                        name: device.device_name.clone(),
+                    },
+                    edit_address: |device, address| Message::EditAddress {
+                        device_id: device.device_id.clone(),
+                        name: device.device_name.clone(),
+                        address,
+                    },
+                    remove_address: |device, address| Message::RemoveAddress {
+                        device_id: device.device_id.clone(),
+                        address,
+                    },
                     transfer: TRANSFER_ACTIONS,
                 },
             ),
@@ -911,10 +981,14 @@ impl App {
                 running.ctx.store(),
                 self.searching,
                 self.starting.as_deref(),
+                self.connecting
+                    .as_ref()
+                    .map(|connecting| connecting.address),
                 add_device::Actions {
                     back: Message::Back,
                     scan: Message::Scan,
                     add_by_address: Message::AddByAddress,
+                    cancel_connect: Message::CancelConnect,
                     retry: Message::Reload,
                     pair: Message::Pair,
                 },

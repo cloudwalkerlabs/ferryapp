@@ -1126,6 +1126,114 @@ async fn discovery_can_be_sent_to_one_unicast_address() {
     server.server.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn connecting_to_an_address_waits_for_the_device_and_saved_addresses_are_replaced() {
+    let mut server = TestServer::start().await;
+    let peer = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    for address in ["desk.local", "0.0.0.0", "255.255.255.255", "224.0.0.251"] {
+        let rejected = request_with_body(
+            &server,
+            "POST",
+            "/api/v1/devices/connect",
+            &format!(r#"{{"address":"{address}"}}"#),
+        )
+        .await;
+        assert!(
+            rejected.starts_with("HTTP/1.1 400 Bad Request"),
+            "{address} was not rejected: {rejected}"
+        );
+        assert!(body(&rejected).contains("invalid_address"), "{rejected}");
+    }
+
+    // The request answers once a device connects from the address.
+    let answer = async {
+        let request = request_with_body(
+            &server,
+            "POST",
+            "/api/v1/devices/connect",
+            r#"{"address":" 100.64.0.7 "}"#,
+        );
+        let device = async {
+            let _packets = server.connect_and_pair(peer).await;
+            server
+                .application
+                .set_connection_peer_addr(peer, "100.64.0.7:40000".parse().unwrap());
+            // Keep the connection while the request notices it.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        };
+        tokio::join!(request, device).0
+    }
+    .await;
+    assert_eq!(
+        server.commands.try_recv().unwrap(),
+        LanCommand::AnnounceTo {
+            address: "100.64.0.7".parse().unwrap()
+        }
+    );
+    assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
+    assert!(body(&answer).contains(peer), "{answer}");
+    // The device was already paired, so it keeps the address at once.
+    assert!(body(&answer).contains(r#""addresses":["100.64.0.7"]"#));
+
+    let replaced = request_with_body(
+        &server,
+        "PUT",
+        &format!("/api/v1/devices/{peer}/addresses"),
+        r#"{"addresses":["192.168.1.20"," 100.64.0.9 ","192.168.1.20"]}"#,
+    )
+    .await;
+    assert!(replaced.starts_with("HTTP/1.1 200 OK"), "{replaced}");
+    assert_eq!(
+        body(&replaced),
+        r#"{"addresses":["192.168.1.20","100.64.0.9"]}"#
+    );
+    let device = request(&server, "GET", &format!("/api/v1/devices/{peer}"), true).await;
+    assert!(
+        body(&device).contains(r#""addresses":["192.168.1.20","100.64.0.9"]"#),
+        "{device}"
+    );
+
+    for (path, json, status, code) in [
+        (
+            format!("/api/v1/devices/{peer}/addresses"),
+            r#"{"addresses":["0.0.0.0"]}"#,
+            "400 Bad Request",
+            "invalid_address",
+        ),
+        (
+            format!("/api/v1/devices/{peer}/addresses"),
+            r#"{"addresses":["1.1.1.1","1.1.1.2","1.1.1.3","1.1.1.4","1.1.1.5","1.1.1.6","1.1.1.7","1.1.1.8","1.1.1.9"]}"#,
+            "400 Bad Request",
+            "too_many_addresses",
+        ),
+        (
+            "/api/v1/devices/missing/addresses".into(),
+            r#"{"addresses":["1.1.1.1"]}"#,
+            "404 Not Found",
+            "device_not_found",
+        ),
+    ] {
+        let response = request_with_body(&server, "PUT", &path, json).await;
+        assert!(
+            response.starts_with(&format!("HTTP/1.1 {status}")),
+            "{response}"
+        );
+        assert!(body(&response).contains(code), "{response}");
+    }
+
+    let cleared = request_with_body(
+        &server,
+        "PUT",
+        &format!("/api/v1/devices/{peer}/addresses"),
+        r#"{"addresses":[]}"#,
+    )
+    .await;
+    assert_eq!(body(&cleared), r#"{"addresses":[]}"#);
+
+    server.server.shutdown().await.unwrap();
+}
+
 /// One response, read up to the end of its body (by `Content-Length`)
 /// rather than to the end of the connection.
 async fn read_response(stream: &mut TcpStream) -> String {

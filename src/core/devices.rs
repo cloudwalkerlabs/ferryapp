@@ -1,7 +1,7 @@
 //! Devices: the registry of known peers, and what clients see of a device,
 //! with what plugins add to it.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, net::Ipv4Addr};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,6 +45,10 @@ pub struct DeviceSnapshot {
     /// hands a snapshot out.
     #[serde(default)]
     pub plugins: BTreeMap<String, Value>,
+    /// The addresses saved for reaching the device when broadcast doesn't
+    /// (see [`crate::core::ADDRESSES`]). Filled like `plugins`.
+    #[serde(default)]
+    pub addresses: Vec<Ipv4Addr>,
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +101,7 @@ impl DeviceRegistry {
             pairing,
             last_seen_at: observed_at,
             plugins: BTreeMap::new(),
+            addresses: Vec::new(),
         };
         self.devices.insert(
             identity.device_id.clone(),
@@ -321,6 +326,7 @@ impl Core {
                 fail_active_pairing(&mut state, device_id, OperationErrorCode::Internal);
             let forgotten = state.devices.forget(device_id);
             state.connections.remove(device_id);
+            state.pending_addresses.remove(device_id);
             (forgotten, cancellation, failed_pairing)
         };
         let Some(forgotten) = forgotten else {
@@ -359,6 +365,7 @@ impl Core {
     /// without holding the state lock: it calls into plugins.
     pub(super) fn with_plugin_state(&self, mut snapshot: DeviceSnapshot) -> DeviceSnapshot {
         snapshot.plugins = self.plugins.device_state(&self.plugin_context(), &snapshot);
+        snapshot.addresses = self.saved_addresses(&snapshot.device_id);
         snapshot
     }
 
@@ -428,6 +435,7 @@ fn paired_device_snapshot(device: TrustedDevice) -> DeviceSnapshot {
         pairing: false,
         last_seen_at: 0,
         plugins: Default::default(),
+        addresses: Vec::new(),
     }
 }
 
@@ -521,7 +529,8 @@ mod tests {
                 "paired": true,
                 "pairing": false,
                 "lastSeenAt": 42,
-                "plugins": {}
+                "plugins": {},
+                "addresses": []
             })
         );
     }

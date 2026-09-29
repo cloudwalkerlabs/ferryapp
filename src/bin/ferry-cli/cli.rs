@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use ferry::{
     api::DEFAULT_API_PORT,
     client::{
-        API_TOKEN_ENV, API_URL_ENV, ApiClient, CallWatchUpdate, ClipboardWatchUpdate,
+        API_TOKEN_ENV, API_URL_ENV, ApiClient, CallWatchUpdate, ClientError, ClipboardWatchUpdate,
         DeviceWatchUpdate, NotificationWatchUpdate, TransferWatchUpdate,
     },
     config::{ApiToken, StoredApi, default_config_dir},
@@ -119,6 +119,22 @@ enum Command {
         /// Keep listening and print unpaired devices as they appear.
         #[arg(long)]
         watch: bool,
+    },
+    /// Wait for a device to answer at an IPv4 address (for networks where
+    /// broadcast doesn't reach it, like a tailnet) and print it, ready to
+    /// pair. Once it is paired, the address is kept and tried again when
+    /// the device isn't found.
+    Connect { address: Ipv4Addr },
+    /// Show or change the addresses a paired device is reached at when
+    /// broadcast doesn't find it.
+    Addresses {
+        device_id: String,
+        /// Add this IPv4 address.
+        #[arg(long, value_name = "IP")]
+        add: Vec<Ipv4Addr>,
+        /// Forget this IPv4 address.
+        #[arg(long, value_name = "IP")]
+        remove: Vec<Ipv4Addr>,
     },
     /// Start, accept, or reject pairing.
     Pair {
@@ -364,6 +380,36 @@ impl Cli {
                 } else {
                     tokio::time::sleep(std::time::Duration::from_secs(timeout)).await;
                     print_devices(&unpaired(client.devices().await?), json);
+                }
+            }
+            Command::Connect { address } => print_devices(&[client.connect(address).await?], json),
+            Command::Addresses {
+                device_id,
+                add,
+                remove,
+            } => {
+                let device = client
+                    .devices()
+                    .await?
+                    .into_iter()
+                    .find(|device| device.device_id == device_id)
+                    .ok_or(ClientError::NotFound("device"))?;
+                let mut addresses = device.addresses;
+                if !add.is_empty() || !remove.is_empty() {
+                    addresses.retain(|address| !remove.contains(address));
+                    for address in add {
+                        if !addresses.contains(&address) {
+                            addresses.push(address);
+                        }
+                    }
+                    client.set_device_addresses(&device_id, &addresses).await?;
+                }
+                if json {
+                    println!("{}", json!({"deviceId": device_id, "addresses": addresses}));
+                } else {
+                    for address in addresses {
+                        println!("{address}");
+                    }
                 }
             }
             Command::Pair { arguments } => match parse_pair_action(&arguments)? {

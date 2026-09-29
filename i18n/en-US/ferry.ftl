@@ -80,6 +80,8 @@ error-request_timeout = Ferry took too long to respond.
 error-invalid_device_name = Use 1 to 32 characters, without . , : ; ! ? ( ) [ ] < > or quotes.
 error-invalid_download_dir = That folder can’t be used for downloads.
 error-invalid_address = Enter an IPv4 address, like 192.168.1.20.
+error-address_unreachable = No device answered at that address. Make sure Ferry or KDE Connect is running there.
+error-too_many_addresses = A device can keep up to 8 addresses.
 # Any other code; `code` is the API's, such as `internal_error`.
 error-unknown = Something went wrong ({ $code }).
 # One of the files being sent failed; `reason` is a sentence saying why.
@@ -123,8 +125,14 @@ shell-open-link-failed = Couldn’t open { $url }
 shell-start-on-login-failed = Couldn’t change starting on login.
 shell-add-by-address-title = Add by IP address
 shell-add-by-address-label = IP address
-shell-add-by-address-helper = Ferry or KDE Connect must be running on that device. It appears in the list once it answers.
+shell-add-by-address-helper = Ferry or KDE Connect must be running on that device. Ferry connects to it, pairs, and keeps the address.
 shell-add-by-address-confirm = Add
+# Dialog titles for adding and editing a device's saved address.
+shell-address-add-title = Add address
+shell-address-edit-title = Edit address
+# `name` is the device's name.
+shell-address-body = Ferry tries this address when { $name } isn’t found on the network.
+shell-address-save = Save
 shell-rename-title = Device name
 shell-rename-helper = How this computer appears on your other devices
 shell-rename-confirm = Save
@@ -211,6 +219,14 @@ device-type-phone = phone
 device-type-tablet = tablet
 device-type-tv = tv
 device-unpair = Unpair
+# The device page's list of saved addresses, and its explanation.
+device-addresses-title = Addresses
+device-addresses-detail = Ferry tries these when the device isn’t found on the network.
+device-addresses-none = No addresses saved
+device-address-add = Add address
+# Tooltips of a saved address's buttons.
+device-address-edit = Edit
+device-address-remove = Remove
 
 ## Adding a device (src/ui/pages/add_device.rs)
 
@@ -225,6 +241,11 @@ add-device-not-connected = Not connected
 add-device-pair = Pair
 add-device-by-address = Add by IP address
 add-device-by-address-detail = For networks where the device doesn’t show up on its own
+# Shown while an address is tried; `address` is the IPv4 address. Then a pairing starts.
+add-device-connecting = Connecting to { $address }…
+add-device-connecting-detail = Waiting for the device to answer
+# Stops trying the address.
+add-device-cancel = Cancel
 
 ## Pairing with a device (src/ui/pages/pairing.rs)
 

@@ -138,6 +138,55 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Wait for a device to answer at `address` (up to ten seconds) and
+    /// return it, ready to pair. A device that pairs afterwards keeps the
+    /// address, to be reached at when broadcast doesn't find it. Fails with
+    /// `address_unreachable` when nothing answers.
+    pub async fn connect(&self, address: Ipv4Addr) -> Result<DeviceSnapshot, ClientError> {
+        #[derive(Serialize)]
+        struct Connect {
+            address: String,
+        }
+
+        let response = self
+            .authorized(self.http.post(self.url("api/v1/devices/connect")?))
+            .json(&Connect {
+                address: address.to_string(),
+            })
+            .send()
+            .await
+            .map_err(map_transport)?;
+        let response = checked(response, "device").await?;
+        response.json().await.map_err(map_transport)
+    }
+
+    /// Replace the addresses a paired device is reached at when broadcast
+    /// doesn't find it.
+    pub async fn set_device_addresses(
+        &self,
+        device_id: &str,
+        addresses: &[Ipv4Addr],
+    ) -> Result<(), ClientError> {
+        #[derive(Serialize)]
+        struct Addresses {
+            addresses: Vec<String>,
+        }
+
+        let response = self
+            .authorized(
+                self.http
+                    .put(self.url(&format!("api/v1/devices/{device_id}/addresses"))?),
+            )
+            .json(&Addresses {
+                addresses: addresses.iter().map(ToString::to_string).collect(),
+            })
+            .send()
+            .await
+            .map_err(map_transport)?;
+        checked(response, "device").await?;
+        Ok(())
+    }
+
     pub async fn start_pairing(&self, device_id: &str) -> Result<PairingSnapshot, ClientError> {
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
