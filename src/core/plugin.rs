@@ -12,6 +12,7 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
+    future::Future,
     sync::Arc,
 };
 
@@ -21,10 +22,9 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use super::{Core, CoreError, DeviceSnapshot, EventData, PayloadPeer, Transfers};
-use crate::{protocol::Packet, store::Store};
+use crate::{plugins::BuiltinPlugin, protocol::Packet, store::Store};
 
 /// A feature of the daemon, plugged into the core.
-#[async_trait::async_trait]
 pub trait Plugin: Send + Sync + 'static {
     /// Stable identifier, e.g. `"ping"`.
     fn id(&self) -> &'static str;
@@ -44,12 +44,13 @@ pub trait Plugin: Send + Sync + 'static {
     /// it. Calls for a device are ordered with lifecycle cleanup. Do not
     /// await another lifecycle operation or a reply dispatched on the same
     /// device. Transport termination may cancel this future before cleanup.
-    async fn handle_packet(
+    fn handle_packet(
         &self,
         _ctx: &PluginContext,
         _device: &DeviceSnapshot,
         _packet: &Packet,
-    ) {
+    ) -> impl Future<Output = ()> + Send {
+        async {}
     }
 
     /// HTTP routes under `/api/v1`, with their state already applied. They
@@ -81,30 +82,52 @@ pub trait Plugin: Send + Sync + 'static {
     /// A connection to the device was registered. Called after the core
     /// publishes `device.connected`, never while holding its own lock. The
     /// device may not be paired; [`PluginContext::send`] checks that.
-    async fn connected(&self, _ctx: &PluginContext, _device: &DeviceSnapshot) {}
+    fn connected(
+        &self,
+        _ctx: &PluginContext,
+        _device: &DeviceSnapshot,
+    ) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 
     /// The device, connected, became paired: this device accepted its
     /// request, or it accepted ours. Called after the core publishes the
     /// device's new state, never while holding its own lock. A device
     /// that connects already paired gets [`Self::connected`] instead, so
     /// work for any paired, connected device belongs in both.
-    async fn paired(&self, _ctx: &PluginContext, _device: &DeviceSnapshot) {}
+    fn paired(
+        &self,
+        _ctx: &PluginContext,
+        _device: &DeviceSnapshot,
+    ) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 
     /// The device's connection closed, or the device was forgotten while
     /// connected. Called before the core publishes the device's new state,
     /// so state cleared here needs no [`PluginContext::device_changed`].
-    async fn disconnected(&self, _ctx: &PluginContext, _device_id: &str) {}
+    fn disconnected(
+        &self,
+        _ctx: &PluginContext,
+        _device_id: &str,
+    ) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 
     /// The device is no longer paired: it unpaired us, or it was forgotten.
     /// Called before the core publishes the device's new state, as for
     /// [`Self::disconnected`].
-    async fn unpaired(&self, _ctx: &PluginContext, _device_id: &str) {}
+    fn unpaired(&self, _ctx: &PluginContext, _device_id: &str) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 
     /// The daemon started: called once, inside the async runtime, before
     /// the LAN transport and the API start, for a plugin that runs work of
     /// its own (e.g. watching something on this machine). A core built
     /// without the daemon, as in unit tests, never calls it.
-    async fn started(self: Arc<Self>, _ctx: &PluginContext) {}
+    fn started(self: Arc<Self>, _ctx: &PluginContext) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 
     /// The daemon is stopping: end the plugin's own work and close what it
     /// holds open. Called once, after the API and LAN transport have
@@ -257,8 +280,30 @@ pub struct Capabilities {
 
 /// The plugins of this build, indexed by the packet types they handle.
 pub struct PluginRegistry {
-    plugins: Vec<Arc<dyn Plugin>>,
+    plugins: Vec<BuiltinPlugin>,
     by_packet_type: HashMap<&'static str, usize>,
+}
+
+/// Which plugin (by position) handles each packet type, from each plugin's
+/// id and incoming types.
+fn index_packet_types(
+    claims: &[(&'static str, &'static [&'static str])],
+) -> HashMap<&'static str, usize> {
+    let mut by_packet_type = HashMap::new();
+    for (index, (id, incoming)) in claims.iter().enumerate() {
+        if claims[..index].iter().any(|(other, _)| other == id) {
+            panic!("two plugins are called {id:?}");
+        }
+        for packet_type in *incoming {
+            if let Some(other) = by_packet_type.insert(*packet_type, index) {
+                panic!(
+                    "plugins {:?} and {id:?} both handle {packet_type:?}",
+                    claims[other].0
+                );
+            }
+        }
+    }
+    by_packet_type
 }
 
 impl PluginRegistry {
@@ -266,33 +311,19 @@ impl PluginRegistry {
     ///
     /// If two plugins share an id or claim the same incoming packet type: a
     /// build error that every test would hit.
-    pub fn new(plugins: Vec<Arc<dyn Plugin>>) -> Self {
-        let mut by_packet_type = HashMap::new();
-        for (index, plugin) in plugins.iter().enumerate() {
-            if plugins[..index]
-                .iter()
-                .any(|other| other.id() == plugin.id())
-            {
-                panic!("two plugins are called {:?}", plugin.id());
-            }
-            for packet_type in plugin.incoming() {
-                if let Some(other) = by_packet_type.insert(*packet_type, index) {
-                    panic!(
-                        "plugins {:?} and {:?} both handle {packet_type:?}",
-                        plugins[other].id(),
-                        plugin.id()
-                    );
-                }
-            }
-        }
+    pub fn new(plugins: Vec<BuiltinPlugin>) -> Self {
+        let claims: Vec<_> = plugins
+            .iter()
+            .map(|plugin| (plugin.id(), plugin.incoming()))
+            .collect();
         Self {
+            by_packet_type: index_packet_types(&claims),
             plugins,
-            by_packet_type,
         }
     }
 
     /// The plugin that handles `packet_type`, if any.
-    pub fn for_packet(&self, packet_type: &str) -> Option<&Arc<dyn Plugin>> {
+    pub fn for_packet(&self, packet_type: &str) -> Option<&BuiltinPlugin> {
         self.by_packet_type
             .get(packet_type)
             .map(|index| &self.plugins[*index])
@@ -362,7 +393,7 @@ impl PluginRegistry {
 
     pub async fn started(&self, ctx: &PluginContext) {
         for plugin in &self.plugins {
-            plugin.clone().started(ctx).await;
+            plugin.started(ctx).await;
         }
     }
 
@@ -373,14 +404,14 @@ impl PluginRegistry {
     /// Every plugin's routes, merged.
     pub fn routes(&self, ctx: &PluginContext) -> Router {
         self.plugins.iter().fold(Router::new(), |router, plugin| {
-            router.merge(plugin.clone().routes(ctx.clone()))
+            router.merge(plugin.routes(ctx.clone()))
         })
     }
 
     /// Every plugin's streaming routes, merged.
     pub fn streaming_routes(&self, ctx: &PluginContext) -> Router {
         self.plugins.iter().fold(Router::new(), |router, plugin| {
-            router.merge(plugin.clone().streaming_routes(ctx.clone()))
+            router.merge(plugin.streaming_routes(ctx.clone()))
         })
     }
 }
@@ -421,34 +452,19 @@ mod tests {
         assert_eq!(event.decode::<Other>(), None);
     }
 
-    struct Claims(&'static str, &'static [&'static str]);
-
-    #[async_trait::async_trait]
-    impl Plugin for Claims {
-        fn id(&self) -> &'static str {
-            self.0
-        }
-        fn incoming(&self) -> &'static [&'static str] {
-            self.1
-        }
-        fn outgoing(&self) -> &'static [&'static str] {
-            &[]
-        }
-        async fn handle_packet(&self, _: &PluginContext, _: &DeviceSnapshot, _: &Packet) {}
-    }
-
     #[test]
     fn packets_route_to_the_plugin_that_claims_them() {
-        let registry = PluginRegistry::new(vec![
-            Arc::new(Claims("a", &["x.one"])),
-            Arc::new(Claims("b", &["x.two", "x.three"])),
-        ]);
-        assert_eq!(registry.for_packet("x.three").unwrap().id(), "b");
-        assert!(registry.for_packet("x.four").is_none());
+        use crate::plugins::{builtin, clipboard::InMemoryClipboard};
+        let registry = PluginRegistry::new(builtin(InMemoryClipboard::shared()));
+        assert_eq!(registry.for_packet("kdeconnect.ping").unwrap().id(), "ping");
         assert_eq!(
-            registry.incoming().collect::<Vec<_>>(),
-            ["x.one", "x.two", "x.three"]
+            registry
+                .for_packet("kdeconnect.clipboard.connect")
+                .unwrap()
+                .id(),
+            "clipboard"
         );
+        assert!(registry.for_packet("x.unknown").is_none());
     }
 
     /// A plugin that only sends `x.wave`, as a feature would through its
@@ -466,7 +482,6 @@ mod tests {
         }
     }
 
-    #[async_trait::async_trait]
     impl Plugin for Waver {
         fn id(&self) -> &'static str {
             "wave"
@@ -568,93 +583,96 @@ mod tests {
     #[test]
     #[should_panic(expected = "two plugins are called \"a\"")]
     fn two_plugins_cannot_share_an_id() {
-        PluginRegistry::new(vec![
-            Arc::new(Claims("a", &["x.one"])),
-            Arc::new(Claims("a", &["x.two"])),
-        ]);
+        index_packet_types(&[("a", &["x.one"]), ("a", &["x.two"])]);
     }
 
     #[test]
     #[should_panic(expected = "both handle \"x.one\"")]
     fn two_plugins_cannot_claim_one_packet_type() {
-        PluginRegistry::new(vec![
-            Arc::new(Claims("a", &["x.one"])),
-            Arc::new(Claims("b", &["x.one"])),
-        ]);
-    }
-    #[derive(Default)]
-    struct WaitingPlugin {
-        entered: tokio::sync::Notify,
-        release: tokio::sync::Notify,
-        has_state: std::sync::atomic::AtomicBool,
+        index_packet_types(&[("a", &["x.one"]), ("b", &["x.one"])]);
     }
 
-    #[async_trait::async_trait]
-    impl Plugin for WaitingPlugin {
-        fn id(&self) -> &'static str {
-            "waiting"
+    /// A clipboard whose `set` of text starting with "wait" blocks until
+    /// released, which holds the clipboard plugin's packet callback open.
+    #[derive(Default)]
+    struct GatedClipboard {
+        entered: tokio::sync::Notify,
+        released: std::sync::Mutex<bool>,
+        release: std::sync::Condvar,
+    }
+
+    impl crate::plugins::clipboard::ClipboardService for GatedClipboard {
+        fn get(&self) -> Result<Option<String>, crate::plugins::clipboard::ClipboardError> {
+            Ok(None)
         }
-        fn incoming(&self) -> &'static [&'static str] {
-            &["test.wait"]
-        }
-        fn outgoing(&self) -> &'static [&'static str] {
-            &[]
-        }
-        async fn handle_packet(&self, _: &PluginContext, _: &DeviceSnapshot, _: &Packet) {
-            self.entered.notify_one();
-            self.release.notified().await;
-            self.has_state
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        fn device_state(&self, _: &PluginContext, _: &DeviceSnapshot) -> Option<Value> {
-            Some(Value::Bool(
-                self.has_state.load(std::sync::atomic::Ordering::SeqCst),
-            ))
-        }
-        async fn disconnected(&self, _: &PluginContext, _: &str) {
-            self.has_state
-                .store(false, std::sync::atomic::Ordering::SeqCst);
+
+        fn set(&self, text: &str) -> Result<(), crate::plugins::clipboard::ClipboardError> {
+            if text.starts_with("wait") {
+                self.entered.notify_one();
+                let released = self.released.lock().unwrap();
+                drop(
+                    self.release
+                        .wait_while(released, |released| !*released)
+                        .unwrap(),
+                );
+            }
+            Ok(())
         }
     }
 
     #[tokio::test]
     async fn cleanup_follows_an_in_progress_callback_without_blocking_snapshots() {
-        use crate::core::testing::{handle_with_plugin, make_identity};
+        use crate::{
+            core::testing::{handle_with_plugin_and_event_capacity, make_identity},
+            plugins::clipboard::ClipboardPlugin,
+        };
         use tokio::sync::mpsc;
         use tokio_util::sync::CancellationToken;
         const PEER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let (core, plugin, _) = handle_with_plugin(WaitingPlugin::default()).await;
+        let gate = Arc::new(GatedClipboard::default());
+        let (core, _plugin, _) =
+            handle_with_plugin_and_event_capacity(ClipboardPlugin::new(gate.clone()), 16).await;
         core.discover_device(&make_identity(PEER, Vec::new()), true, 1)
             .unwrap();
         let (sender, _receiver) = mpsc::channel(4);
         core.register_connection(PEER, vec![1], 8, sender, CancellationToken::new(), 1)
             .await
             .unwrap();
+        let mut events = core.subscribe();
         let handling = tokio::spawn({
             let core = core.clone();
             async move {
                 core.handle_peer_packet(
                     PEER,
-                    Packet::from_body(1, "test.wait", &serde_json::json!({})).unwrap(),
+                    Packet::from_body(
+                        1,
+                        "kdeconnect.clipboard",
+                        &serde_json::json!({"content": "wait"}),
+                    )
+                    .unwrap(),
                 )
                 .await
             }
         });
-        plugin.entered.notified().await;
+        gate.entered.notified().await;
         let forgetting = tokio::spawn({
             let core = core.clone();
             async move { core.forget_device(PEER).await }
         });
         tokio::task::yield_now().await;
         assert!(!forgetting.is_finished());
-        assert_eq!(
-            core.device(PEER).unwrap().plugins["waiting"],
-            Value::Bool(false)
-        );
-        plugin.release.notify_one();
+        // Snapshots don't wait for the callback either.
+        assert!(core.device(PEER).is_some());
+        *gate.released.lock().unwrap() = true;
+        gate.release.notify_all();
         handling.await.unwrap();
         forgetting.await.unwrap().unwrap();
         assert!(core.device(PEER).is_none());
-        assert!(!plugin.has_state.load(std::sync::atomic::Ordering::SeqCst));
+        // The callback finished (it published) before the cleanup ran.
+        let mut published = false;
+        while let Ok(event) = events.try_recv() {
+            published |= matches!(event.event, EventData::Plugin(ref e) if e.event_type() == "clipboard.changed");
+        }
+        assert!(published);
     }
 }

@@ -63,10 +63,10 @@ struct Harness {
 }
 
 /// The built-in plugins, with `browse` the instance the test drives.
-fn builtin_with(browse: Arc<BrowsePlugin>) -> Vec<Arc<dyn Plugin>> {
+fn builtin_with(browse: Arc<BrowsePlugin>) -> Vec<ferry::plugins::BuiltinPlugin> {
     let mut plugins = ferry::plugins::builtin(InMemoryClipboard::shared());
     plugins.retain(|plugin| plugin.id() != browse.id());
-    plugins.push(browse);
+    plugins.push(browse.into());
     plugins
 }
 

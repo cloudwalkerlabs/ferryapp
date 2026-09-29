@@ -1,13 +1,15 @@
 # Handoff: replace the erased plugin registry with a fixed enum
 
-Status: planned; implementation has not started. Written on 2026-09-29 for
-[PR #76](https://github.com/simophin/ferryapp/pull/76), branch
-`async-sqlite-plugins`. This document is the next task, not a description
-of changes already made in that PR.
+Status: implemented; see [ADR 0004](../adr/0004-dispatch-plugins-through-a-fixed-enum.md).
+Written on 2026-09-29 as the follow-up to
+[PR #76](https://github.com/simophin/ferryapp/pull/76). The text below is
+the plan as written, kept for history; where it differs (test probes were
+not added as variants; the clipboard backend holds callbacks open instead),
+the ADR is current.
 
-Read [HANDOFF.md](HANDOFF.md), [ARCHITECTURE.md](ARCHITECTURE.md) §2,
-[ADR 0003](adr/0003-use-async-sqlite-pools-and-plugin-callbacks.md), and
-[../CLAUDE.md](../CLAUDE.md) first. Those contain the project rules and
+Read [HANDOFF.md](../HANDOFF.md), [ARCHITECTURE.md](../ARCHITECTURE.md) §2,
+[ADR 0003](../adr/0003-use-async-sqlite-pools-and-plugin-callbacks.md), and
+[../../CLAUDE.md](../../CLAUDE.md) first. Those contain the project rules and
 isolation requirements. Start from the latest PR branch or its merged
 result; do not reconstruct the async SQLite migration.
 

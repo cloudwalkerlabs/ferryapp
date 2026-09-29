@@ -36,7 +36,7 @@ async fn peer(name: &str) -> Peer {
     peer_with_plugins(name, ferry::plugins::builtin(InMemoryClipboard::shared())).await
 }
 
-async fn peer_with_plugins(name: &str, plugins: Vec<Arc<dyn ferry::core::Plugin>>) -> Peer {
+async fn peer_with_plugins(name: &str, plugins: Vec<ferry::plugins::BuiltinPlugin>) -> Peer {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::open(directory.path()).await.unwrap();
     let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
@@ -702,71 +702,70 @@ fn identity_packet(device_id: &str, protocol_version: u8) -> Vec<u8> {
         .unwrap()
 }
 
-struct AwaitingEcho {
-    completed: mpsc::UnboundedSender<u64>,
+/// A clipboard whose `set` of text starting with "wait" blocks until
+/// released, holding the plugin's packet callback open. Completed sets are
+/// reported on `completed`.
+struct GatedClipboard {
+    completed: mpsc::UnboundedSender<String>,
     entered: tokio::sync::Notify,
-    release: tokio::sync::Notify,
-    cleaned: std::sync::atomic::AtomicBool,
+    released: std::sync::Mutex<bool>,
+    release: std::sync::Condvar,
 }
 
-#[async_trait::async_trait]
-impl ferry::core::Plugin for AwaitingEcho {
-    fn id(&self) -> &'static str {
-        "awaiting-echo"
+impl GatedClipboard {
+    fn new() -> (Arc<Self>, mpsc::UnboundedReceiver<String>) {
+        let (completed, receiver) = mpsc::unbounded_channel();
+        let gate = Arc::new(Self {
+            completed,
+            entered: tokio::sync::Notify::new(),
+            released: std::sync::Mutex::new(false),
+            release: std::sync::Condvar::new(),
+        });
+        (gate, receiver)
     }
-    fn incoming(&self) -> &'static [&'static str] {
-        &["test.echo"]
+
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.release.notify_all();
     }
-    fn outgoing(&self) -> &'static [&'static str] {
-        &["test.echo"]
+}
+
+impl ferry::plugins::clipboard::ClipboardService for GatedClipboard {
+    fn get(&self) -> Result<Option<String>, ferry::plugins::clipboard::ClipboardError> {
+        Ok(None)
     }
-    async fn handle_packet(
-        &self,
-        ctx: &ferry::core::PluginContext,
-        device: &ferry::core::DeviceSnapshot,
-        packet: &Packet,
-    ) {
-        let sequence = packet.body["sequence"].as_u64().unwrap();
-        if packet
-            .body
-            .get("wait")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            ctx.send(
-                &device.device_id,
-                Packet::from_body(1, "test.echo", &json!({"sequence": sequence + 100})).unwrap(),
-            )
-            .unwrap();
+
+    fn set(&self, text: &str) -> Result<(), ferry::plugins::clipboard::ClipboardError> {
+        if text.starts_with("wait") {
             self.entered.notify_one();
-            self.release.notified().await;
+            let released = self.released.lock().unwrap();
+            drop(
+                self.release
+                    .wait_while(released, |released| !*released)
+                    .unwrap(),
+            );
         }
-        self.completed.send(sequence).unwrap();
+        self.completed.send(text.to_owned()).unwrap();
+        Ok(())
     }
-    async fn disconnected(&self, _: &ferry::core::PluginContext, _: &str) {
-        self.cleaned
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
+}
+
+fn clipboard_changed(event: &ferry::core::CoreEvent) -> bool {
+    matches!(&event.event, ferry::core::EventData::Plugin(event) if event.event_type() == "clipboard.changed")
+}
+
+/// The built-ins, with the clipboard on `gate`.
+fn builtin_gated(gate: &Arc<GatedClipboard>) -> Vec<ferry::plugins::BuiltinPlugin> {
+    ferry::plugins::builtin(gate.clone())
 }
 
 #[tokio::test]
 async fn awaiting_callbacks_preserve_order_and_allow_socket_writes_and_shutdown() {
-    fn plugin() -> (Arc<AwaitingEcho>, mpsc::UnboundedReceiver<u64>) {
-        let (completed, receiver) = mpsc::unbounded_channel();
-        (
-            Arc::new(AwaitingEcho {
-                completed,
-                entered: tokio::sync::Notify::new(),
-                release: tokio::sync::Notify::new(),
-                cleaned: std::sync::atomic::AtomicBool::new(false),
-            }),
-            receiver,
-        )
-    }
-    let (a_plugin, mut a_completed) = plugin();
-    let (b_plugin, mut b_completed) = plugin();
-    let a = peer_with_plugins("Async A", vec![a_plugin]).await;
-    let b = peer_with_plugins("Async B", vec![b_plugin.clone()]).await;
+    const CLIPBOARD: &str = "kdeconnect.clipboard";
+    let (b_gate, mut b_completed) = GatedClipboard::new();
+    let (a_gate, _a_completed) = GatedClipboard::new();
+    let a = peer_with_plugins("Async A", builtin_gated(&a_gate)).await;
+    let b = peer_with_plugins("Async B", builtin_gated(&b_gate)).await;
     let a_id = a.identity.device_id().to_owned();
     let b_id = b.identity.device_id().to_owned();
     for (store, identity) in [(&a.store, &b.identity), (&b.store, &a.identity)] {
@@ -784,8 +783,8 @@ async fn awaiting_callbacks_preserve_order_and_allow_socket_writes_and_shutdown(
     let b_udp = free_udp_addr();
     let info = |id: &str, name: &str| {
         let mut info = local(id, name);
-        info.incoming_capabilities = vec!["test.echo".into()];
-        info.outgoing_capabilities = vec!["test.echo".into()];
+        info.incoming_capabilities = vec![CLIPBOARD.into()];
+        info.outgoing_capabilities = vec![CLIPBOARD.into()];
         info
     };
     let a_service = LanService::start(
@@ -812,52 +811,87 @@ async fn awaiting_callbacks_preserve_order_and_allow_socket_writes_and_shutdown(
     .unwrap();
     wait_for_reachability(&a.application, &b_id, DeviceReachability::Connected).await;
     wait_for_reachability(&b.application, &a_id, DeviceReachability::Connected).await;
-    let send = |sequence, wait| {
-        a.application
+    let mut b_events = b.application.subscribe();
+    let send = |application: &Core, to: &str, text: &str| {
+        application
             .plugin_context()
             .send(
-                &b_id,
-                Packet::from_body(1, "test.echo", &json!({"sequence": sequence, "wait": wait}))
-                    .unwrap(),
+                to,
+                Packet::from_body(1, CLIPBOARD, &json!({"content": text})).unwrap(),
             )
             .unwrap();
     };
-    send(1, true);
-    timeout(Duration::from_secs(1), b_plugin.entered.notified())
+
+    // B's callback for the first packet blocks; B can still write to A.
+    send(&a.application, &b_id, "wait 1");
+    timeout(Duration::from_secs(1), b_gate.entered.notified())
         .await
         .unwrap();
-    assert_eq!(
-        timeout(Duration::from_secs(1), a_completed.recv())
-            .await
-            .unwrap(),
-        Some(101)
-    );
-    send(2, false);
+    let mut a_events = a.application.subscribe();
+    send(&b.application, &a_id, "written while B waits");
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let event = a_events.recv().await.unwrap();
+            if clipboard_changed(&event) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    // The next packet waits its turn behind the blocked callback.
+    send(&a.application, &b_id, "two");
     assert!(b_completed.try_recv().is_err());
-    b_plugin.release.notify_one();
-    assert_eq!(
-        timeout(Duration::from_secs(1), b_completed.recv())
-            .await
-            .unwrap(),
-        Some(1)
-    );
-    assert_eq!(
-        timeout(Duration::from_secs(1), b_completed.recv())
-            .await
-            .unwrap(),
-        Some(2)
-    );
-    send(3, true);
-    timeout(Duration::from_secs(1), b_plugin.entered.notified())
+    b_gate.release();
+    for expected in ["wait 1", "two"] {
+        assert_eq!(
+            timeout(Duration::from_secs(1), b_completed.recv())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(expected)
+        );
+    }
+
+    // Both callbacks published after their backend calls returned.
+    for _ in 0..2 {
+        timeout(Duration::from_secs(1), async {
+            while !clipboard_changed(&b_events.recv().await.unwrap()) {}
+        })
+        .await
+        .unwrap();
+    }
+
+    // Shutdown does not wait for a blocked callback and cancels it: the
+    // plugin's work after its backend call never happens.
+    *b_gate.released.lock().unwrap() = false;
+    send(&a.application, &b_id, "wait 3");
+    timeout(Duration::from_secs(1), b_gate.entered.notified())
         .await
         .unwrap();
     timeout(Duration::from_secs(3), b_service.shutdown())
         .await
         .unwrap()
         .unwrap();
-    assert!(b_plugin.cleaned.load(std::sync::atomic::Ordering::SeqCst));
-    b_plugin.release.notify_one();
+    assert_ne!(
+        b.application.device(&a_id).unwrap().reachability,
+        DeviceReachability::Connected
+    );
+    b_gate.release();
+    assert_eq!(
+        timeout(Duration::from_secs(1), b_completed.recv())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("wait 3")
+    );
     tokio::task::yield_now().await;
-    assert!(b_completed.try_recv().is_err());
+    while let Ok(event) = b_events.try_recv() {
+        assert!(
+            !clipboard_changed(&event),
+            "a cancelled callback must not publish"
+        );
+    }
     a_service.shutdown().await.unwrap();
 }

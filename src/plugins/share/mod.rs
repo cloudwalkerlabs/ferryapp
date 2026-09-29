@@ -59,7 +59,6 @@ pub const ID: &str = "share";
 
 pub struct SharePlugin;
 
-#[async_trait::async_trait]
 impl Plugin for SharePlugin {
     fn id(&self) -> &'static str {
         ID

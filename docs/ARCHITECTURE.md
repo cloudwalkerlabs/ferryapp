@@ -34,7 +34,7 @@ The daemon is a small **core** and a fixed set of **plugins**, one per
 feature. The core owns devices, connections, pairing, trust, transfers,
 settings and the event bus; a plugin owns one feature's packets, state,
 routes and events, and reaches the core only through its `PluginContext`.
-The plugins are fixed at compile time, listed in `plugins::builtin()`:
+The plugins are fixed at compile time, listed in `plugins::builtin()` (the `BuiltinPlugin` enum, [`adr/0004`](adr/0004-dispatch-plugins-through-a-fixed-enum.md)):
 nothing is loaded at runtime and there is no plugin ABI. Module visibility
 and review keep the boundaries, in one crate.
 
@@ -52,8 +52,9 @@ client → core (snapshot and event types), plugins/* (their types)
 ```
 
 `protocol` and `transport` never depend on Axum, Clap, or API response
-types. The core never names a plugin: it calls them only through
-`dyn Plugin`, and `daemon` is the one place that picks them. Plugins never
+types. The core never names a feature: it calls the plugins only through
+`BuiltinPlugin`, the one enum in `plugins` that forwards the `Plugin`
+contract, and `daemon` is the one place that picks them. Plugins never
 import each other; what two features need (transfers, payload connections)
 is a core service. In the UI only `ui::features` names features: the rest
 of `ui` (the shell) calls `Features`, and imports `plugins` only to carry
@@ -84,26 +85,28 @@ the three instances it hands to them. `core` and `plugins` never import
 ### The `Plugin` trait
 
 ```rust
-#[async_trait::async_trait]
 pub trait Plugin: Send + Sync + 'static {
     fn id(&self) -> &'static str;                          // "ping"; names its config keys and device state
     fn incoming(&self) -> &'static [&'static str] { &[] }  // packet types it handles
     fn outgoing(&self) -> &'static [&'static str];         // packet types it sends
-    async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {}
+    fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) -> impl Future<Output = ()> + Send { async {} }
     fn routes(self: Arc<Self>, ctx: PluginContext) -> Router { Router::new() }
     fn streaming_routes(self: Arc<Self>, ctx: PluginContext) -> Router { Router::new() }
     fn device_state(&self, ctx: &PluginContext, device: &DeviceSnapshot) -> Option<Value> { None }
-    async fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {}
-    async fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) {}
-    async fn disconnected(&self, ctx: &PluginContext, device_id: &str) {}
-    async fn unpaired(&self, ctx: &PluginContext, device_id: &str) {}
-    async fn started(self: Arc<Self>, ctx: &PluginContext) {}
+    fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) -> impl Future<Output = ()> + Send { async {} }
+    fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) -> impl Future<Output = ()> + Send { async {} }
+    fn disconnected(&self, ctx: &PluginContext, device_id: &str) -> impl Future<Output = ()> + Send { async {} }
+    fn unpaired(&self, ctx: &PluginContext, device_id: &str) -> impl Future<Output = ()> + Send { async {} }
+    fn started(self: Arc<Self>, ctx: &PluginContext) -> impl Future<Output = ()> + Send { async {} }
     fn shutdown(&self) -> BoxFuture<'_, ()> { Box::pin(async {}) }
 }
 ```
 
-Packet handlers and lifecycle hooks are async; `async-trait` keeps the
-trait usable as `Arc<dyn Plugin>`. Snapshots and metadata stay synchronous
+Packet handlers and lifecycle hooks are native async methods returning
+`impl Future + Send`, which the enum awaits directly; nothing is boxed per
+callback (`shutdown` boxes once per plugin so the futures can be joined).
+`plugins::BuiltinPlugin` holds each plugin's `Arc` and forwards every
+method. Snapshots and metadata stay synchronous
 and read memory only. The core passes the context into
 each call instead of plugins storing it, so there is no `Arc` cycle
 between the core and its plugins. The rules the core keeps:
@@ -172,7 +175,8 @@ A new feature is:
 - a module under `plugins/`: `mod.rs` implementing `core::Plugin` with the
   feature's typed Rust API and its unit tests against
   `core::testing::handle_with_plugin`, and `http.rs` for its routes;
-- one line in `plugins::builtin()`;
+- one line in `builtin_plugins!` (the enum variant and its forwarding) and
+  one in `plugins::builtin_parts()`, in `src/plugins/mod.rs`;
 - its UI in `src/ui/features/<name>.rs` over the same API, plus its lines
   in `ui/features/mod.rs` (a `Feature` variant if it has messages, a line
   in each `Features` function that applies, maybe a `Route` variant);

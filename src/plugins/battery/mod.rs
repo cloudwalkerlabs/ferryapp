@@ -70,7 +70,6 @@ impl BatteryPlugin {
     }
 }
 
-#[async_trait::async_trait]
 impl Plugin for BatteryPlugin {
     fn id(&self) -> &'static str {
         ID

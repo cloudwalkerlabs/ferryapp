@@ -70,7 +70,6 @@ pub struct BrowsePlugin {
     sessions: Sessions,
 }
 
-#[async_trait::async_trait]
 impl Plugin for BrowsePlugin {
     fn id(&self) -> &'static str {
         ID

@@ -71,10 +71,10 @@ async fn peer(name: &str) -> Peer {
 /// A `LocalDeviceInfo` that advertises every capability of `core`'s
 /// plugins, as production code does.
 /// The built-in plugins, with `clipboard` the instance the test drives.
-fn builtin_with(clipboard: Arc<ClipboardPlugin>) -> Vec<Arc<dyn Plugin>> {
+fn builtin_with(clipboard: Arc<ClipboardPlugin>) -> Vec<ferry::plugins::BuiltinPlugin> {
     let mut plugins = plugins::builtin(InMemoryClipboard::shared());
     plugins.retain(|plugin| plugin.id() != clipboard.id());
-    plugins.push(clipboard);
+    plugins.push(clipboard.into());
     plugins
 }
 

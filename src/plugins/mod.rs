@@ -19,20 +19,94 @@ pub mod telephony;
 
 use std::sync::Arc;
 
-use crate::core::Plugin;
+use crate::core::{DeviceSnapshot, Plugin, PluginContext};
+use crate::protocol::Packet;
+use axum::Router;
+use futures_util::future::BoxFuture;
+use serde_json::Value;
+
+/// Lists every plugin once and forwards the [`Plugin`] contract to the
+/// concrete one: no erased objects, so callbacks are plain awaited futures.
+macro_rules! builtin_plugins {
+    ($($variant:ident($ty:ty)),* $(,)?) => {
+        /// One of this build's plugins, sharing its instance with the UI.
+        #[derive(Clone)]
+        pub enum BuiltinPlugin {
+            $($variant(Arc<$ty>)),*
+        }
+
+        $(impl From<Arc<$ty>> for BuiltinPlugin {
+            fn from(plugin: Arc<$ty>) -> Self { Self::$variant(plugin) }
+        })*
+
+        impl BuiltinPlugin {
+            pub fn id(&self) -> &'static str {
+                match self { $(Self::$variant(p) => p.id()),* }
+            }
+            pub fn incoming(&self) -> &'static [&'static str] {
+                match self { $(Self::$variant(p) => p.incoming()),* }
+            }
+            pub fn outgoing(&self) -> &'static [&'static str] {
+                match self { $(Self::$variant(p) => p.outgoing()),* }
+            }
+            pub async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
+                match self { $(Self::$variant(p) => p.handle_packet(ctx, device, packet).await),* }
+            }
+            pub fn routes(&self, ctx: PluginContext) -> Router {
+                match self { $(Self::$variant(p) => p.clone().routes(ctx)),* }
+            }
+            pub fn streaming_routes(&self, ctx: PluginContext) -> Router {
+                match self { $(Self::$variant(p) => p.clone().streaming_routes(ctx)),* }
+            }
+            pub fn device_state(&self, ctx: &PluginContext, device: &DeviceSnapshot) -> Option<Value> {
+                match self { $(Self::$variant(p) => p.device_state(ctx, device)),* }
+            }
+            pub async fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
+                match self { $(Self::$variant(p) => p.connected(ctx, device).await),* }
+            }
+            pub async fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
+                match self { $(Self::$variant(p) => p.paired(ctx, device).await),* }
+            }
+            pub async fn disconnected(&self, ctx: &PluginContext, device_id: &str) {
+                match self { $(Self::$variant(p) => p.disconnected(ctx, device_id).await),* }
+            }
+            pub async fn unpaired(&self, ctx: &PluginContext, device_id: &str) {
+                match self { $(Self::$variant(p) => p.unpaired(ctx, device_id).await),* }
+            }
+            pub async fn started(&self, ctx: &PluginContext) {
+                match self { $(Self::$variant(p) => p.clone().started(ctx).await),* }
+            }
+            pub fn shutdown(&self) -> BoxFuture<'_, ()> {
+                match self { $(Self::$variant(p) => p.shutdown()),* }
+            }
+        }
+    };
+}
+
+builtin_plugins! {
+    Ping(ping::PingPlugin),
+    FindMyPhone(findmyphone::FindMyPhonePlugin),
+    Battery(battery::BatteryPlugin),
+    Connectivity(connectivity::ConnectivityPlugin),
+    Clipboard(clipboard::ClipboardPlugin),
+    Share(share::SharePlugin),
+    Browse(browse::BrowsePlugin),
+    Notifications(notifications::NotificationsPlugin),
+    Telephony(telephony::TelephonyPlugin),
+}
 
 /// Every plugin in this build. `clipboard` is the clipboard that clipboard
 /// sync reads and writes: the desktop's, or an in-memory one.
 pub fn builtin(
     clipboard: Arc<dyn clipboard::ClipboardService + Send + Sync>,
-) -> Vec<Arc<dyn Plugin>> {
+) -> Vec<BuiltinPlugin> {
     builtin_parts(clipboard).core
 }
 
 /// The plugins [`builtin_parts`] builds: the core's list, and the
 /// instances in it that the desktop app's UI calls too.
 pub struct Parts {
-    pub core: Vec<Arc<dyn Plugin>>,
+    pub core: Vec<BuiltinPlugin>,
     pub clipboard: Arc<clipboard::ClipboardPlugin>,
     pub browse: Arc<browse::BrowsePlugin>,
     pub notifications: Arc<notifications::NotificationsPlugin>,
@@ -46,15 +120,15 @@ pub fn builtin_parts(clipboard: Arc<dyn clipboard::ClipboardService + Send + Syn
     let notifications = Arc::new(notifications::NotificationsPlugin::default());
     Parts {
         core: vec![
-            Arc::new(ping::PingPlugin),
-            Arc::new(findmyphone::FindMyPhonePlugin),
-            Arc::new(battery::BatteryPlugin::default()),
-            Arc::new(connectivity::ConnectivityPlugin::default()),
-            clipboard.clone(),
-            Arc::new(share::SharePlugin),
-            browse.clone(),
-            notifications.clone(),
-            Arc::new(telephony::TelephonyPlugin::default()),
+            Arc::new(ping::PingPlugin).into(),
+            Arc::new(findmyphone::FindMyPhonePlugin).into(),
+            Arc::new(battery::BatteryPlugin::default()).into(),
+            Arc::new(connectivity::ConnectivityPlugin::default()).into(),
+            clipboard.clone().into(),
+            Arc::new(share::SharePlugin).into(),
+            browse.clone().into(),
+            notifications.clone().into(),
+            Arc::new(telephony::TelephonyPlugin::default()).into(),
         ],
         clipboard,
         browse,
@@ -66,6 +140,30 @@ pub fn builtin_parts(clipboard: Arc<dyn clipboard::ClipboardService + Send + Syn
 mod tests {
     use super::*;
     use crate::core::PluginRegistry;
+
+    #[test]
+    fn parts_share_their_instances_with_the_core_list() {
+        let parts = builtin_parts(clipboard::InMemoryClipboard::shared());
+        let mut shared = 0;
+        for plugin in &parts.core {
+            match plugin {
+                BuiltinPlugin::Clipboard(plugin) => {
+                    assert!(Arc::ptr_eq(plugin, &parts.clipboard));
+                    shared += 1;
+                }
+                BuiltinPlugin::Browse(plugin) => {
+                    assert!(Arc::ptr_eq(plugin, &parts.browse));
+                    shared += 1;
+                }
+                BuiltinPlugin::Notifications(plugin) => {
+                    assert!(Arc::ptr_eq(plugin, &parts.notifications));
+                    shared += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(shared, 3);
+    }
 
     #[test]
     fn advertises_ping_clipboard_and_share_both_directions_and_the_rest_one_way() {
