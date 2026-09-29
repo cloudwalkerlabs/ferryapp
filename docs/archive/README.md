@@ -17,9 +17,8 @@ Accepted architecture decisions remain in [../adr/](../adr/README.md).
 | [feature-modules.md](feature-modules.md) | Completed feature module plan and its implementation history. |
 | [remote-file-browsing.md](remote-file-browsing.md) | Research behind the implemented in-app SFTP browser. |
 | [KDECONNECT_PROTOCOL_RESEARCH.md](KDECONNECT_PROTOCOL_RESEARCH.md) | Protocol research supporting the original daemon implementation. |
+| [HANDOFF_STATIC_PLUGINS.md](HANDOFF_STATIC_PLUGINS.md) | Replacement of `Arc<dyn Plugin>` with a fixed enum; the decision is [ADR 0004](../adr/0004-dispatch-plugins-through-a-fixed-enum.md). |
 | [flutter-adr/](flutter-adr/README.md) | Decisions for the deleted Flutter app; native ADR 0001 identifies which still apply. |
 
-The [static plugin handoff](../HANDOFF_STATIC_PLUGINS.md) is still active.
-Move it here only after implementing and validating that migration, and
-link the resulting ADR. Archiving a plan does not close any manual checks
-carried into the active handoff.
+Archiving a plan does not close any manual checks carried into the active
+handoff.

@@ -21,7 +21,6 @@ pub const ID: &str = "findmyphone";
 
 pub struct FindMyPhonePlugin;
 
-#[async_trait::async_trait]
 impl Plugin for FindMyPhonePlugin {
     fn id(&self) -> &'static str {
         ID

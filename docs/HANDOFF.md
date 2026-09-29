@@ -30,8 +30,6 @@ feature.
 
 ## Active implementation handoffs
 
-- [Fixed plugin enum and native async dispatch](HANDOFF_STATIC_PLUGINS.md):
-  planned follow-up to PR #76. The current PR still uses `Arc<dyn Plugin>`.
 - [Archived plans and completed handoffs](archive/README.md): historical
   implementation notes; use this handoff and ARCHITECTURE for current rules.
 
@@ -60,8 +58,9 @@ feature.
   resource clients see still needs a snapshot and events: `Store::watch`
   only reaches code in the same process.
 - **A feature is a plugin.** It lives in `src/plugins/<name>/`,
-  implements `core::Plugin`, and is one line in `plugins::builtin()`
-  (ARCHITECTURE §2). Its UI is `src/ui/features/<name>.rs` plus its lines
+  implements `core::Plugin`, and is one variant in `builtin_plugins!` and
+  one line in `plugins::builtin_parts()` (ARCHITECTURE §2,
+  [`adr/0004`](adr/0004-dispatch-plugins-through-a-fixed-enum.md)). Its UI is `src/ui/features/<name>.rs` plus its lines
   in `src/ui/features/mod.rs`, the one place in the UI that lists
   features. The core doesn't name features and plugins don't import each
   other: shared code belongs in the core (or, for UI helpers, `src/ui/`).

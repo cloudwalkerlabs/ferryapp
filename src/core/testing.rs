@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use super::{Core, LanCommand, LocalDeviceSnapshot, Plugin, TransferConfig};
+use super::{Core, LanCommand, LocalDeviceSnapshot, TransferConfig};
+use crate::plugins::BuiltinPlugin;
 use crate::{
     config::LocalIdentity,
     protocol::{DeviceType, IdentityBody},
@@ -37,27 +38,31 @@ pub(crate) async fn handle_with_event_capacity(
 
 /// A core with no devices running only `plugin`, and the plugin, so a
 /// plugin is tested on its own.
-pub(crate) async fn handle_with_plugin<P: Plugin>(
-    plugin: P,
-) -> (Core, Arc<P>, mpsc::Receiver<LanCommand>) {
+pub(crate) async fn handle_with_plugin<P>(plugin: P) -> (Core, Arc<P>, mpsc::Receiver<LanCommand>)
+where
+    Arc<P>: Into<BuiltinPlugin>,
+{
     let plugin = Arc::new(plugin);
-    let (core, commands) = build(Vec::new(), vec![plugin.clone()], 1).await;
+    let (core, commands) = build(Vec::new(), vec![plugin.clone().into()], 1).await;
     (core, plugin, commands)
 }
 
 /// [`handle_with_plugin`], with an event bus holding `capacity` events.
-pub(crate) async fn handle_with_plugin_and_event_capacity<P: Plugin>(
+pub(crate) async fn handle_with_plugin_and_event_capacity<P>(
     plugin: P,
     capacity: usize,
-) -> (Core, Arc<P>, mpsc::Receiver<LanCommand>) {
+) -> (Core, Arc<P>, mpsc::Receiver<LanCommand>)
+where
+    Arc<P>: Into<BuiltinPlugin>,
+{
     let plugin = Arc::new(plugin);
-    let (core, commands) = build(Vec::new(), vec![plugin.clone()], capacity).await;
+    let (core, commands) = build(Vec::new(), vec![plugin.clone().into()], capacity).await;
     (core, plugin, commands)
 }
 
 async fn build(
     paired: Vec<TrustedDevice>,
-    plugins: Vec<Arc<dyn Plugin>>,
+    plugins: Vec<BuiltinPlugin>,
     event_capacity: usize,
 ) -> (Core, mpsc::Receiver<LanCommand>) {
     let directory = tempfile::tempdir().unwrap();

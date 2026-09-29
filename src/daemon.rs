@@ -14,10 +14,7 @@ pub use api_switch::{ApiMode, ApiStatus, ApiSwitch};
 
 use crate::{
     config::{LocalIdentity, default_config_dir},
-    core::{
-        Core, LocalDeviceSnapshot, Plugin, Settings, SettingsDefaults, StoredSettings,
-        TransferConfig,
-    },
+    core::{Core, LocalDeviceSnapshot, Settings, SettingsDefaults, StoredSettings, TransferConfig},
     plugins::{
         self,
         clipboard::{ClipboardService, InMemoryClipboard, SystemClipboard},
@@ -105,7 +102,7 @@ impl RunningService {
     /// to keep each plugin's UI half next to the instance the core runs.
     pub async fn start_with(
         request: RunRequest,
-        plugins: impl FnOnce(Arc<dyn ClipboardService + Send + Sync>) -> Vec<Arc<dyn Plugin>>,
+        plugins: impl FnOnce(Arc<dyn ClipboardService + Send + Sync>) -> Vec<plugins::BuiltinPlugin>,
     ) -> Result<Self> {
         if !request.discovery_loopback && request.discovery_port != DISCOVERY_PORT {
             bail!(

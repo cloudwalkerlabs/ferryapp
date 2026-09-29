@@ -81,7 +81,6 @@ impl ConnectivityPlugin {
     }
 }
 
-#[async_trait::async_trait]
 impl Plugin for ConnectivityPlugin {
     fn id(&self) -> &'static str {
         ID

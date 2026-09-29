@@ -26,7 +26,6 @@ pub const ID: &str = "ping";
 
 pub struct PingPlugin;
 
-#[async_trait::async_trait]
 impl Plugin for PingPlugin {
     fn id(&self) -> &'static str {
         ID

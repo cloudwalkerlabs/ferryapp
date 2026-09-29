@@ -104,7 +104,7 @@ impl Core {
         protocol_version: u8,
         local_public_key_der: Vec<u8>,
         store: Store,
-        plugins: Vec<Arc<dyn Plugin>>,
+        plugins: Vec<crate::plugins::BuiltinPlugin>,
         command_capacity: usize,
         event_capacity: usize,
         identity: Arc<LocalIdentity>,

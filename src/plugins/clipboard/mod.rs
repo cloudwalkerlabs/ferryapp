@@ -333,7 +333,6 @@ impl ClipboardPlugin {
     }
 }
 
-#[async_trait::async_trait]
 impl Plugin for ClipboardPlugin {
     fn id(&self) -> &'static str {
         ID

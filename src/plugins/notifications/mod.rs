@@ -219,7 +219,6 @@ pub struct NotificationsPlugin {
     settings_updates: Arc<tokio::sync::Mutex<()>>,
 }
 
-#[async_trait::async_trait]
 impl Plugin for NotificationsPlugin {
     fn id(&self) -> &'static str {
         ID

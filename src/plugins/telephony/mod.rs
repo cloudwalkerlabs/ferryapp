@@ -148,7 +148,6 @@ impl TelephonyPlugin {
     }
 }
 
-#[async_trait::async_trait]
 impl Plugin for TelephonyPlugin {
     fn id(&self) -> &'static str {
         ID
