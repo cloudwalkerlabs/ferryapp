@@ -211,13 +211,15 @@ impl DeviceNotifications {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct NotificationsPlugin {
     /// Each paired, connected device's notifications. Shared with the tasks
     /// fetching icons.
     devices: Arc<Mutex<HashMap<String, DeviceNotifications>>>,
+    settings_updates: Arc<tokio::sync::Mutex<()>>,
 }
 
+#[async_trait::async_trait]
 impl Plugin for NotificationsPlugin {
     fn id(&self) -> &'static str {
         ID
@@ -231,7 +233,7 @@ impl Plugin for NotificationsPlugin {
         &[REQUEST_PACKET_TYPE, REPLY_PACKET_TYPE, ACTION_PACKET_TYPE]
     }
 
-    fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
+    async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
         if !is_enabled(ctx, &device.device_id) {
             return;
         }
@@ -289,23 +291,23 @@ impl Plugin for NotificationsPlugin {
             .then(|| json!({"enabled": is_enabled(ctx, &device.device_id)}))
     }
 
-    fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
+    async fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
         if is_enabled(ctx, &device.device_id) {
             request_all(ctx, &device.device_id);
         }
     }
 
-    fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
+    async fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
         if is_enabled(ctx, &device.device_id) {
             request_all(ctx, &device.device_id);
         }
     }
 
-    fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
+    async fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
         self.lock().remove(device_id);
     }
 
-    fn unpaired(&self, _ctx: &PluginContext, device_id: &str) {
+    async fn unpaired(&self, _ctx: &PluginContext, device_id: &str) {
         self.lock().remove(device_id);
     }
 }
@@ -434,12 +436,31 @@ impl NotificationsPlugin {
     /// connected, for the ones it shows. Either way the device's snapshot
     /// changes (`device.updated`). Setting what is already set does
     /// nothing.
-    pub fn set_enabled(
+    pub async fn set_enabled(
         &self,
         ctx: &PluginContext,
         device_id: &str,
         enabled: bool,
     ) -> Result<(), NotificationError> {
+        let plugin = self.clone();
+        let context = ctx.clone();
+        let device_id = device_id.to_owned();
+        ctx.mutate(async move {
+            plugin
+                .set_enabled_inner(&context, &device_id, enabled)
+                .await
+        })
+        .await
+    }
+
+    async fn set_enabled_inner(
+        &self,
+        ctx: &PluginContext,
+        device_id: &str,
+        enabled: bool,
+    ) -> Result<(), NotificationError> {
+        let _operation = ctx.device_operation(device_id).await;
+        let _update = self.settings_updates.lock().await;
         let device = ctx.device(device_id).ok_or(CoreError::UnknownDevice)?;
         if !device.paired {
             return Err(CoreError::NotPaired.into());
@@ -449,6 +470,7 @@ impl NotificationsPlugin {
         }
         ctx.store()
             .set(&ENABLED.of(device_id), &enabled)
+            .await
             .map_err(CoreError::Store)?;
         if enabled {
             request_all(ctx, device_id);
@@ -551,7 +573,7 @@ impl NotificationsPlugin {
 /// store that can't be read counts as on, the default.
 fn is_enabled(ctx: &PluginContext, device_id: &str) -> bool {
     ctx.store()
-        .get(&ENABLED.of(device_id))
+        .cached(&ENABLED.of(device_id))
         .ok()
         .flatten()
         .unwrap_or(true)
@@ -649,7 +671,7 @@ mod tests {
     /// A paired peer taking `incoming` packet types, connected; what the
     /// core sends it, and the events published after it connected. The
     /// test bus holds one event, so tests check each as it lands.
-    fn connected(
+    async fn connected(
         incoming: &[&str],
     ) -> (
         Core,
@@ -657,12 +679,13 @@ mod tests {
         mpsc::Receiver<Packet>,
         broadcast::Receiver<CoreEvent>,
     ) {
-        let (core, plugin, _commands) = handle_with_plugin(NotificationsPlugin::default());
+        let (core, plugin, _commands) = handle_with_plugin(NotificationsPlugin::default()).await;
         let capabilities = incoming.iter().map(|c| (*c).to_owned()).collect();
         core.discover_device(&make_identity(PEER, capabilities), true, 1)
             .unwrap();
         let (tx, rx) = mpsc::channel(8);
         core.register_connection(PEER, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
         let events = core.subscribe();
         (core, plugin, rx, events)
@@ -692,27 +715,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn asks_for_every_notification_on_connecting() {
-        let (_core, _plugin, mut sent, _events) = connected(&[REQUEST_PACKET_TYPE]);
+    #[tokio::test]
+    async fn asks_for_every_notification_on_connecting() {
+        let (_core, _plugin, mut sent, _events) = connected(&[REQUEST_PACKET_TYPE]).await;
         let request = sent.try_recv().unwrap();
         assert_eq!(request.packet_type, REQUEST_PACKET_TYPE);
         assert_eq!(request.body["request"], json!(true));
 
         // A peer that doesn't take requests isn't asked.
-        let (_core, _plugin, mut sent, _events) = connected(&[]);
+        let (_core, _plugin, mut sent, _events) = connected(&[]).await;
         assert!(sent.try_recv().is_err());
     }
 
     #[tokio::test]
     async fn asks_again_once_a_connected_device_is_paired() {
-        let (core, _plugin, _commands) = handle_with_plugin(NotificationsPlugin::default());
+        let (core, _plugin, _commands) = handle_with_plugin(NotificationsPlugin::default()).await;
         let capabilities = vec![REQUEST_PACKET_TYPE.to_owned()];
         core.discover_device(&make_identity(PEER, capabilities), false, 1)
             .unwrap();
         // Pairing stores the peer's certificate, so it needs a real one.
-        let store = crate::store::Store::open_in_memory().unwrap();
-        let identity = crate::config::LocalIdentity::load_or_create(&store).unwrap();
+        let store = crate::store::Store::open_in_memory().await.unwrap();
+        let identity = crate::config::LocalIdentity::load_or_create(&store)
+            .await
+            .unwrap();
         let (tx, mut sent) = mpsc::channel(8);
         core.register_connection(
             PEER,
@@ -722,6 +747,7 @@ mod tests {
             CancellationToken::new(),
             1,
         )
+        .await
         .unwrap();
         assert!(sent.try_recv().is_err(), "not asked before pairing");
 
@@ -733,9 +759,10 @@ mod tests {
         core.handle_peer_packet(
             PEER,
             Packet::from_body(1_u64, "kdeconnect.pair", &request).unwrap(),
-        );
+        )
+        .await;
         let [pairing] = <[_; 1]>::try_from(core.pairings().unwrap()).unwrap();
-        core.accept_pairing(pairing.id).unwrap();
+        core.accept_pairing(pairing.id).await.unwrap();
         let packets: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
         assert!(
             packets
@@ -746,10 +773,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn posted_notifications_are_listed_and_announced_once_per_change() {
-        let (core, plugin, _sent, mut events) = connected(&[]);
-        core.handle_peer_packet(PEER, message("a", "Dinner?"));
+    #[tokio::test]
+    async fn posted_notifications_are_listed_and_announced_once_per_change() {
+        let (core, plugin, _sent, mut events) = connected(&[]).await;
+        core.handle_peer_packet(PEER, message("a", "Dinner?")).await;
         let event = posted(&mut events);
         assert!(event.alert);
         assert_eq!(event.device_name, "Peer");
@@ -772,15 +799,17 @@ mod tests {
         assert!(!json.to_string().contains("reply-a"));
 
         // The same text again is an update, not news; new text is.
-        core.handle_peer_packet(PEER, message("a", "Dinner?"));
+        core.handle_peer_packet(PEER, message("a", "Dinner?")).await;
         assert!(!posted(&mut events).alert);
-        core.handle_peer_packet(PEER, message("a", "Dinner at 7?"));
+        core.handle_peer_packet(PEER, message("a", "Dinner at 7?"))
+            .await;
         assert!(posted(&mut events).alert);
         // Ones the device says were already there aren't news either.
         core.handle_peer_packet(
             PEER,
             notification(json!({"id": "b", "ticker": "Update ready", "silent": true})),
-        );
+        )
+        .await;
         let event = posted(&mut events);
         assert!(!event.alert);
         assert_eq!(event.notification.text.as_deref(), Some("Update ready"));
@@ -798,13 +827,13 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn removals_are_published_once() {
-        let (core, plugin, _sent, mut events) = connected(&[]);
-        core.handle_peer_packet(PEER, message("a", "Dinner?"));
+    #[tokio::test]
+    async fn removals_are_published_once() {
+        let (core, plugin, _sent, mut events) = connected(&[]).await;
+        core.handle_peer_packet(PEER, message("a", "Dinner?")).await;
         let _ = posted(&mut events);
         let cancel = notification(json!({"id": "a", "isCancel": true}));
-        core.handle_peer_packet(PEER, cancel.clone());
+        core.handle_peer_packet(PEER, cancel.clone()).await;
         let EventData::Plugin(event) = events.try_recv().unwrap().event else {
             panic!("expected a plugin event");
         };
@@ -815,18 +844,19 @@ mod tests {
                 id: "a".into()
             })
         );
-        core.handle_peer_packet(PEER, cancel);
+        core.handle_peer_packet(PEER, cancel).await;
         assert!(events.try_recv().is_err());
         assert!(plugin.list(PEER).is_empty());
     }
 
-    #[test]
-    fn replies_actions_and_dismissals_go_to_the_device() {
+    #[tokio::test]
+    async fn replies_actions_and_dismissals_go_to_the_device() {
         let (core, plugin, mut sent, _events) =
-            connected(&[REQUEST_PACKET_TYPE, REPLY_PACKET_TYPE, ACTION_PACKET_TYPE]);
+            connected(&[REQUEST_PACKET_TYPE, REPLY_PACKET_TYPE, ACTION_PACKET_TYPE]).await;
         let _request_all = sent.try_recv().unwrap();
-        core.handle_peer_packet(PEER, message("a", "Dinner?"));
-        core.handle_peer_packet(PEER, notification(json!({"id": "b", "title": "Sync"})));
+        core.handle_peer_packet(PEER, message("a", "Dinner?")).await;
+        core.handle_peer_packet(PEER, notification(json!({"id": "b", "title": "Sync"})))
+            .await;
         let ctx = core.plugin_context();
 
         plugin.reply(&ctx, PEER, "a", "Yes!").unwrap();
@@ -872,41 +902,42 @@ mod tests {
         assert_eq!(plugin.list(PEER).len(), 1);
     }
 
-    #[test]
-    fn a_device_that_disconnects_or_unpairs_has_none() {
-        let (core, plugin, _sent, _events) = connected(&[]);
-        core.handle_peer_packet(PEER, message("a", "Dinner?"));
+    #[tokio::test]
+    async fn a_device_that_disconnects_or_unpairs_has_none() {
+        let (core, plugin, _sent, _events) = connected(&[]).await;
+        core.handle_peer_packet(PEER, message("a", "Dinner?")).await;
         assert_eq!(plugin.list(PEER).len(), 1);
-        core.unregister_connection(PEER);
+        core.unregister_connection(PEER).await;
         assert!(plugin.list(PEER).is_empty());
 
-        let (core, plugin, _sent, _events) = connected(&[]);
-        core.handle_peer_packet(PEER, message("a", "Dinner?"));
+        let (core, plugin, _sent, _events) = connected(&[]).await;
+        core.handle_peer_packet(PEER, message("a", "Dinner?")).await;
         let unpair = Packet::from_body(3_u64, "kdeconnect.pair", &json!({"pair": false})).unwrap();
-        core.handle_peer_packet(PEER, unpair);
+        core.handle_peer_packet(PEER, unpair).await;
         assert!(plugin.list(PEER).is_empty());
     }
 
-    #[test]
-    fn only_the_newest_are_kept() {
-        let (core, plugin, _sent, _events) = connected(&[]);
+    #[tokio::test]
+    async fn only_the_newest_are_kept() {
+        let (core, plugin, _sent, _events) = connected(&[]).await;
         for index in 0..=MAX_NOTIFICATIONS {
             core.handle_peer_packet(
                 PEER,
                 notification(json!({"id": index.to_string(), "title": "n"})),
-            );
+            )
+            .await;
         }
         let listed = plugin.list(PEER);
         assert_eq!(listed.len(), MAX_NOTIFICATIONS);
         assert!(listed.iter().all(|n| n.id != "0"));
     }
 
-    #[test]
-    fn an_icon_is_kept_by_hash_for_every_notification_that_names_it() {
-        let (core, plugin, _sent, _events) = connected(&[]);
+    #[tokio::test]
+    async fn an_icon_is_kept_by_hash_for_every_notification_that_names_it() {
+        let (core, plugin, _sent, _events) = connected(&[]).await;
         let with_icon = |id: &str| notification(json!({"id": id, "payloadHash": "h1"}));
-        core.handle_peer_packet(PEER, with_icon("a"));
-        core.handle_peer_packet(PEER, with_icon("b"));
+        core.handle_peer_packet(PEER, with_icon("a")).await;
+        core.handle_peer_packet(PEER, with_icon("b")).await;
         assert_eq!(plugin.icon(PEER, "a"), None);
 
         let changed = add_icon(
@@ -919,33 +950,35 @@ mod tests {
         assert!(changed.iter().all(|n| n.has_icon));
         assert_eq!(plugin.icon(PEER, "b"), Some(Bytes::from_static(b"png")));
         // One posted later with the same hash has it at once.
-        core.handle_peer_packet(PEER, with_icon("c"));
+        core.handle_peer_packet(PEER, with_icon("c")).await;
         assert!(plugin.list(PEER).iter().all(|n| n.has_icon));
 
         // The icon goes with the last notification using it.
         for id in ["a", "b", "c"] {
-            core.handle_peer_packet(PEER, notification(json!({"id": id, "isCancel": true})));
+            core.handle_peer_packet(PEER, notification(json!({"id": id, "isCancel": true})))
+                .await;
         }
-        core.handle_peer_packet(PEER, notification(json!({"id": "d", "payloadHash": "h1"})));
+        core.handle_peer_packet(PEER, notification(json!({"id": "d", "payloadHash": "h1"})))
+            .await;
         assert_eq!(plugin.icon(PEER, "d"), None);
     }
 
-    #[test]
-    fn syncing_is_on_by_default_and_shown_on_paired_devices() {
-        let (core, _plugin, _sent, _events) = connected(&[]);
+    #[tokio::test]
+    async fn syncing_is_on_by_default_and_shown_on_paired_devices() {
+        let (core, _plugin, _sent, _events) = connected(&[]).await;
         let device = core.device(PEER).unwrap();
         assert_eq!(device.plugins[ID], json!({"enabled": true}));
 
-        let (core, _plugin, _commands) = handle_with_plugin(NotificationsPlugin::default());
+        let (core, _plugin, _commands) = handle_with_plugin(NotificationsPlugin::default()).await;
         core.discover_device(&make_identity(PEER, Vec::new()), false, 1)
             .unwrap();
         assert!(!core.device(PEER).unwrap().plugins.contains_key(ID));
     }
 
-    #[test]
-    fn turning_it_off_forgets_them_and_ignores_new_ones() {
+    #[tokio::test]
+    async fn turning_it_off_forgets_them_and_ignores_new_ones() {
         let (core, plugin, _commands) =
-            handle_with_plugin_and_event_capacity(NotificationsPlugin::default(), 8);
+            handle_with_plugin_and_event_capacity(NotificationsPlugin::default(), 8).await;
         core.discover_device(
             &make_identity(PEER, vec![REQUEST_PACKET_TYPE.into()]),
             true,
@@ -954,13 +987,14 @@ mod tests {
         .unwrap();
         let (tx, mut sent) = mpsc::channel(8);
         core.register_connection(PEER, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
         let _request_all = sent.try_recv().unwrap();
-        core.handle_peer_packet(PEER, message("a", "Dinner?"));
+        core.handle_peer_packet(PEER, message("a", "Dinner?")).await;
         let ctx = core.plugin_context();
 
         let mut events = core.subscribe();
-        plugin.set_enabled(&ctx, PEER, false).unwrap();
+        plugin.set_enabled(&ctx, PEER, false).await.unwrap();
         let EventData::Plugin(removed) = events.try_recv().unwrap().event else {
             panic!("expected the removal");
         };
@@ -975,12 +1009,16 @@ mod tests {
             panic!("expected the device's update");
         };
         assert_eq!(device.plugins[ID], json!({"enabled": false}));
-        assert_eq!(core.store().get(&ENABLED.of(PEER)).unwrap(), Some(false));
+        assert_eq!(
+            core.store().get(&ENABLED.of(PEER)).await.unwrap(),
+            Some(false)
+        );
         assert!(plugin.list(PEER).is_empty());
 
         // What the device sends now is dropped, and it isn't asked again
         // when it reconnects.
-        core.handle_peer_packet(PEER, message("b", "Still there?"));
+        core.handle_peer_packet(PEER, message("b", "Still there?"))
+            .await;
         assert!(events.try_recv().is_err());
         assert!(plugin.list(PEER).is_empty());
         assert!(matches!(
@@ -989,16 +1027,17 @@ mod tests {
         ));
         let (tx, mut sent) = mpsc::channel(8);
         core.register_connection(PEER, vec![1, 2, 3], 8, tx, CancellationToken::new(), 2)
+            .await
             .unwrap();
         assert!(sent.try_recv().is_err());
 
         // Turning it off again changes nothing.
         let mut events = core.subscribe();
-        plugin.set_enabled(&ctx, PEER, false).unwrap();
+        plugin.set_enabled(&ctx, PEER, false).await.unwrap();
         assert!(events.try_recv().is_err());
 
         // On again, the device is asked for what it shows.
-        plugin.set_enabled(&ctx, PEER, true).unwrap();
+        plugin.set_enabled(&ctx, PEER, true).await.unwrap();
         let request = sent.try_recv().unwrap();
         assert_eq!(request.packet_type, REQUEST_PACKET_TYPE);
         assert_eq!(request.body["request"], json!(true));
@@ -1006,24 +1045,25 @@ mod tests {
             events.try_recv().unwrap().event,
             EventData::DeviceUpdated(device) if device.plugins[ID] == json!({"enabled": true})
         ));
-        core.handle_peer_packet(PEER, message("b", "Still there?"));
+        core.handle_peer_packet(PEER, message("b", "Still there?"))
+            .await;
         assert_eq!(plugin.list(PEER).len(), 1);
     }
 
-    #[test]
-    fn only_a_paired_device_can_be_turned_off() {
-        let (core, plugin, _commands) = handle_with_plugin(NotificationsPlugin::default());
+    #[tokio::test]
+    async fn only_a_paired_device_can_be_turned_off() {
+        let (core, plugin, _commands) = handle_with_plugin(NotificationsPlugin::default()).await;
         let ctx = core.plugin_context();
         assert!(matches!(
-            plugin.set_enabled(&ctx, PEER, false),
+            plugin.set_enabled(&ctx, PEER, false).await,
             Err(NotificationError::Core(CoreError::UnknownDevice))
         ));
         core.discover_device(&make_identity(PEER, Vec::new()), false, 1)
             .unwrap();
         assert!(matches!(
-            plugin.set_enabled(&ctx, PEER, false),
+            plugin.set_enabled(&ctx, PEER, false).await,
             Err(NotificationError::Core(CoreError::NotPaired))
         ));
-        assert_eq!(core.store().get(&ENABLED.of(PEER)).unwrap(), None);
+        assert_eq!(core.store().get(&ENABLED.of(PEER)).await.unwrap(), None);
     }
 }

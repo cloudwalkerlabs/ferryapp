@@ -214,13 +214,13 @@ mod tests {
     }
 
     impl Sharing {
-        fn new() -> Self {
-            Self::on(&Fakes::default())
+        async fn new() -> Self {
+            Self::on(&Fakes::default()).await
         }
 
-        fn on(fakes: &Fakes) -> Self {
+        async fn on(fakes: &Fakes) -> Self {
             let (core, _plugin, _commands) =
-                crate::core::testing::handle_with_plugin(crate::plugins::share::SharePlugin);
+                crate::core::testing::handle_with_plugin(crate::plugins::share::SharePlugin).await;
             let app = running_on_desktop(core.clone(), fakes);
             let files = tempfile::tempdir().unwrap();
             std::fs::write(files.path().join("photo.jpg"), "jpg").unwrap();
@@ -240,7 +240,7 @@ mod tests {
             } else {
                 &[]
             };
-            let (peer, sent) = testing::connect_peer(&self.core, device_id, capabilities);
+            let (peer, sent) = testing::connect_peer(&self.core, device_id, capabilities).await;
             // The connection lasts as long as its receiver.
             std::mem::forget(sent);
             settle(&mut self.app, Message::Reload).await;
@@ -285,7 +285,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn files_dropped_on_a_device_page_go_straight_to_it() {
-        let mut sharing = Sharing::new();
+        let mut sharing = Sharing::new().await;
         let peer = sharing.peer(testing::PEER_ID, true).await;
         let _other = sharing.peer(OTHER_PEER, true).await;
         sharing.app.route = Route::Device(peer.clone());
@@ -320,7 +320,7 @@ mod tests {
     async fn files_dropped_on_a_browse_folder_upload_there_and_elsewhere_send() {
         use crate::ui::features::browse::files::tests::{Call, phone_files};
 
-        let mut sharing = Sharing::new();
+        let mut sharing = Sharing::new().await;
         let phone = phone_files();
         features_mut(&mut sharing.app).browse = browse::BrowseUi::with_files(phone.clone());
         let (peer, sent) = testing::connect_peer(
@@ -330,7 +330,8 @@ mod tests {
                 crate::plugins::share::PACKET_TYPE,
                 crate::plugins::browse::REQUEST_PACKET_TYPE,
             ],
-        );
+        )
+        .await;
         std::mem::forget(sent);
         settle(&mut sharing.app, Message::Reload).await;
         let peer = peer.device_id;
@@ -384,7 +385,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn files_dropped_away_from_a_device_ask_where_to_go() {
-        let mut sharing = Sharing::new();
+        let mut sharing = Sharing::new().await;
         let peer = sharing.peer(testing::PEER_ID, true).await;
         sharing.app.route = Route::Transfers;
         let photo = sharing.file("photo.jpg");
@@ -429,7 +430,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn files_dropped_on_the_tray_ask_where_to_go_in_a_menu_from_it() {
         let fakes = popping_tray();
-        let mut sharing = Sharing::on(&fakes);
+        let mut sharing = Sharing::on(&fakes).await;
         let peer = sharing.peer(testing::PEER_ID, true).await;
         let _incapable = sharing.peer(OTHER_PEER, false).await;
         sharing.window(window::Event::Closed).await;
@@ -473,7 +474,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_tray_menu_says_when_no_device_can_take_dropped_files() {
         let fakes = popping_tray();
-        let mut sharing = Sharing::on(&fakes);
+        let mut sharing = Sharing::on(&fakes).await;
         let photo = sharing.file("photo.jpg");
         drop_on_tray(&mut sharing, vec![photo]).await;
         let menu = fakes.tray.popped_up.lock().unwrap().pop().unwrap();
@@ -488,7 +489,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn without_a_menu_files_dropped_on_the_tray_ask_in_the_window() {
-        let mut sharing = Sharing::new();
+        let mut sharing = Sharing::new().await;
         let peer = sharing.peer(testing::PEER_ID, true).await;
         // Even from a device's page, which a drop on the window would use.
         sharing.app.route = Route::Device(peer.clone());
@@ -511,7 +512,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_folder_dropped_on_the_tray_is_refused() {
         let fakes = popping_tray();
-        let mut sharing = Sharing::on(&fakes);
+        let mut sharing = Sharing::on(&fakes).await;
         let _peer = sharing.peer(testing::PEER_ID, true).await;
 
         let album = sharing.file("album");
@@ -527,7 +528,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_drop_on_a_device_that_cant_take_files_asks_instead() {
-        let mut sharing = Sharing::new();
+        let mut sharing = Sharing::new().await;
         let incapable = sharing.peer(testing::PEER_ID, false).await;
         let capable = sharing.peer(OTHER_PEER, true).await;
         sharing.app.route = Route::Device(incapable);
@@ -554,7 +555,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_chooser_follows_devices_and_says_when_none_can_take_files() {
-        let mut sharing = Sharing::new();
+        let mut sharing = Sharing::new().await;
         sharing.drop(&[sharing.file("photo.jpg")]).await;
         assert!(shows(
             &sharing.app,
@@ -572,7 +573,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_dropped_folder_is_refused() {
-        let mut sharing = Sharing::new();
+        let mut sharing = Sharing::new().await;
         let peer = sharing.peer(testing::PEER_ID, true).await;
         sharing.app.route = Route::Device(peer.clone());
 
@@ -592,7 +593,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_drop_without_hover_events_still_arrives_whole() {
-        let mut sharing = Sharing::new();
+        let mut sharing = Sharing::new().await;
         let peer = sharing.peer(testing::PEER_ID, true).await;
         sharing.app.route = Route::Device(peer.clone());
         let (photo, notes) = (sharing.file("photo.jpg"), sharing.file("notes.txt"));
@@ -619,10 +620,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn drops_are_ignored_while_the_pairing_prompt_shows() {
-        let mut sharing = Sharing::new();
+        let mut sharing = Sharing::new().await;
         let peer = sharing.peer(testing::PEER_ID, true).await;
-        let (stranger, _sent) = testing::connect_unpaired_peer(&sharing.core, OTHER_PEER);
-        testing::request_pairing(&sharing.core, &stranger.device_id);
+        let (stranger, _sent) = testing::connect_unpaired_peer(&sharing.core, OTHER_PEER).await;
+        testing::request_pairing(&sharing.core, &stranger.device_id).await;
         settle(&mut sharing.app, Message::Reload).await;
         sharing.app.route = Route::Device(peer);
 
@@ -635,7 +636,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn send_files_picks_files_and_sends_them() {
-        let mut sharing = Sharing::new();
+        let mut sharing = Sharing::new().await;
         let peer = sharing.peer(testing::PEER_ID, true).await;
         sharing.app.route = Route::Device(peer.clone());
 

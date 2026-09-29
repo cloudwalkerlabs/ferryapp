@@ -64,7 +64,7 @@ the three instances it hands to them. `core` and `plugins` never import
 | --- | --- | --- |
 | `protocol` | `src/protocol/{mod,packet,codec,verification}.rs` | Wire packet envelope, identity/pairing body types, bounded newline-delimited JSON codec, the protocol-v8 verification-code function. No I/O. |
 | `config` | `src/config/{mod,api,identity,token}.rs` | Local device identity (UUID + self-signed cert, stored under `core.identity` and never replaced once made), the optional API bearer token, and `core.api` (the app's HTTP API: on or off, its port and token; a config key rather than a setting, so the token never reaches `GET /settings` or events; `StoredApi::read` lets `ferry-cli` read it without creating a database). |
-| `store` | `src/store/{mod,schema,config,devices}.rs`, `src/store/migrations/` | The daemon's data in one SQLite database, `ferry.db` in the data directory ([`adr/0002`](adr/0002-store-the-daemons-data-in-sqlite.md), [`archive/PLAN_STORE.md`](archive/PLAN_STORE.md)). `schema`: opening the database runs the migrations it hasn't had (`migrations/<number>-<name>/up.sql`, embedded; the first creates every table), and refuses one a newer build migrated further; a schema change is a new migration, never an edit to a shipped one. `config`: typed, watchable values, each named by a `ConfigKey<T, S>` its owner declares, global or per device (`PerDevice`, reached with `.of(id)`); for a value that no longer decodes, `get` returns missing and `get_strict` an error. Write transactions take the database's lock up front, so a CLI daemon and the app on one data directory take turns. `devices`: paired devices' pinned certificates, with the name, type and capabilities each last reported over an authenticated connection; removing one removes its per-device values. Tests use `Store::open_in_memory()`. |
+| `store` | `src/store/{mod,schema,config,devices}.rs`, `src/store/migrations/` | The daemon's data in one SQLite database, `ferry.db` in the data directory ([`adr/0002`](adr/0002-store-the-daemons-data-in-sqlite.md), [`archive/PLAN_STORE.md`](archive/PLAN_STORE.md)). `schema`: opening the database runs the migrations it hasn't had (`migrations/<number>-<name>/up.sql`, embedded; the first creates every table), and refuses one a newer build migrated further; a schema change is a new migration, never an edit to a shipped one. `config`: typed, watchable values, each named by a `ConfigKey<T, S>` its owner declares, global or per device (`PerDevice`, reached with `.of(id)`); for a value that no longer decodes, `get` returns missing and `get_strict` an error. Write transactions take the database's lock up front, so a CLI daemon and the app on one data directory take turns. `devices`: paired devices' pinned certificates, with the name, type and capabilities each last reported over an authenticated connection; removing one removes its per-device values. Store opens, reads, writes and watch registration are async, with `deadpool-sqlite` executing SQLite on blocking workers ([`adr/0003`](adr/0003-use-async-sqlite-pools-and-plugin-callbacks.md)). File databases use WAL, one writer and up to three readers; the writer orders whole transactions and post-commit notifications. `Store::cached` reads process-local config snapshots without I/O; it and watches observe this store's commits, not another process's writes. TLS pins are loaded asynchronously before the handshake. Tests await `Store::open_in_memory()`, which shares one connection for all operations. |
 | `transport` | `src/transport/{lan,tls,payload}.rs` | UDP discovery, TCP control-channel connect/accept, the rustls TLS handshake and certificate pinning, and the auxiliary TLS payload connection for file transfer. `LanConfig::loopback` (the daemon's `--discovery-loopback`) binds discovery to `127.255.255.255` and the control listener to `127.0.0.1`, so nothing on the LAN can discover or reach the instance. Instances on this machine still can: on Linux a socket bound to `0.0.0.0:1716` (a Ferry or KDE Connect not on loopback) also receives broadcasts to `127.255.255.255:1716`. `--discovery-port` (`RunRequest::discovery_port`, loopback only) moves discovery to another port, so tests and agents keep their instances apart from those. It takes `LanCommand`s (announce now, announce to one address) from the core. |
 | `core` | `src/core.rs` | `Core`, the cloneable handle to everything below: its state, construction, status, settings, and running the plugins' hooks. One `RwLock` holds what must change together (devices, connections, pairings); transfers, settings and each plugin's state have their own locks. |
 | | `src/core/devices.rs` | The device registry and `DeviceSnapshot` (its `plugins` map is filled from each plugin's `device_state` when a snapshot leaves the core), discovery, forgetting a device, and keeping a paired device's trust record current. The registry starts with every paired device from the store, as `unavailable`, so paired devices are listed while offline. |
@@ -84,25 +84,27 @@ the three instances it hands to them. `core` and `plugins` never import
 ### The `Plugin` trait
 
 ```rust
+#[async_trait::async_trait]
 pub trait Plugin: Send + Sync + 'static {
     fn id(&self) -> &'static str;                          // "ping"; names its config keys and device state
     fn incoming(&self) -> &'static [&'static str] { &[] }  // packet types it handles
     fn outgoing(&self) -> &'static [&'static str];         // packet types it sends
-    fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {}
+    async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {}
     fn routes(self: Arc<Self>, ctx: PluginContext) -> Router { Router::new() }
     fn streaming_routes(self: Arc<Self>, ctx: PluginContext) -> Router { Router::new() }
     fn device_state(&self, ctx: &PluginContext, device: &DeviceSnapshot) -> Option<Value> { None }
-    fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {}
-    fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) {}
-    fn disconnected(&self, ctx: &PluginContext, device_id: &str) {}
-    fn unpaired(&self, ctx: &PluginContext, device_id: &str) {}
-    fn started(self: Arc<Self>, ctx: &PluginContext) {}
+    async fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {}
+    async fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) {}
+    async fn disconnected(&self, ctx: &PluginContext, device_id: &str) {}
+    async fn unpaired(&self, ctx: &PluginContext, device_id: &str) {}
+    async fn started(self: Arc<Self>, ctx: &PluginContext) {}
     fn shutdown(&self) -> BoxFuture<'_, ()> { Box::pin(async {}) }
 }
 ```
 
-Handlers are synchronous and spawn tasks when they need to, so the trait
-is dyn-compatible without `async_trait`. The core passes the context into
+Packet handlers and lifecycle hooks are async; `async-trait` keeps the
+trait usable as `Arc<dyn Plugin>`. Snapshots and metadata stay synchronous
+and read memory only. The core passes the context into
 each call instead of plugins storing it, so there is no `Arc` cycle
 between the core and its plugins. The rules the core keeps:
 
@@ -110,8 +112,21 @@ between the core and its plugins. The rules the core keeps:
   the plugin whose `incoming()` claims its type, and only from a paired
   device; an unclaimed type is dropped. Two plugins claiming one type, or
   sharing an id, panic when the registry is built, so every test fails.
-- **Locks.** The core never calls into a plugin while holding its own lock,
-  and a plugin doesn't hold its own while calling the core.
+- **Locks.** The core never calls into a plugin while holding its state lock.
+  A per-device async gate orders callbacks, pairing and disconnect cleanup;
+  snapshots use brief memory locks and do not wait for that gate. A plugin
+  must not hold a synchronous lock across an await or while calling the core.
+  Callbacks must not await another lifecycle operation for the same device.
+- **Async dispatch.** The LAN connection reads into a bounded packet queue,
+  dispatches callbacks in order, and writes outgoing packets independently.
+  A waiting callback does not prevent its outgoing packets reaching the peer.
+  It must not await a reply dispatched on the same connection: longer work
+  belongs in a task the plugin owns and cancels during cleanup. Transport
+  termination drops the active packet callback before awaiting disconnect
+  hooks. Socket EOF first allows the queued packets up to one second to
+  drain, preserving a peer's final unpair packet; shutdown cancels immediately. Persistent core mutations finish their commit and memory updates
+  in tracked tasks even if their caller is cancelled; shutdown drains them
+  before stopping plugins.
 - **Hooks.** `connected` runs after `device.connected` is published;
   `paired` runs after a connected device becomes paired (either side
   accepted) and its update is published, so work for every paired,
@@ -165,7 +180,7 @@ A new feature is:
 
 The UI calls the typed API, never the routes, so anything the UI does the
 CLI can do too. Update this document by hand.
-[`research/feature-modules.md`](research/feature-modules.md) records how
+[`archive/feature-modules.md`](archive/feature-modules.md) records how
 the daemon was moved to this shape, feature by feature, and what each step
 taught.
 
@@ -613,7 +628,8 @@ which [`adr/0001`](adr/0001-native-ui-in-iced.md) carries over.
 
 The desktop app is translated; the CLI, the HTTP API (it reports error
 codes, which the app words), logs and the website stay in English. The
-plan and its decisions are in [`PLAN_I18N.md`](PLAN_I18N.md).
+completed implementation plan is in
+[`archive/PLAN_I18N.md`](archive/PLAN_I18N.md).
 
 - **Messages.** Every word the app shows is a Fluent message in
   `i18n/<lang>/ferry.ftl`, embedded in the binary (`rust-embed`). en-US is

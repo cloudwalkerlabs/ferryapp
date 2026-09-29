@@ -78,8 +78,8 @@ impl App {
         };
         let core = running.ctx.core().clone();
         self.starting = Some(device_id.clone());
-        self.core_task(
-            move || core.start_outgoing_pairing(&device_id),
+        self.core_future(
+            async move { core.start_outgoing_pairing(&device_id).await },
             Message::PairStarted,
         )
     }
@@ -90,8 +90,8 @@ impl App {
         };
         let core = running.ctx.core().clone();
         self.cancelling = Some(pairing_id);
-        self.core_task(
-            move || core.cancel_pairing(pairing_id),
+        self.core_future(
+            async move { core.cancel_pairing(pairing_id).await },
             move |result| Message::PairingCancelled(pairing_id, result),
         )
     }
@@ -107,12 +107,12 @@ impl App {
         let core = running.ctx.core().clone();
         self.answering = Some(pairing_id);
         self.answer_error = None;
-        self.core_task(
-            move || {
+        self.core_future(
+            async move {
                 if accept {
-                    core.accept_pairing(pairing_id)
+                    core.accept_pairing(pairing_id).await
                 } else {
-                    core.cancel_pairing(pairing_id)
+                    core.cancel_pairing(pairing_id).await
                 }
             },
             move |result| Message::PairingAnswered(pairing_id, result),
@@ -249,6 +249,7 @@ impl App {
                         device_name: Some(Some(name)),
                         ..SettingsPatch::default()
                     })
+                    .await
                     .map(|settings| Message::SettingsSaved(Ok(settings)))
                     .map_err(|error| error::describe_error(&error))
                 })
@@ -280,7 +281,10 @@ impl App {
             return Task::none();
         };
         let core = running.ctx.core().clone();
-        self.core_task(move || core.update_settings(patch), Message::SettingsSaved)
+        self.core_future(
+            async move { core.update_settings(patch).await },
+            Message::SettingsSaved,
+        )
     }
 
     /// Turn command line access on or off. It binds a port and writes
@@ -382,14 +386,13 @@ impl App {
         })
     }
 
-    /// Run a core call on the daemon's runtime, with its error in words.
-    pub(super) fn core_task<T: Send + 'static>(
+    fn core_future<T: Send + 'static>(
         &self,
-        call: impl FnOnce() -> Result<T, CoreError> + Send + 'static,
+        future: impl std::future::Future<Output = Result<T, CoreError>> + Send + 'static,
         then: impl Fn(Result<T, String>) -> Message + Send + 'static,
     ) -> Task<Message> {
         context::on_runtime(&self.options.runtime, async move {
-            call().map_err(|error| error::describe_error(&error))
+            future.await.map_err(|error| error::describe_error(&error))
         })
         .map(then)
     }
@@ -413,6 +416,7 @@ impl App {
             let device_id = device_id.clone();
             async move {
                 core.forget_device(&device_id)
+                    .await
                     .map_err(|error| error::describe_error(&error))
             }
         })
@@ -493,12 +497,12 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn unpairing_asks_then_forgets_the_device_and_goes_home() {
-        let mut app = running();
+        let mut app = running().await;
         let Phase::Running(running) = &app.phase else {
             unreachable!()
         };
         let core = running.ctx.core().clone();
-        let (peer, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[]);
+        let (peer, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[]).await;
         settle(&mut app, Message::Reload).await;
         app.route = Route::Device(peer.device_id.clone());
         let unpair = || Message::Unpair {
@@ -531,7 +535,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_failed_unpair_says_why_and_stays() {
-        let mut app = running();
+        let mut app = running().await;
         app.route = Route::Device("gone".into());
         settle(
             &mut app,
@@ -550,7 +554,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn opening_add_device_scans_and_searches_for_a_while() {
-        let (mut app, mut commands) = running_with_commands();
+        let (mut app, mut commands) = running_with_commands().await;
         let ended = step(
             &mut app,
             Message::Navigate(Route::AddDevice, Origin::Window),
@@ -584,7 +588,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn add_by_ip_says_why_an_address_is_refused_then_announces_to_it() {
-        let (mut app, mut commands) = running_with_commands();
+        let (mut app, mut commands) = running_with_commands().await;
         app.route = Route::AddDevice;
         settle(&mut app, Message::AddByAddress).await;
         assert_eq!(app.dialogs.current().unwrap().title, "Add by IP address");
@@ -630,9 +634,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn pairing_opens_the_request_and_cancelling_returns_to_add_device() {
-        let mut app = running();
+        let mut app = running().await;
         let core = core(&app);
-        let (peer, mut sent) = testing::connect_unpaired_peer(&core, testing::PEER_ID);
+        let (peer, mut sent) = testing::connect_unpaired_peer(&core, testing::PEER_ID).await;
         settle(&mut app, Message::Reload).await;
         app.route = Route::AddDevice;
 
@@ -662,7 +666,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_pairing_that_cant_start_says_why_and_stays() {
-        let mut app = running();
+        let mut app = running().await;
         app.route = Route::AddDevice;
         settle(&mut app, Message::Pair("gone".into())).await;
         assert_eq!(app.route, Route::AddDevice);
@@ -675,10 +679,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_incoming_prompt_shows_on_any_page_until_resolved() {
-        let mut app = running();
+        let mut app = running().await;
         let core = core(&app);
-        let (peer, _sent) = testing::connect_unpaired_peer(&core, testing::PEER_ID);
-        testing::request_pairing(&core, &peer.device_id);
+        let (peer, _sent) = testing::connect_unpaired_peer(&core, testing::PEER_ID).await;
+        testing::request_pairing(&core, &peer.device_id).await;
         settle(&mut app, Message::Reload).await;
 
         for route in [
@@ -694,12 +698,12 @@ mod tests {
 
         // Resolved elsewhere (the CLI): the prompt goes on its own.
         let request = store(&app).pending_incoming_pairings()[0].id;
-        core.cancel_pairing(request).unwrap();
+        core.cancel_pairing(request).await.unwrap();
         settle(&mut app, Message::Reload).await;
         assert!(app.incoming_prompt().is_none());
 
         // Accepting pairs the device.
-        testing::request_pairing(&core, &peer.device_id);
+        testing::request_pairing(&core, &peer.device_id).await;
         settle(&mut app, Message::Reload).await;
         let request = store(&app).pending_incoming_pairings()[0].id;
         settle(
@@ -720,7 +724,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_failed_answer_keeps_the_prompt_open_with_the_reason() {
-        let mut app = running();
+        let mut app = running().await;
         // A request the core no longer has.
         let request = PairingSnapshot {
             id: Uuid::from_u128(1),
@@ -764,9 +768,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_transfers_page_shows_progress_and_cancels() {
-        let mut app = running();
+        let mut app = running().await;
         let core = core(&app);
-        let (peer, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[]);
+        let (peer, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[]).await;
         let mut transfer =
             core.transfers()
                 .begin(&peer, TransferDirection::Incoming, "movie.mkv".into(), 100);
@@ -844,7 +848,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn opening_a_link_reports_only_failures() {
-        let mut app = running();
+        let mut app = running().await;
         let opener = Arc::new(FakeOpener::default());
         app.desktop.opener = opener.clone();
 
@@ -861,7 +865,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_shared_link_opens_and_notifies_either_way() {
-        let mut app = running();
+        let mut app = running().await;
         let opener = Arc::new(FakeOpener::default());
         app.desktop.opener = opener.clone();
 
@@ -894,7 +898,7 @@ mod tests {
             Arc::new(BrowsePlugin::default()),
             Arc::new(NotificationsPlugin::default()),
         );
-        let mut app = running_with(handle().0, features, &Fakes::default());
+        let mut app = running_with(handle().await.0, features, &Fakes::default());
         let shared = |text: String| Message::CopySharedText {
             text,
             device_name: "Pixel".into(),
@@ -920,8 +924,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn command_line_access_switches_on_and_copies_its_setup() {
-        let mut app = running();
-        let store = crate::store::Store::open_in_memory().unwrap();
+        let mut app = running().await;
+        let store = crate::store::Store::open_in_memory().await.unwrap();
         // A free port, not the default one the owner's app may hold.
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
@@ -936,6 +940,7 @@ mod tests {
                     ..crate::config::StoredApi::default()
                 },
             )
+            .await
             .unwrap();
         let api = ApiSwitch::start(
             crate::daemon::ApiMode::Stored {
@@ -976,7 +981,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_failed_switch_says_why_and_stays_off() {
         // `running` has no API file to keep the choice in.
-        let mut app = running();
+        let mut app = running().await;
         settle(&mut app, Message::SetApiEnabled(true)).await;
         assert!(
             app.toasts.items()[0]
@@ -992,7 +997,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn opening_a_received_file_reports_only_failures() {
-        let mut app = running();
+        let mut app = running().await;
         let opener = Arc::new(FakeOpener::default());
         app.desktop.opener = opener.clone();
         let notes = PathBuf::from("/home/me/Downloads/notes.txt");
@@ -1018,7 +1023,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn renaming_shows_the_new_name_and_a_bad_one_says_why() {
-        let mut app = running();
+        let mut app = running().await;
         settle(&mut app, Message::Reload).await;
         settle(&mut app, Message::Navigate(Route::Settings, Origin::Window)).await;
         click(&mut app, "Device name").await;
@@ -1058,7 +1063,8 @@ mod tests {
             crate::plugins::clipboard::ClipboardPlugin::new(
                 crate::plugins::clipboard::InMemoryClipboard::shared(),
             ),
-        );
+        )
+        .await;
         let features = Features::new(
             plugin.clone(),
             Arc::new(BrowsePlugin::default()),
@@ -1083,6 +1089,7 @@ mod tests {
         // A fresh snapshot, as after missed events, reads it again.
         plugin
             .set_sync_enabled(&core.plugin_context(), true)
+            .await
             .unwrap();
         settle(&mut app, Message::Reload).await;
         assert!(shown(&mut app));
@@ -1124,7 +1131,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn starting_on_login_is_the_system_s_and_says_when_it_can_t_change() {
         let fakes = Fakes::default();
-        let mut app = running_on_desktop(handle().0, &fakes);
+        let mut app = running_on_desktop(handle().await.0, &fakes);
         settle(&mut app, Message::Reload).await;
         settle(&mut app, Message::Navigate(Route::Settings, Origin::Window)).await;
 
@@ -1143,7 +1150,7 @@ mod tests {
             }),
             ..Fakes::default()
         };
-        let mut app = running_on_desktop(handle().0, &broken);
+        let mut app = running_on_desktop(handle().await.0, &broken);
         settle(&mut app, Message::Reload).await;
         settle(&mut app, Message::Navigate(Route::Settings, Origin::Window)).await;
         click(&mut app, "Start when you log in").await;
@@ -1153,7 +1160,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_download_folder_is_picked_from_the_current_one() {
-        let mut app = running();
+        let mut app = running().await;
         settle(&mut app, Message::Reload).await;
         settle(&mut app, Message::Navigate(Route::Settings, Origin::Window)).await;
         let current = settings(&app).download_dir.clone();

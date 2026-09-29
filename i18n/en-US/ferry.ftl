@@ -5,7 +5,7 @@
 # Keys are prefixed by feature (`browse-…`, `clipboard-…`, `error-<code>`),
 # grouped under a header per feature. Whole sentences only; names, paths
 # and numbers are arguments; every count goes through a plural selector.
-# See docs/PLAN_I18N.md.
+# See docs/archive/PLAN_I18N.md.
 
 ## Files dropped on the window or the tray icon (src/ui/drops.rs)
 

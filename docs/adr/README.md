@@ -11,7 +11,8 @@ says which of them still apply.
 | # | Decision | Status |
 | --- | --- | --- |
 | [0001](0001-native-ui-in-iced.md) | Build the desktop UI in Rust with iced, in the daemon's process | Accepted |
-| [0002](0002-store-the-daemons-data-in-sqlite.md) | Store the daemon's data in SQLite | Accepted |
+| [0002](0002-store-the-daemons-data-in-sqlite.md) | Store the daemon's data in SQLite | Accepted; synchronous access superseded by 0003 |
+| [0003](0003-use-async-sqlite-pools-and-plugin-callbacks.md) | Use async SQLite pools and plugin callbacks | Accepted |
 
 Template for new records:
 

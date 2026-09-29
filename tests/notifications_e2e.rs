@@ -50,8 +50,8 @@ fn free_udp_addr() -> SocketAddr {
 async fn harness() -> Harness {
     let desktop_dir = tempfile::tempdir().unwrap();
     let phone_dir = tempfile::tempdir().unwrap();
-    let store = Store::open(desktop_dir.path()).unwrap();
-    let identity = Arc::new(LocalIdentity::load_or_create(&store).unwrap());
+    let store = Store::open(desktop_dir.path()).await.unwrap();
+    let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
     let desktop_id = identity.device_id().to_owned();
     let (desktop, commands) = Core::new(
         LocalDeviceSnapshot {
@@ -68,6 +68,7 @@ async fn harness() -> Harness {
         TransferConfig::new(desktop_dir.path().join("downloads"))
             .with_payload_bind_ip(Ipv4Addr::LOCALHOST),
     )
+    .await
     .unwrap();
 
     let phone = FakePhone::start(FakePhoneConfig {
@@ -115,7 +116,7 @@ async fn harness() -> Harness {
             .is_some_and(|device| device.reachability == DeviceReachability::Connected)
     })
     .await;
-    desktop.start_outgoing_pairing(&phone_id).unwrap();
+    desktop.start_outgoing_pairing(&phone_id).await.unwrap();
     eventually(|| async {
         desktop
             .device(&phone_id)

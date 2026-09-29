@@ -8,7 +8,7 @@
 //! built-in plugins to [`super::Core::new`]; nothing is loaded at runtime.
 //!
 //! See `docs/ARCHITECTURE.md` §2 for the shape, and
-//! `docs/research/feature-modules.md` for how the daemon got it.
+//! `docs/archive/feature-modules.md` for how the daemon got it.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -24,6 +24,7 @@ use super::{Core, CoreError, DeviceSnapshot, EventData, PayloadPeer, Transfers};
 use crate::{protocol::Packet, store::Store};
 
 /// A feature of the daemon, plugged into the core.
+#[async_trait::async_trait]
 pub trait Plugin: Send + Sync + 'static {
     /// Stable identifier, e.g. `"ping"`.
     fn id(&self) -> &'static str;
@@ -40,8 +41,16 @@ pub trait Plugin: Send + Sync + 'static {
     /// Handle a packet of one of [`Self::incoming`]'s types. The core calls
     /// this only for devices that are paired, and never while holding its
     /// own state lock. A plugin that declares incoming types must override
-    /// it.
-    fn handle_packet(&self, _ctx: &PluginContext, _device: &DeviceSnapshot, _packet: &Packet) {}
+    /// it. Calls for a device are ordered with lifecycle cleanup. Do not
+    /// await another lifecycle operation or a reply dispatched on the same
+    /// device. Transport termination may cancel this future before cleanup.
+    async fn handle_packet(
+        &self,
+        _ctx: &PluginContext,
+        _device: &DeviceSnapshot,
+        _packet: &Packet,
+    ) {
+    }
 
     /// HTTP routes under `/api/v1`, with their state already applied. They
     /// get the standard body limit, request deadline and authentication.
@@ -72,30 +81,30 @@ pub trait Plugin: Send + Sync + 'static {
     /// A connection to the device was registered. Called after the core
     /// publishes `device.connected`, never while holding its own lock. The
     /// device may not be paired; [`PluginContext::send`] checks that.
-    fn connected(&self, _ctx: &PluginContext, _device: &DeviceSnapshot) {}
+    async fn connected(&self, _ctx: &PluginContext, _device: &DeviceSnapshot) {}
 
     /// The device, connected, became paired: this device accepted its
     /// request, or it accepted ours. Called after the core publishes the
     /// device's new state, never while holding its own lock. A device
     /// that connects already paired gets [`Self::connected`] instead, so
     /// work for any paired, connected device belongs in both.
-    fn paired(&self, _ctx: &PluginContext, _device: &DeviceSnapshot) {}
+    async fn paired(&self, _ctx: &PluginContext, _device: &DeviceSnapshot) {}
 
     /// The device's connection closed, or the device was forgotten while
     /// connected. Called before the core publishes the device's new state,
     /// so state cleared here needs no [`PluginContext::device_changed`].
-    fn disconnected(&self, _ctx: &PluginContext, _device_id: &str) {}
+    async fn disconnected(&self, _ctx: &PluginContext, _device_id: &str) {}
 
     /// The device is no longer paired: it unpaired us, or it was forgotten.
     /// Called before the core publishes the device's new state, as for
     /// [`Self::disconnected`].
-    fn unpaired(&self, _ctx: &PluginContext, _device_id: &str) {}
+    async fn unpaired(&self, _ctx: &PluginContext, _device_id: &str) {}
 
     /// The daemon started: called once, inside the async runtime, before
     /// the LAN transport and the API start, for a plugin that runs work of
     /// its own (e.g. watching something on this machine). A core built
     /// without the daemon, as in unit tests, never calls it.
-    fn started(self: Arc<Self>, _ctx: &PluginContext) {}
+    async fn started(self: Arc<Self>, _ctx: &PluginContext) {}
 
     /// The daemon is stopping: end the plugin's own work and close what it
     /// holds open. Called once, after the API and LAN transport have
@@ -113,6 +122,31 @@ pub struct PluginContext {
 }
 
 impl PluginContext {
+    /// Finish persistence and its memory effects even if an API caller
+    /// disappears. Daemon shutdown drains these mutations before plugins.
+    pub(crate) async fn mutate<R, E>(
+        &self,
+        future: impl std::future::Future<Output = Result<R, E>> + Send + 'static,
+    ) -> Result<R, E>
+    where
+        R: Send + 'static,
+        E: From<CoreError> + Send + 'static,
+    {
+        self.core
+            .mutations
+            .spawn(future)
+            .await
+            .map_err(|_| E::from(CoreError::StateUnavailable))?
+    }
+
+    /// Serialize a persisted device setting with disconnect and forgetting.
+    pub(crate) async fn device_operation(
+        &self,
+        device_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.core.device_operation(device_id).lock_owned().await
+    }
+
     pub(super) fn new(core: Core) -> Self {
         Self { core }
     }
@@ -302,33 +336,33 @@ impl PluginRegistry {
             .collect()
     }
 
-    pub fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
+    pub async fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
         for plugin in &self.plugins {
-            plugin.connected(ctx, device);
+            plugin.connected(ctx, device).await;
         }
     }
 
-    pub fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
+    pub async fn paired(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
         for plugin in &self.plugins {
-            plugin.paired(ctx, device);
+            plugin.paired(ctx, device).await;
         }
     }
 
-    pub fn disconnected(&self, ctx: &PluginContext, device_id: &str) {
+    pub async fn disconnected(&self, ctx: &PluginContext, device_id: &str) {
         for plugin in &self.plugins {
-            plugin.disconnected(ctx, device_id);
+            plugin.disconnected(ctx, device_id).await;
         }
     }
 
-    pub fn unpaired(&self, ctx: &PluginContext, device_id: &str) {
+    pub async fn unpaired(&self, ctx: &PluginContext, device_id: &str) {
         for plugin in &self.plugins {
-            plugin.unpaired(ctx, device_id);
+            plugin.unpaired(ctx, device_id).await;
         }
     }
 
-    pub fn started(&self, ctx: &PluginContext) {
+    pub async fn started(&self, ctx: &PluginContext) {
         for plugin in &self.plugins {
-            plugin.clone().started(ctx);
+            plugin.clone().started(ctx).await;
         }
     }
 
@@ -389,6 +423,7 @@ mod tests {
 
     struct Claims(&'static str, &'static [&'static str]);
 
+    #[async_trait::async_trait]
     impl Plugin for Claims {
         fn id(&self) -> &'static str {
             self.0
@@ -399,7 +434,7 @@ mod tests {
         fn outgoing(&self) -> &'static [&'static str] {
             &[]
         }
-        fn handle_packet(&self, _: &PluginContext, _: &DeviceSnapshot, _: &Packet) {}
+        async fn handle_packet(&self, _: &PluginContext, _: &DeviceSnapshot, _: &Packet) {}
     }
 
     #[test]
@@ -431,6 +466,7 @@ mod tests {
         }
     }
 
+    #[async_trait::async_trait]
     impl Plugin for Waver {
         fn id(&self) -> &'static str {
             "wave"
@@ -440,14 +476,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn plugins_send_only_to_paired_connected_devices_that_accept_the_packet_type() {
+    #[tokio::test]
+    async fn plugins_send_only_to_paired_connected_devices_that_accept_the_packet_type() {
         use tokio::sync::mpsc;
         use tokio_util::sync::CancellationToken;
 
         use crate::core::testing::{handle, make_identity};
 
-        let (handle, _commands) = handle();
+        let (handle, _commands) = handle().await;
         let ctx = handle.plugin_context();
         let device_id = "740bd4b9b4184ee497d6caf1da8151be";
         assert_eq!(Waver.outgoing(), [Waver::PACKET_TYPE]);
@@ -476,6 +512,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         handle
             .register_connection(device_id, vec![1, 2, 3], 8, tx, CancellationToken::new(), 3)
+            .await
             .unwrap();
         assert!(matches!(
             Waver::wave(&ctx, device_id),
@@ -489,15 +526,15 @@ mod tests {
         assert_eq!(rx.try_recv().unwrap().packet_type, Waver::PACKET_TYPE);
     }
 
-    #[test]
-    fn broadcasts_reach_every_paired_connected_device_that_accepts_them_but_one() {
+    #[tokio::test]
+    async fn broadcasts_reach_every_paired_connected_device_that_accepts_them_but_one() {
         use tokio::sync::mpsc;
         use tokio_util::sync::CancellationToken;
 
         use crate::core::testing::{handle, make_identity};
 
-        let (handle, _commands) = handle();
-        let connect = |device_id: &str, paired: bool, accepts: bool| {
+        let (handle, _commands) = handle().await;
+        let connect = async |device_id: &str, paired: bool, accepts: bool| {
             let capabilities = if accepts {
                 vec![Waver::PACKET_TYPE.into()]
             } else {
@@ -509,13 +546,14 @@ mod tests {
             let (tx, rx) = mpsc::channel(4);
             handle
                 .register_connection(device_id, vec![1], 8, tx, CancellationToken::new(), 1)
+                .await
                 .unwrap();
             rx
         };
-        let mut source = connect("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true, true);
-        let mut other = connect("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", true, true);
-        let mut unpaired = connect("cccccccccccccccccccccccccccccccc", false, true);
-        let mut refusing = connect("dddddddddddddddddddddddddddddddd", true, false);
+        let mut source = connect("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true, true).await;
+        let mut other = connect("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", true, true).await;
+        let mut unpaired = connect("cccccccccccccccccccccccccccccccc", false, true).await;
+        let mut refusing = connect("dddddddddddddddddddddddddddddddd", true, false).await;
 
         let packet = Packet::from_body(1_u64, Waver::PACKET_TYPE, &serde_json::json!({})).unwrap();
         handle
@@ -543,5 +581,80 @@ mod tests {
             Arc::new(Claims("a", &["x.one"])),
             Arc::new(Claims("b", &["x.one"])),
         ]);
+    }
+    #[derive(Default)]
+    struct WaitingPlugin {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        has_state: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl Plugin for WaitingPlugin {
+        fn id(&self) -> &'static str {
+            "waiting"
+        }
+        fn incoming(&self) -> &'static [&'static str] {
+            &["test.wait"]
+        }
+        fn outgoing(&self) -> &'static [&'static str] {
+            &[]
+        }
+        async fn handle_packet(&self, _: &PluginContext, _: &DeviceSnapshot, _: &Packet) {
+            self.entered.notify_one();
+            self.release.notified().await;
+            self.has_state
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn device_state(&self, _: &PluginContext, _: &DeviceSnapshot) -> Option<Value> {
+            Some(Value::Bool(
+                self.has_state.load(std::sync::atomic::Ordering::SeqCst),
+            ))
+        }
+        async fn disconnected(&self, _: &PluginContext, _: &str) {
+            self.has_state
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn cleanup_follows_an_in_progress_callback_without_blocking_snapshots() {
+        use crate::core::testing::{handle_with_plugin, make_identity};
+        use tokio::sync::mpsc;
+        use tokio_util::sync::CancellationToken;
+        const PEER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let (core, plugin, _) = handle_with_plugin(WaitingPlugin::default()).await;
+        core.discover_device(&make_identity(PEER, Vec::new()), true, 1)
+            .unwrap();
+        let (sender, _receiver) = mpsc::channel(4);
+        core.register_connection(PEER, vec![1], 8, sender, CancellationToken::new(), 1)
+            .await
+            .unwrap();
+        let handling = tokio::spawn({
+            let core = core.clone();
+            async move {
+                core.handle_peer_packet(
+                    PEER,
+                    Packet::from_body(1, "test.wait", &serde_json::json!({})).unwrap(),
+                )
+                .await
+            }
+        });
+        plugin.entered.notified().await;
+        let forgetting = tokio::spawn({
+            let core = core.clone();
+            async move { core.forget_device(PEER).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!forgetting.is_finished());
+        assert_eq!(
+            core.device(PEER).unwrap().plugins["waiting"],
+            Value::Bool(false)
+        );
+        plugin.release.notify_one();
+        handling.await.unwrap();
+        forgetting.await.unwrap().unwrap();
+        assert!(core.device(PEER).is_none());
+        assert!(!plugin.has_state.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

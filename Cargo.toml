@@ -132,6 +132,8 @@ fluent-bundle = { version = "0.16", optional = true }
 # Reads and writes `.ftl` files: the en-XA pseudo-locale is made from
 # en-US's (`ui::i18n::pseudo`); already in the tree through `i18n-embed`.
 fluent-syntax = { version = "0.12", optional = true }
+deadpool-sqlite = { version = "0.14", features = ["tracing"] }
+async-trait = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 # The uid in the single-instance socket's name (`gui`).

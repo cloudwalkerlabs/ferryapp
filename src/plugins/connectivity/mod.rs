@@ -81,6 +81,7 @@ impl ConnectivityPlugin {
     }
 }
 
+#[async_trait::async_trait]
 impl Plugin for ConnectivityPlugin {
     fn id(&self) -> &'static str {
         ID
@@ -94,7 +95,7 @@ impl Plugin for ConnectivityPlugin {
         &[]
     }
 
-    fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
+    async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
         let Ok(body) = packet.body_as::<ConnectivityBody>() else {
             tracing::debug!(
                 device_id = device.device_id,
@@ -118,11 +119,11 @@ impl Plugin for ConnectivityPlugin {
         serde_json::to_value(reports.get(&device.device_id)?).ok()
     }
 
-    fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
+    async fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
         self.set(device_id, None);
     }
 
-    fn unpaired(&self, _ctx: &PluginContext, device_id: &str) {
+    async fn unpaired(&self, _ctx: &PluginContext, device_id: &str) {
         self.set(device_id, None);
     }
 }
@@ -157,14 +158,15 @@ mod tests {
     }
 
     /// A paired device, connected, with events subscribed after it was.
-    fn connected() -> (Core, tokio::sync::broadcast::Receiver<CoreEvent>) {
-        let (handle, _plugin, _commands) = handle_with_plugin(ConnectivityPlugin::default());
+    async fn connected() -> (Core, tokio::sync::broadcast::Receiver<CoreEvent>) {
+        let (handle, _plugin, _commands) = handle_with_plugin(ConnectivityPlugin::default()).await;
         handle
             .discover_device(&make_identity(PAIRED_ID, Vec::new()), true, 1)
             .unwrap();
         let (tx, _rx) = mpsc::channel(4);
         handle
             .register_connection(PAIRED_ID, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
         let events = handle.subscribe();
         (handle, events)
@@ -174,20 +176,22 @@ mod tests {
         events.try_recv().unwrap().event
     }
 
-    #[test]
-    fn reports_from_paired_devices_update_the_device_once_per_change() {
-        let (handle, mut events) = connected();
+    #[tokio::test]
+    async fn reports_from_paired_devices_update_the_device_once_per_change() {
+        let (handle, mut events) = connected().await;
         let unpaired_id = "850bd4b9b4184ee497d6caf1da8151be";
         handle
             .discover_device(&make_identity(unpaired_id, Vec::new()), false, 1)
             .unwrap();
         let _ = device_event(&mut events);
 
-        handle.handle_peer_packet(unpaired_id, report("LTE", 2));
+        handle
+            .handle_peer_packet(unpaired_id, report("LTE", 2))
+            .await;
         assert_eq!(connectivity(&handle, unpaired_id), None);
         assert!(events.try_recv().is_err());
 
-        handle.handle_peer_packet(PAIRED_ID, report("LTE", 3));
+        handle.handle_peer_packet(PAIRED_ID, report("LTE", 3)).await;
         let EventData::DeviceUpdated(device) = device_event(&mut events) else {
             panic!("expected device.updated");
         };
@@ -200,10 +204,10 @@ mod tests {
         assert_eq!(connectivity(&handle, PAIRED_ID), Connectivity::of(&device));
 
         // A repeat changes nothing, so it publishes nothing.
-        handle.handle_peer_packet(PAIRED_ID, report("LTE", 3));
+        handle.handle_peer_packet(PAIRED_ID, report("LTE", 3)).await;
         assert!(events.try_recv().is_err());
 
-        handle.handle_peer_packet(PAIRED_ID, report("5G", 3));
+        handle.handle_peer_packet(PAIRED_ID, report("5G", 3)).await;
         let EventData::DeviceUpdated(device) = device_event(&mut events) else {
             panic!("expected device.updated");
         };
@@ -215,7 +219,7 @@ mod tests {
         // A report of no SIMs removes it.
         let no_sims =
             Packet::from_body(3_u64, PACKET_TYPE, &json!({"signalStrengths": {}})).unwrap();
-        handle.handle_peer_packet(PAIRED_ID, no_sims);
+        handle.handle_peer_packet(PAIRED_ID, no_sims).await;
         let EventData::DeviceUpdated(device) = device_event(&mut events) else {
             panic!("expected device.updated");
         };
@@ -223,13 +227,13 @@ mod tests {
         assert!(events.try_recv().is_err());
     }
 
-    #[test]
-    fn the_report_is_dropped_when_the_device_disconnects() {
-        let (handle, mut events) = connected();
-        handle.handle_peer_packet(PAIRED_ID, report("LTE", 3));
+    #[tokio::test]
+    async fn the_report_is_dropped_when_the_device_disconnects() {
+        let (handle, mut events) = connected().await;
+        handle.handle_peer_packet(PAIRED_ID, report("LTE", 3)).await;
         let _ = device_event(&mut events);
 
-        handle.unregister_connection(PAIRED_ID);
+        handle.unregister_connection(PAIRED_ID).await;
         let EventData::DeviceDisconnected(device) = device_event(&mut events) else {
             panic!("expected device.disconnected");
         };
@@ -238,14 +242,14 @@ mod tests {
         assert_eq!(connectivity(&handle, PAIRED_ID), None);
     }
 
-    #[test]
-    fn the_report_is_dropped_when_the_peer_unpairs() {
-        let (handle, mut events) = connected();
-        handle.handle_peer_packet(PAIRED_ID, report("LTE", 3));
+    #[tokio::test]
+    async fn the_report_is_dropped_when_the_peer_unpairs() {
+        let (handle, mut events) = connected().await;
+        handle.handle_peer_packet(PAIRED_ID, report("LTE", 3)).await;
         let _ = device_event(&mut events);
 
         let unpair = Packet::from_body(3_u64, "kdeconnect.pair", &json!({"pair": false})).unwrap();
-        handle.handle_peer_packet(PAIRED_ID, unpair);
+        handle.handle_peer_packet(PAIRED_ID, unpair).await;
         let EventData::DeviceUpdated(device) = device_event(&mut events) else {
             panic!("expected device.updated");
         };

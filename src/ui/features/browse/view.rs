@@ -488,7 +488,7 @@ mod tests {
 
     #[tokio::test]
     async fn hidden_files_can_be_shown() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         assert!(!browser.shows(".nomedia"));
         browser.click(widget::Id::from("Show hidden files")).await;
@@ -499,7 +499,7 @@ mod tests {
 
     #[tokio::test]
     async fn columns_sort_both_ways_with_folders_first() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         let order = |browser: &Browser| {
             let mut names = ["DCIM", "notes.txt", "photo.png"];
@@ -518,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn modified_shows_only_on_a_wide_window() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         let narrow = Simulator::with_size(Default::default(), (500.0, 600.0), browser.page())
             .find("Sep 24, 2026, 2:03\u{A0}PM")
@@ -529,7 +529,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_files() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(None).await;
         testing::snapshot("files-storage", (720.0, 420.0), || browser.page());
         browser.go(Some(&format!("{INTERNAL}/DCIM/Camera"))).await;
@@ -551,7 +551,7 @@ mod tests {
         browser.click("photo.png").await;
         testing::snapshot("files-preview", (720.0, 520.0), || browser.page());
 
-        let mut browser = Browser::with_device(testing::device("Pixel"));
+        let mut browser = Browser::with_device(testing::device("Pixel")).await;
         browser.go(None).await;
         testing::snapshot("files-not-shared", (440.0, 320.0), || browser.page());
     }

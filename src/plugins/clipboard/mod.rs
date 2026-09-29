@@ -127,11 +127,13 @@ impl ClipboardSyncError {
     }
 }
 
+#[derive(Clone)]
 pub struct ClipboardPlugin {
     backend: Arc<dyn ClipboardService + Send + Sync>,
-    synced: Mutex<Synced>,
+    synced: Arc<Mutex<Synced>>,
+    settings_updates: Arc<tokio::sync::Mutex<()>>,
     /// Following the backend's local changes, once the daemon has started.
-    follower: Mutex<Option<JoinHandle<()>>>,
+    follower: Arc<Mutex<Option<JoinHandle<()>>>>,
     /// Stops the follower at shutdown.
     shutdown: CancellationToken,
 }
@@ -140,8 +142,9 @@ impl ClipboardPlugin {
     pub fn new(backend: Arc<dyn ClipboardService + Send + Sync>) -> Self {
         Self {
             backend,
-            synced: Mutex::default(),
-            follower: Mutex::default(),
+            synced: Arc::default(),
+            settings_updates: Arc::default(),
+            follower: Arc::default(),
             shutdown: CancellationToken::new(),
         }
     }
@@ -153,23 +156,31 @@ impl ClipboardPlugin {
 
     /// Turn sync on or off, keeping the choice in the store. Setting what
     /// is already in effect changes nothing and publishes no event.
-    pub fn set_sync_enabled(
+    pub async fn set_sync_enabled(
         &self,
         ctx: &PluginContext,
         enabled: bool,
     ) -> Result<ClipboardSnapshot, ClipboardSyncError> {
-        let snapshot = {
-            // Held across the write, so that two changes can't both see
-            // the old value.
-            let synced = self.lock();
-            if sync_enabled(ctx) == enabled {
-                return Ok(synced.snapshot(enabled));
-            }
-            ctx.store()
-                .set(&SYNC_ENABLED, &enabled)
-                .map_err(CoreError::Store)?;
-            synced.snapshot(enabled)
-        };
+        let plugin = self.clone();
+        let context = ctx.clone();
+        ctx.mutate(async move { plugin.set_sync_enabled_inner(&context, enabled).await })
+            .await
+    }
+
+    async fn set_sync_enabled_inner(
+        &self,
+        ctx: &PluginContext,
+        enabled: bool,
+    ) -> Result<ClipboardSnapshot, ClipboardSyncError> {
+        let _update = self.settings_updates.lock().await;
+        if sync_enabled(ctx) == enabled {
+            return Ok(self.lock().snapshot(enabled));
+        }
+        ctx.store()
+            .set(&SYNC_ENABLED, &enabled)
+            .await
+            .map_err(CoreError::Store)?;
+        let snapshot = self.lock().snapshot(enabled);
         ctx.publish(&snapshot)?;
         Ok(snapshot)
     }
@@ -271,7 +282,7 @@ impl ClipboardPlugin {
     /// not strictly newer than ours is ignored. Text we already have is
     /// always ignored, which is also what keeps two devices from bouncing
     /// text back and forth.
-    fn apply_remote(
+    async fn apply_remote(
         &self,
         ctx: &PluginContext,
         device_id: &str,
@@ -308,7 +319,9 @@ impl ClipboardPlugin {
             };
             synced.snapshot(true)
         };
-        let _ = self.backend.set(&content);
+        let backend = self.backend.clone();
+        let copied = content.clone();
+        let _ = tokio::task::spawn_blocking(move || backend.set(&copied)).await;
         let _ = ctx.publish(&snapshot);
         // Forward to other paired devices, but never back to the one the
         // text just came from.
@@ -320,6 +333,7 @@ impl ClipboardPlugin {
     }
 }
 
+#[async_trait::async_trait]
 impl Plugin for ClipboardPlugin {
     fn id(&self) -> &'static str {
         ID
@@ -333,7 +347,7 @@ impl Plugin for ClipboardPlugin {
         &[PACKET_TYPE, CONNECT_PACKET_TYPE]
     }
 
-    fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
+    async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
         let device_id = &device.device_id;
         let (content, timestamp) = match packet.packet_type.as_str() {
             PACKET_TYPE => match packet.body_as::<ClipboardBody>() {
@@ -351,7 +365,7 @@ impl Plugin for ClipboardPlugin {
                 }
             },
         };
-        self.apply_remote(ctx, device_id, content, timestamp);
+        self.apply_remote(ctx, device_id, content, timestamp).await;
     }
 
     fn routes(self: Arc<Self>, ctx: PluginContext) -> Router {
@@ -359,7 +373,7 @@ impl Plugin for ClipboardPlugin {
     }
 
     /// Follow text copied on this machine, if the backend reports it.
-    fn started(self: Arc<Self>, ctx: &PluginContext) {
+    async fn started(self: Arc<Self>, ctx: &PluginContext) {
         let Some(changes) = self.backend.watch_local_changes() else {
             return;
         };
@@ -398,7 +412,7 @@ impl Plugin for ClipboardPlugin {
 
     /// Offer the device our text, so it can adopt it if it is newer than
     /// its own. Nothing is sent while sync is off or before there is text.
-    fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
+    async fn connected(&self, ctx: &PluginContext, device: &DeviceSnapshot) {
         if !sync_enabled(ctx) {
             return;
         }
@@ -417,7 +431,7 @@ impl Plugin for ClipboardPlugin {
 /// Whether sync is on: [`SYNC_ENABLED`], or on if it can't be read.
 fn sync_enabled(ctx: &PluginContext) -> bool {
     ctx.store()
-        .get(&SYNC_ENABLED)
+        .cached(&SYNC_ENABLED)
         .inspect_err(|error| tracing::warn!(%error, "ignoring unreadable clipboard sync setting"))
         .ok()
         .flatten()
@@ -454,14 +468,14 @@ mod tests {
     const OTHER_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     /// A core with the clipboard plugin, and the plugin's context.
-    fn clipboard() -> (Core, Arc<ClipboardPlugin>, PluginContext) {
+    async fn clipboard() -> (Core, Arc<ClipboardPlugin>, PluginContext) {
         let (handle, plugin, _commands) =
-            handle_with_plugin(ClipboardPlugin::new(InMemoryClipboard::shared()));
+            handle_with_plugin(ClipboardPlugin::new(InMemoryClipboard::shared())).await;
         let ctx = handle.plugin_context();
         (handle, plugin, ctx)
     }
 
-    fn connect_paired_peer(handle: &Core, device_id: &str) -> mpsc::Receiver<Packet> {
+    async fn connect_paired_peer(handle: &Core, device_id: &str) -> mpsc::Receiver<Packet> {
         let identity = make_identity(
             device_id,
             vec![PACKET_TYPE.into(), CONNECT_PACKET_TYPE.into()],
@@ -470,12 +484,13 @@ mod tests {
         let (tx, rx) = mpsc::channel(4);
         handle
             .register_connection(device_id, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
         rx
     }
 
-    fn set_sync_enabled(plugin: &ClipboardPlugin, ctx: &PluginContext, enabled: bool) {
-        plugin.set_sync_enabled(ctx, enabled).unwrap();
+    async fn set_sync_enabled(plugin: &ClipboardPlugin, ctx: &PluginContext, enabled: bool) {
+        plugin.set_sync_enabled(ctx, enabled).await.unwrap();
     }
 
     fn content(packet: &Packet) -> String {
@@ -483,11 +498,11 @@ mod tests {
         packet.body_as::<ClipboardBody>().unwrap().content
     }
 
-    #[test]
-    fn setting_text_updates_the_snapshot_and_sends_it_to_paired_peers() {
-        let (handle, plugin, ctx) = clipboard();
+    #[tokio::test]
+    async fn setting_text_updates_the_snapshot_and_sends_it_to_paired_peers() {
+        let (handle, plugin, ctx) = clipboard().await;
         // Empty clipboard: nothing is offered on connecting.
-        let mut rx = connect_paired_peer(&handle, DEVICE_ID);
+        let mut rx = connect_paired_peer(&handle, DEVICE_ID).await;
         assert!(rx.try_recv().is_err());
         let mut events = handle.subscribe();
 
@@ -504,10 +519,10 @@ mod tests {
         assert_eq!(event.decode::<ClipboardSnapshot>(), Some(snapshot));
     }
 
-    #[test]
-    fn setting_identical_text_is_a_no_op() {
-        let (handle, plugin, ctx) = clipboard();
-        let mut rx = connect_paired_peer(&handle, DEVICE_ID);
+    #[tokio::test]
+    async fn setting_identical_text_is_a_no_op() {
+        let (handle, plugin, ctx) = clipboard().await;
+        let mut rx = connect_paired_peer(&handle, DEVICE_ID).await;
 
         plugin.set_text(&ctx, "hello".into()).unwrap();
         rx.try_recv().unwrap();
@@ -518,9 +533,9 @@ mod tests {
         assert!(events.try_recv().is_err());
     }
 
-    #[test]
-    fn oversized_text_is_rejected() {
-        let (_handle, plugin, ctx) = clipboard();
+    #[tokio::test]
+    async fn oversized_text_is_rejected() {
+        let (_handle, plugin, ctx) = clipboard().await;
         let oversized = "x".repeat(MAX_CLIPBOARD_TEXT_BYTES + 1);
         assert!(matches!(
             plugin.set_text(&ctx, oversized),
@@ -528,13 +543,15 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn remote_text_is_applied_and_forwarded_but_not_echoed_back() {
-        let (handle, plugin, ctx) = clipboard();
-        let mut sender_rx = connect_paired_peer(&handle, DEVICE_ID);
-        let mut other_rx = connect_paired_peer(&handle, OTHER_ID);
+    #[tokio::test]
+    async fn remote_text_is_applied_and_forwarded_but_not_echoed_back() {
+        let (handle, plugin, ctx) = clipboard().await;
+        let mut sender_rx = connect_paired_peer(&handle, DEVICE_ID).await;
+        let mut other_rx = connect_paired_peer(&handle, OTHER_ID).await;
 
-        handle.handle_peer_packet(DEVICE_ID, build_packet(1_u64, "from peer".into()).unwrap());
+        handle
+            .handle_peer_packet(DEVICE_ID, build_packet(1_u64, "from peer".into()).unwrap())
+            .await;
 
         let snapshot = plugin.snapshot(&ctx);
         assert_eq!(snapshot.text, "from peer");
@@ -546,21 +563,23 @@ mod tests {
         assert_eq!(content(&other_rx.try_recv().unwrap()), "from peer");
     }
 
-    #[test]
-    fn text_from_unpaired_devices_is_ignored() {
-        let (handle, plugin, ctx) = clipboard();
+    #[tokio::test]
+    async fn text_from_unpaired_devices_is_ignored() {
+        let (handle, plugin, ctx) = clipboard().await;
         handle
             .discover_device(&make_identity(DEVICE_ID, Vec::new()), false, 1)
             .unwrap();
-        handle.handle_peer_packet(DEVICE_ID, build_packet(1_u64, "sneaky".into()).unwrap());
+        handle
+            .handle_peer_packet(DEVICE_ID, build_packet(1_u64, "sneaky".into()).unwrap())
+            .await;
         assert_eq!(plugin.snapshot(&ctx).text, "");
     }
 
-    #[test]
-    fn duplicate_remote_text_is_ignored() {
-        let (handle, plugin, ctx) = clipboard();
+    #[tokio::test]
+    async fn duplicate_remote_text_is_ignored() {
+        let (handle, plugin, ctx) = clipboard().await;
         plugin.set_text(&ctx, "hello".into()).unwrap();
-        let mut rx = connect_paired_peer(&handle, DEVICE_ID);
+        let mut rx = connect_paired_peer(&handle, DEVICE_ID).await;
         // Offered on connecting, because the clipboard has text.
         let offered = rx.try_recv().unwrap();
         assert_eq!(offered.packet_type, CONNECT_PACKET_TYPE);
@@ -569,35 +588,37 @@ mod tests {
         assert_eq!(body.timestamp, plugin.snapshot(&ctx).updated_at as i64);
 
         let mut events = handle.subscribe();
-        handle.handle_peer_packet(DEVICE_ID, build_packet(1_u64, "hello".into()).unwrap());
+        handle
+            .handle_peer_packet(DEVICE_ID, build_packet(1_u64, "hello".into()).unwrap())
+            .await;
         assert!(rx.try_recv().is_err());
         assert!(events.try_recv().is_err());
     }
 
-    #[test]
-    fn connect_text_is_applied_only_when_newer() {
-        let (handle, plugin, ctx) = clipboard();
+    #[tokio::test]
+    async fn connect_text_is_applied_only_when_newer() {
+        let (handle, plugin, ctx) = clipboard().await;
         let newer = plugin.set_text(&ctx, "newer".into()).unwrap();
-        let _rx = connect_paired_peer(&handle, DEVICE_ID);
+        let _rx = connect_paired_peer(&handle, DEVICE_ID).await;
 
         let stale =
             build_connect_packet(1_u64, "older".into(), newer.updated_at as i64 - 1000).unwrap();
-        handle.handle_peer_packet(DEVICE_ID, stale);
+        handle.handle_peer_packet(DEVICE_ID, stale).await;
         assert_eq!(plugin.snapshot(&ctx).text, "newer");
 
         let fresh =
             build_connect_packet(1_u64, "fresh".into(), newer.updated_at as i64 + 1000).unwrap();
-        handle.handle_peer_packet(DEVICE_ID, fresh);
+        handle.handle_peer_packet(DEVICE_ID, fresh).await;
         let snapshot = plugin.snapshot(&ctx);
         assert_eq!(snapshot.text, "fresh");
         assert_eq!(snapshot.updated_at, newer.updated_at + 1000);
     }
 
-    #[test]
-    fn text_is_sent_on_request_to_one_capable_device() {
-        let (handle, plugin, ctx) = clipboard();
-        let mut rx = connect_paired_peer(&handle, DEVICE_ID);
-        let mut other_rx = connect_paired_peer(&handle, OTHER_ID);
+    #[tokio::test]
+    async fn text_is_sent_on_request_to_one_capable_device() {
+        let (handle, plugin, ctx) = clipboard().await;
+        let mut rx = connect_paired_peer(&handle, DEVICE_ID).await;
+        let mut other_rx = connect_paired_peer(&handle, OTHER_ID).await;
 
         assert!(matches!(
             plugin.send_to(&ctx, DEVICE_ID),
@@ -613,20 +634,21 @@ mod tests {
 
         // Unlike automatic sync, it resends unchanged text, and works while
         // sync is off.
-        set_sync_enabled(&plugin, &ctx, false);
+        set_sync_enabled(&plugin, &ctx, false).await;
         plugin.send_to(&ctx, DEVICE_ID).unwrap();
         rx.try_recv().unwrap();
     }
 
-    #[test]
-    fn text_is_not_sent_to_devices_without_the_capability() {
-        let (handle, plugin, ctx) = clipboard();
+    #[tokio::test]
+    async fn text_is_not_sent_to_devices_without_the_capability() {
+        let (handle, plugin, ctx) = clipboard().await;
         handle
             .discover_device(&make_identity(DEVICE_ID, Vec::new()), true, 1)
             .unwrap();
         let (tx, mut rx) = mpsc::channel(4);
         handle
             .register_connection(DEVICE_ID, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
         plugin.set_text(&ctx, "hello".into()).unwrap();
         assert!(rx.try_recv().is_err(), "neither offered nor synced");
@@ -641,11 +663,11 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn turning_sync_off_stops_sending_and_applying() {
-        let (handle, plugin, ctx) = clipboard();
-        let mut rx = connect_paired_peer(&handle, DEVICE_ID);
-        set_sync_enabled(&plugin, &ctx, false);
+    #[tokio::test]
+    async fn turning_sync_off_stops_sending_and_applying() {
+        let (handle, plugin, ctx) = clipboard().await;
+        let mut rx = connect_paired_peer(&handle, DEVICE_ID).await;
+        set_sync_enabled(&plugin, &ctx, false).await;
         assert!(!plugin.snapshot(&ctx).sync_enabled);
 
         // A local change no longer reaches the peer...
@@ -653,21 +675,23 @@ mod tests {
         assert!(rx.try_recv().is_err());
 
         // ...and text from the peer is not applied...
-        handle.handle_peer_packet(DEVICE_ID, build_packet(1_u64, "from peer".into()).unwrap());
+        handle
+            .handle_peer_packet(DEVICE_ID, build_packet(1_u64, "from peer".into()).unwrap())
+            .await;
         assert_eq!(plugin.snapshot(&ctx).text, "local only");
 
         // ...nor offered to a device that connects.
-        let mut late_rx = connect_paired_peer(&handle, OTHER_ID);
+        let mut late_rx = connect_paired_peer(&handle, OTHER_ID).await;
         assert!(late_rx.try_recv().is_err());
 
-        set_sync_enabled(&plugin, &ctx, true);
+        set_sync_enabled(&plugin, &ctx, true).await;
         plugin.set_text(&ctx, "resumed".into()).unwrap();
         assert_eq!(content(&rx.try_recv().unwrap()), "resumed");
     }
 
-    #[test]
-    fn sync_is_on_by_default_and_a_change_is_stored_and_announced() {
-        let (handle, plugin, ctx) = clipboard();
+    #[tokio::test]
+    async fn sync_is_on_by_default_and_a_change_is_stored_and_announced() {
+        let (handle, plugin, ctx) = clipboard().await;
         plugin.set_text(&ctx, "hello".into()).unwrap();
         assert!(plugin.snapshot(&ctx).sync_enabled, "on by default");
         assert_eq!(
@@ -676,10 +700,10 @@ mod tests {
         );
         let mut events = handle.subscribe();
 
-        let snapshot = plugin.set_sync_enabled(&ctx, false).unwrap();
+        let snapshot = plugin.set_sync_enabled(&ctx, false).await.unwrap();
         assert!(!snapshot.sync_enabled);
         assert_eq!(snapshot.text, "hello", "the text is left alone");
-        assert_eq!(ctx.store().get(&SYNC_ENABLED).unwrap(), Some(false));
+        assert_eq!(ctx.store().cached(&SYNC_ENABLED).unwrap(), Some(false));
         assert_eq!(plugin.snapshot(&ctx), snapshot);
         let EventData::Plugin(event) = events.try_recv().unwrap().event else {
             panic!("expected a plugin event");
@@ -687,14 +711,14 @@ mod tests {
         assert_eq!(event.decode::<ClipboardSnapshot>(), Some(snapshot));
 
         // Setting it again changes nothing.
-        plugin.set_sync_enabled(&ctx, false).unwrap();
+        plugin.set_sync_enabled(&ctx, false).await.unwrap();
         assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]
     async fn local_changes_are_synced_while_sync_is_on() {
-        let (handle, plugin, ctx) = clipboard();
-        let mut rx = connect_paired_peer(&handle, DEVICE_ID);
+        let (handle, plugin, ctx) = clipboard().await;
+        let mut rx = connect_paired_peer(&handle, DEVICE_ID).await;
         let (changes, receiver) = watch::channel(None);
         let shutdown = CancellationToken::new();
         let follower = plugin
@@ -708,7 +732,7 @@ mod tests {
             .unwrap();
         assert_eq!(content(&sent), "copied");
 
-        set_sync_enabled(&plugin, &ctx, false);
+        set_sync_enabled(&plugin, &ctx, false).await;
         changes.send_replace(Some("private".into()));
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(plugin.snapshot(&ctx).text, "copied");
@@ -753,10 +777,10 @@ mod tests {
             released: Default::default(),
         });
         let (handle, _plugin, _commands) =
-            handle_with_plugin(ClipboardPlugin::new(backend.clone()));
-        let mut rx = connect_paired_peer(&handle, DEVICE_ID);
+            handle_with_plugin(ClipboardPlugin::new(backend.clone())).await;
+        let mut rx = connect_paired_peer(&handle, DEVICE_ID).await;
 
-        handle.start_plugins();
+        handle.start_plugins().await;
         backend.changes.send_replace(Some("copied".into()));
         let sent = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await

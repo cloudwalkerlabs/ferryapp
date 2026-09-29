@@ -35,10 +35,10 @@ struct Peer {
     _directory: tempfile::TempDir,
 }
 
-fn peer(name: &str) -> Peer {
+async fn peer(name: &str) -> Peer {
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path()).unwrap();
-    let identity = Arc::new(LocalIdentity::load_or_create(&store).unwrap());
+    let store = Store::open(directory.path()).await.unwrap();
+    let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
     let public_key_der = subject_public_key_info(identity.certificate_der()).unwrap();
     let (application, commands) = Core::new(
         LocalDeviceSnapshot {
@@ -55,6 +55,7 @@ fn peer(name: &str) -> Peer {
         ferry::core::TransferConfig::new(directory.path().join("downloads"))
             .with_payload_bind_ip(Ipv4Addr::LOCALHOST),
     )
+    .await
     .unwrap();
     Peer {
         identity,
@@ -125,8 +126,8 @@ async fn wait_for_paired(application: &Core, device_id: &str, expected: bool) {
 
 #[tokio::test]
 async fn valid_peer_pairs_reconnects_with_pinned_trust_and_unpairs() {
-    let a = peer("Peer A");
-    let b = peer("Peer B");
+    let a = peer("Peer A").await;
+    let b = peer("Peer B").await;
     let a_id = a.identity.device_id().to_owned();
     let b_id = b.identity.device_id().to_owned();
     let a_udp = free_udp_addr();
@@ -158,12 +159,13 @@ async fn valid_peer_pairs_reconnects_with_pinned_trust_and_unpairs() {
     wait_for_reachability(&a.application, &b_id, DeviceReachability::Connected).await;
     wait_for_reachability(&b.application, &a_id, DeviceReachability::Connected).await;
 
+    // Subscribe before the awaited request can reach B.
+    let mut b_events = b.application.subscribe();
     // A initiates pairing.
-    let pairing = a.application.start_outgoing_pairing(&b_id).unwrap();
+    let pairing = a.application.start_outgoing_pairing(&b_id).await.unwrap();
     assert_eq!(pairing.direction, PairingDirection::Outgoing);
 
     // B observes the incoming request and the matching verification code.
-    let mut b_events = b.application.subscribe();
     let incoming = timeout(Duration::from_secs(2), async {
         loop {
             let event = b_events.recv().await.unwrap();
@@ -178,13 +180,13 @@ async fn valid_peer_pairs_reconnects_with_pinned_trust_and_unpairs() {
     assert_eq!(incoming.verification_code, pairing.verification_code);
 
     // B confirms; both ends converge on Accepted and paired.
-    let accepted = b.application.accept_pairing(incoming.id).unwrap();
+    let accepted = b.application.accept_pairing(incoming.id).await.unwrap();
     assert_eq!(accepted.status, PairingStatus::Accepted);
     wait_for_paired(&a.application, &b_id, true).await;
     wait_for_paired(&b.application, &a_id, true).await;
 
-    assert!(a.store.device(&b_id).unwrap().is_some());
-    assert!(b.store.device(&a_id).unwrap().is_some());
+    assert!(a.store.device(&b_id).await.unwrap().is_some());
+    assert!(b.store.device(&a_id).await.unwrap().is_some());
 
     let a_identity = a.identity.clone();
     let a_store = a.store.clone();
@@ -195,8 +197,8 @@ async fn valid_peer_pairs_reconnects_with_pinned_trust_and_unpairs() {
     a_service.shutdown().await.unwrap();
     b_service.shutdown().await.unwrap();
 
-    let a2 = peer_reusing(a_identity, a_store);
-    let b2 = peer_reusing(b_identity, b_store);
+    let a2 = peer_reusing(a_identity, a_store).await;
+    let b2 = peer_reusing(b_identity, b_store).await;
     let a2_udp = free_udp_addr();
     let b2_udp = free_udp_addr();
     let a2_service = LanService::start(
@@ -234,8 +236,8 @@ async fn valid_peer_pairs_reconnects_with_pinned_trust_and_unpairs() {
     // Unpair from A's side: trust is removed, A tells B, and B drops its
     // trust in A too, before the connection is closed.
     let mut b2_events = b2.application.subscribe();
-    a2.application.forget_device(&b_id).unwrap();
-    assert!(a2.store.device(&b_id).unwrap().is_none());
+    a2.application.forget_device(&b_id).await.unwrap();
+    assert!(a2.store.device(&b_id).await.unwrap().is_none());
     timeout(Duration::from_secs(3), async {
         loop {
             if let EventData::DeviceUpdated(device) = b2_events.recv().await.unwrap().event
@@ -249,7 +251,7 @@ async fn valid_peer_pairs_reconnects_with_pinned_trust_and_unpairs() {
     .await
     .unwrap();
     wait_for_paired(&b2.application, &a_id, false).await;
-    assert!(b2.store.device(&a_id).unwrap().is_none());
+    assert!(b2.store.device(&a_id).await.unwrap().is_none());
 
     a2_service.shutdown().await.unwrap();
     b2_service.shutdown().await.unwrap();
@@ -257,7 +259,7 @@ async fn valid_peer_pairs_reconnects_with_pinned_trust_and_unpairs() {
 
 /// Build a fresh `Peer` that reuses an existing identity and store
 /// (simulating the daemon restarting with the same persisted state).
-fn peer_reusing(identity: Arc<LocalIdentity>, store: Store) -> Peer {
+async fn peer_reusing(identity: Arc<LocalIdentity>, store: Store) -> Peer {
     let directory = tempfile::tempdir().unwrap();
     let public_key_der = subject_public_key_info(identity.certificate_der()).unwrap();
     let (application, commands) = Core::new(
@@ -275,6 +277,7 @@ fn peer_reusing(identity: Arc<LocalIdentity>, store: Store) -> Peer {
         ferry::core::TransferConfig::new(directory.path().join("downloads"))
             .with_payload_bind_ip(Ipv4Addr::LOCALHOST),
     )
+    .await
     .unwrap();
     Peer {
         identity,
@@ -361,7 +364,7 @@ struct Victim {
 }
 
 async fn victim() -> (Victim, LanService, SocketAddr) {
-    let victim = peer("Victim");
+    let victim = peer("Victim").await;
     let id = victim.identity.device_id().to_owned();
     let application = victim.application.clone();
     let identity = victim.identity.clone();

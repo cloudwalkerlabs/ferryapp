@@ -28,6 +28,13 @@ The app is `gui/` (`ferry-gui`). All UI code is in `src/ui/` (the shell,
 and each feature's UI in `src/ui/features/`), behind the `gui` cargo
 feature.
 
+## Active implementation handoffs
+
+- [Fixed plugin enum and native async dispatch](HANDOFF_STATIC_PLUGINS.md):
+  planned follow-up to PR #76. The current PR still uses `Arc<dyn Plugin>`.
+- [Archived plans and completed handoffs](archive/README.md): historical
+  implementation notes; use this handoff and ARCHITECTURE for current rules.
+
 ## Ground rules (set by the project owner)
 
 - **The UI is dumb.** It persists only the main window's placement
@@ -94,7 +101,7 @@ as does `ferry-cli settings --language en-XA` on a running app (the
 ## Strings and languages
 
 Everything the app shows goes through `fl!` and the `.ftl` files
-(ARCHITECTURE §13, [`PLAN_I18N.md`](PLAN_I18N.md)); the CLI, the API and
+(ARCHITECTURE §13, [`PLAN_I18N.md`](archive/PLAN_I18N.md)); the CLI, the API and
 logs stay English.
 
 - **Adding a string.** Add the message to `i18n/en-US/ferry.ftl` in its
@@ -296,6 +303,24 @@ and that the Downloads folder permission survives a `brew upgrade`.
   connection close early. KDE Connect's share protocol has no cancel
   notice either, so this probably stays; a UI could say "stopped by the
   sender" if it confuses people.
+
+### Localization verification
+
+The localization implementation plan is [archived](archive/PLAN_I18N.md).
+Its remaining manual checks stay open here:
+
+- Run the real app with `FERRY_LANG=en-XA` and check the pseudo-locale on
+  screen, including clipping and untranslated strings.
+- Check Chinese glyphs render without missing-glyph boxes in the real Linux
+  app under Xvfb; prior verification only saw a macOS snapshot.
+- Switch Language in the running app and verify its window and tray update
+  without restarting. The loader is tested, but the archived notes did not
+  verify this in the live app. Unset `FERRY_LANG` for this check so it does
+  not override the setting.
+
+Use the isolated data, ports, display and D-Bus recipe in CLAUDE.md.
+German and Chinese translations also still need native-speaker review;
+the archived plan records other platform verification limits.
 
 ## Traps
 

@@ -49,7 +49,7 @@ read:
   in the same order as `builtin()`, with a test to check it.
 
 Runtime or third-party plugins are an explicit non-goal
-(`docs/research/feature-modules.md` §1), so this abstraction buys nothing.
+(`docs/archive/feature-modules.md` §1), so this abstraction buys nothing.
 
 **The decision:** all UI code lives in `src/ui/` (a module, not a crate:
 a crate would force everything the UI touches in `core`/`plugins` to
@@ -420,7 +420,7 @@ for `ui` in `ARCHITECTURE.md` §2 to match the final file list.
   Drop the pointer to this plan and move this file to `docs/archive/`
   with an "Archived" note at the top, as `archive/PLAN_ICED_UI.md` has.
 - **`README.md`** line ~133.
-- `docs/research/feature-modules.md` is history: leave it, apart from
+- `docs/archive/feature-modules.md` is history: leave it, apart from
   one line at the top saying the UI half of it was replaced, pointing to
   the ADR.
 

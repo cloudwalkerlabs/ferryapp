@@ -118,8 +118,8 @@ impl RunningService {
             .clone()
             .or_else(default_config_dir)
             .context("could not determine configuration directory")?;
-        let store = Store::open(&config_dir)?;
-        let identity = Arc::new(LocalIdentity::load_or_create(&store)?);
+        let store = Store::open(&config_dir).await?;
+        let identity = Arc::new(LocalIdentity::load_or_create(&store).await?);
         let local_public_key_der = subject_public_key_info(identity.certificate_der())
             .context("local identity certificate could not be parsed")?;
         let settings = Settings::new(SettingsDefaults {
@@ -127,6 +127,7 @@ impl RunningService {
             download_dir: default_download_dir().unwrap_or_else(|| config_dir.join("downloads")),
         })
         .with_store(store.clone())
+        .await
         .with_overrides(StoredSettings {
             device_name: request.device_name.clone(),
             download_dir: request
@@ -166,9 +167,10 @@ impl RunningService {
             256,
             identity.clone(),
             transfer_config,
-        )?;
+        )
+        .await?;
         core.install_settings(settings);
-        core.start_plugins();
+        core.start_plugins().await;
         let shutdown = CancellationToken::new();
         let capabilities = core.capabilities();
         let lan_config = if request.discovery_loopback {

@@ -309,8 +309,9 @@ mod tests {
 
     #[tokio::test]
     async fn sending_text_asks_for_it_then_sends_links_as_links() {
-        let (core, _commands) = handle();
-        let (device, mut sent) = testing::connect_peer(&core, testing::PEER_ID, &[PACKET_TYPE]);
+        let (core, _commands) = handle().await;
+        let (device, mut sent) =
+            testing::connect_peer(&core, testing::PEER_ID, &[PACKET_TYPE]).await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
 
         let asked = testing::outputs(update(
@@ -355,8 +356,8 @@ mod tests {
 
     #[tokio::test]
     async fn text_too_long_to_send_says_so() {
-        let (core, _commands) = handle();
-        let (device, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[PACKET_TYPE]);
+        let (core, _commands) = handle().await;
+        let (device, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[PACKET_TYPE]).await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         let send = Message::SendText {
             device_id: device.device_id,
@@ -407,7 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_action_asks_for_files_then_sends_them() {
-        let (core, _commands) = handle();
+        let (core, _commands) = handle().await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         let mut device = testing::device("Pixel");
         device.incoming_capabilities = vec![PACKET_TYPE.into()];
@@ -469,8 +470,8 @@ mod tests {
 
     #[tokio::test]
     async fn failed_sends_are_reported_once() {
-        let (core, _commands) = handle();
-        let (device, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[]);
+        let (core, _commands) = handle().await;
+        let (device, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[]).await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         let folder = tempfile::tempdir().unwrap();
         let photo = folder.path().join("photo.jpg");
@@ -502,7 +503,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_device_gone_while_picking_says_so() {
-        let (core, _commands) = handle();
+        let (core, _commands) = handle().await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         let send = Message::Send {
             device_id: testing::PEER_ID.into(),

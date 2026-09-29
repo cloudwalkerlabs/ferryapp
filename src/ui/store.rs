@@ -597,9 +597,9 @@ mod tests {
     /// The order the sync subscription works in: subscribe, take the
     /// snapshot, then replay every event, including those the snapshot
     /// already has.
-    #[test]
-    fn events_around_a_snapshot_survive_it() {
-        let (core, _commands) = handle_with_event_capacity(8);
+    #[tokio::test]
+    async fn events_around_a_snapshot_survive_it() {
+        let (core, _commands) = handle_with_event_capacity(8).await;
         core.discover_device(&identity(&"a".repeat(32), "phone"), true, 1)
             .unwrap();
         let mut events = core.subscribe();
@@ -610,7 +610,7 @@ mod tests {
         core.discover_device(&identity(&"d".repeat(32), "Laptop"), true, 2)
             .unwrap();
         let snapshot = Snapshot::take(&core);
-        core.forget_device(&"a".repeat(32)).unwrap();
+        core.forget_device(&"a".repeat(32)).await.unwrap();
         store.apply_snapshot(snapshot);
         assert_eq!(names(store.paired_devices()), ["Laptop", "phone"]);
 
@@ -620,9 +620,9 @@ mod tests {
         assert_eq!(names(store.paired_devices()), ["Laptop"]);
     }
 
-    #[test]
-    fn a_settings_change_applies_the_answer_and_its_event() {
-        let (core, _commands) = handle();
+    #[tokio::test]
+    async fn a_settings_change_applies_the_answer_and_its_event() {
+        let (core, _commands) = handle().await;
         let mut events = core.subscribe();
         let mut store = loaded(Snapshot::take(&core));
         let close_to_tray = store.settings().loaded().unwrap().close_to_tray;
@@ -632,6 +632,7 @@ mod tests {
                 device_name: Some(Some("Renamed".into())),
                 ..SettingsPatch::default()
             })
+            .await
             .unwrap();
         store.apply_settings(answer);
         let held = store.settings().loaded().unwrap().clone();

@@ -146,7 +146,7 @@ mod tests {
 
     #[tokio::test]
     async fn opening_a_small_image_previews_it() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         let mut png = std::io::Cursor::new(Vec::new());
         ::image::RgbaImage::new(4, 3)

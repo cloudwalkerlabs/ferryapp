@@ -35,10 +35,10 @@ struct Peer {
     _directory: tempfile::TempDir,
 }
 
-fn peer(name: &str) -> Peer {
+async fn peer(name: &str) -> Peer {
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path()).unwrap();
-    let identity = Arc::new(LocalIdentity::load_or_create(&store).unwrap());
+    let store = Store::open(directory.path()).await.unwrap();
+    let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
     let public_key_der = subject_public_key_info(identity.certificate_der()).unwrap();
     let clipboard = Arc::new(ClipboardPlugin::new(InMemoryClipboard::shared()));
     let (application, commands) = Core::new(
@@ -56,6 +56,7 @@ fn peer(name: &str) -> Peer {
         ferry::core::TransferConfig::new(directory.path().join("downloads"))
             .with_payload_bind_ip(Ipv4Addr::LOCALHOST),
     )
+    .await
     .unwrap();
     Peer {
         identity,
@@ -182,8 +183,8 @@ fn count_clipboard_events(
 }
 
 async fn pair(a: &Core, b: &Core, a_id: &str, b_id: &str) {
-    let pairing = a.start_outgoing_pairing(b_id).unwrap();
     let mut b_events = b.subscribe();
+    let pairing = a.start_outgoing_pairing(b_id).await.unwrap();
     let incoming = timeout(Duration::from_secs(2), async {
         loop {
             let event = b_events.recv().await.unwrap();
@@ -195,15 +196,15 @@ async fn pair(a: &Core, b: &Core, a_id: &str, b_id: &str) {
     .await
     .unwrap();
     assert_eq!(incoming.verification_code, pairing.verification_code);
-    b.accept_pairing(incoming.id).unwrap();
+    b.accept_pairing(incoming.id).await.unwrap();
     wait_for_paired(a, b_id, true).await;
     wait_for_paired(b, a_id, true).await;
 }
 
 #[tokio::test]
 async fn discovery_pairing_and_clipboard_sync_are_bidirectional() {
-    let a = peer("Peer A");
-    let b = peer("Peer B");
+    let a = peer("Peer A").await;
+    let b = peer("Peer B").await;
     let a_id = a.identity.device_id().to_owned();
     let b_id = b.identity.device_id().to_owned();
     let a_udp = free_udp_addr();
@@ -264,8 +265,8 @@ async fn discovery_pairing_and_clipboard_sync_are_bidirectional() {
 
 #[tokio::test]
 async fn remote_clipboard_update_is_not_echoed_back_to_its_source() {
-    let a = peer("Peer A");
-    let b = peer("Peer B");
+    let a = peer("Peer A").await;
+    let b = peer("Peer B").await;
     let a_id = a.identity.device_id().to_owned();
     let b_id = b.identity.device_id().to_owned();
     let a_udp = free_udp_addr();

@@ -31,11 +31,11 @@ impl StoredApi {
     /// What the daemon with data directory `data_dir` stored, without
     /// creating its database if there is none. `None` if nothing is stored
     /// or it can't be read.
-    pub fn read(data_dir: &Path) -> Option<Self> {
+    pub async fn read(data_dir: &Path) -> Option<Self> {
         if !data_dir.join(store::FILE_NAME).is_file() {
             return None;
         }
-        Store::open(data_dir).ok()?.get(&API).ok()?
+        Store::open(data_dir).await.ok()?.get(&API).await.ok()?
     }
 
     /// The stored token, if there is a valid one.
@@ -65,15 +65,15 @@ impl fmt::Debug for StoredApi {
 mod tests {
     use super::*;
 
-    #[test]
-    fn it_round_trips_through_the_store_and_reads_without_creating_one() {
+    #[tokio::test]
+    async fn it_round_trips_through_the_store_and_reads_without_creating_one() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path().join("data");
-        assert_eq!(StoredApi::read(&data), None);
+        assert_eq!(StoredApi::read(&data).await, None);
         assert!(!data.exists(), "reading creates nothing");
 
-        let store = Store::open(&data).unwrap();
-        assert_eq!(StoredApi::read(&data), None, "nothing stored yet");
+        let store = Store::open(&data).await.unwrap();
+        assert_eq!(StoredApi::read(&data).await, None, "nothing stored yet");
         let token = ApiToken::generate();
         let mut api = StoredApi {
             enabled: true,
@@ -81,9 +81,9 @@ mod tests {
             ..StoredApi::default()
         };
         api.set_token(&token);
-        store.set(&API, &api).unwrap();
+        store.set(&API, &api).await.unwrap();
 
-        let read = StoredApi::read(&data).unwrap();
+        let read = StoredApi::read(&data).await.unwrap();
         assert_eq!(read, api);
         assert_eq!(read.token(), Some(token.clone()));
         assert!(!format!("{read:?}").contains(token.expose_secret()));

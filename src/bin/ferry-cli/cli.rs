@@ -319,10 +319,10 @@ impl Cli {
 
         // What the app stored, for what neither a flag nor the environment
         // gives.
-        let stored = data_dir
-            .or_else(default_config_dir)
-            .and_then(|directory| StoredApi::read(&directory))
-            .unwrap_or_default();
+        let stored = match data_dir.or_else(default_config_dir) {
+            Some(directory) => StoredApi::read(&directory).await.unwrap_or_default(),
+            None => Default::default(),
+        };
         let base_url_override = if api_host.is_some() || api_port.is_some() {
             let host = api_host.unwrap_or_else(|| "127.0.0.1".to_owned());
             let port = api_port.unwrap_or(DEFAULT_API_PORT);

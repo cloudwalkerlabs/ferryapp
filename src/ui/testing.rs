@@ -39,7 +39,7 @@ pub const PEER_ID: &str = "740bd4b9b4184ee497d6caf1da8151be";
 /// A peer named "Peer" that `core` trusts and is connected to, receiving
 /// `incoming_capabilities`. What the core sends it arrives on the returned
 /// receiver; the connection lasts as long as the receiver.
-pub fn connect_peer(
+pub async fn connect_peer(
     core: &Core,
     device_id: &str,
     incoming_capabilities: &[&str],
@@ -57,6 +57,7 @@ pub fn connect_peer(
             tokio_util::sync::CancellationToken::new(),
             1,
         )
+        .await
         .expect("connected");
     (device, received)
 }
@@ -64,14 +65,18 @@ pub fn connect_peer(
 /// A peer named "Peer" that `core` is connected to but doesn't trust. It
 /// has a real certificate, so it can be paired. What the core sends it
 /// arrives on the returned receiver.
-pub fn connect_unpaired_peer(
+pub async fn connect_unpaired_peer(
     core: &Core,
     device_id: &str,
 ) -> (DeviceSnapshot, tokio::sync::mpsc::Receiver<Packet>) {
     core.discover_device(&make_identity(device_id, Vec::new()), false, 1)
         .expect("discovered");
-    let store = crate::store::Store::open_in_memory().expect("a store");
-    let identity = LocalIdentity::load_or_create(&store).expect("an identity");
+    let store = crate::store::Store::open_in_memory()
+        .await
+        .expect("a store");
+    let identity = LocalIdentity::load_or_create(&store)
+        .await
+        .expect("an identity");
     let (packets, received) = tokio::sync::mpsc::channel(8);
     let device = core
         .register_connection(
@@ -82,12 +87,13 @@ pub fn connect_unpaired_peer(
             tokio_util::sync::CancellationToken::new(),
             1,
         )
+        .await
         .expect("connected");
     (device, received)
 }
 
 /// The peer `device_id` asks `core` to pair, as a KDE Connect device does.
-pub fn request_pairing(core: &Core, device_id: &str) {
+pub async fn request_pairing(core: &Core, device_id: &str) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("after 1970")
@@ -100,7 +106,8 @@ pub fn request_pairing(core: &Core, device_id: &str) {
     core.handle_peer_packet(
         device_id,
         Packet::from_body(1, "kdeconnect.pair", &body).expect("a packet"),
-    );
+    )
+    .await;
 }
 
 /// A store holding `devices`, on a computer named `local_name`, with no

@@ -744,8 +744,20 @@ impl App {
                 let Some(running) = self.running() else {
                     return Task::none();
                 };
-                demo::tick(running.ctx.core(), &running.features, tick);
-                self.after(demo::TICK, Message::DemoTick(tick + 1))
+                let packets = demo::tick(running.ctx.core(), &running.features, tick);
+                let core = running.ctx.core().clone();
+                let dispatch = running.ctx.spawn(
+                    async move {
+                        for (id, packet) in packets {
+                            core.handle_peer_packet(id, packet).await;
+                        }
+                    },
+                    |_| Message::WindowOpened,
+                );
+                Task::batch([
+                    dispatch,
+                    self.after(demo::TICK, Message::DemoTick(tick + 1)),
+                ])
             }
             Message::StartTray => {
                 self.desktop.tray.start();

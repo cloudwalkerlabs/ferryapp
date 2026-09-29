@@ -148,8 +148,8 @@ async fn harness(reply: BrowseReply, wrong_host_key: bool) -> Harness {
     )
     .unwrap();
 
-    let store = Store::open(desktop_dir.path()).unwrap();
-    let identity = Arc::new(LocalIdentity::load_or_create(&store).unwrap());
+    let store = Store::open(desktop_dir.path()).await.unwrap();
+    let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
     let desktop_id = identity.device_id().to_owned();
     let browse = Arc::new(BrowsePlugin::default());
     let (desktop, commands) = Core::new(
@@ -166,6 +166,7 @@ async fn harness(reply: BrowseReply, wrong_host_key: bool) -> Harness {
         identity.clone(),
         TransferConfig::new(download_dir.clone()).with_payload_bind_ip(Ipv4Addr::LOCALHOST),
     )
+    .await
     .unwrap();
 
     let phone = FakePhone::start(FakePhoneConfig {
@@ -202,7 +203,7 @@ async fn harness(reply: BrowseReply, wrong_host_key: bool) -> Harness {
         device.reachability == DeviceReachability::Connected
     })
     .await;
-    desktop.start_outgoing_pairing(&phone_id).unwrap();
+    desktop.start_outgoing_pairing(&phone_id).await.unwrap();
     wait_for_device(&desktop, &phone_id, |device| device.paired).await;
 
     let api = ApiServer::start(

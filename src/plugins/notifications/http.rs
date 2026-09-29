@@ -96,7 +96,8 @@ async fn put_notifications_enabled(
 ) -> Result<Json<Enabled>, ApiProblem> {
     state
         .plugin
-        .set_enabled(&state.ctx, &device_id, request.enabled)?;
+        .set_enabled(&state.ctx, &device_id, request.enabled)
+        .await?;
     Ok(Json(request))
 }
 

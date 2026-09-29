@@ -26,6 +26,7 @@ pub const ID: &str = "ping";
 
 pub struct PingPlugin;
 
+#[async_trait::async_trait]
 impl Plugin for PingPlugin {
     fn id(&self) -> &'static str {
         ID
@@ -39,7 +40,7 @@ impl Plugin for PingPlugin {
         &[PACKET_TYPE]
     }
 
-    fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
+    async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
         let Ok(body) = packet.body_as::<PingBody>() else {
             tracing::debug!(device_id = device.device_id, "dropping malformed ping");
             return;
@@ -112,14 +113,15 @@ mod tests {
 
     const DEVICE_ID: &str = "740bd4b9b4184ee497d6caf1da8151be";
 
-    #[test]
-    fn unpaired_devices_cannot_be_pinged() {
-        let (handle, _plugin, _commands) = handle_with_plugin(PingPlugin);
+    #[tokio::test]
+    async fn unpaired_devices_cannot_be_pinged() {
+        let (handle, _plugin, _commands) = handle_with_plugin(PingPlugin).await;
         let identity = make_identity(DEVICE_ID, vec![PACKET_TYPE.into()]);
         handle.discover_device(&identity, false, 1).unwrap();
         let (tx, _rx) = mpsc::channel(4);
         handle
             .register_connection(DEVICE_ID, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
 
         // Sending is refused before pairing, with a typed error rather than
@@ -130,16 +132,17 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn paired_devices_that_accept_pings_can_be_pinged() {
+    #[tokio::test]
+    async fn paired_devices_that_accept_pings_can_be_pinged() {
         // Refusals for other devices are the core's, tested in
         // `core::plugin`.
-        let (handle, _plugin, _commands) = handle_with_plugin(PingPlugin);
+        let (handle, _plugin, _commands) = handle_with_plugin(PingPlugin).await;
         let identity = make_identity(DEVICE_ID, vec![PACKET_TYPE.into()]);
         handle.discover_device(&identity, true, 1).unwrap();
         let (tx, mut rx) = mpsc::channel(4);
         handle
             .register_connection(DEVICE_ID, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
 
         send_ping(&handle.plugin_context(), DEVICE_ID, Some("hello".into())).unwrap();
@@ -149,9 +152,9 @@ mod tests {
         assert_eq!(body.message.as_deref(), Some("hello"));
     }
 
-    #[test]
-    fn pings_from_paired_devices_are_published_and_others_are_dropped() {
-        let (handle, _plugin, _commands) = handle_with_plugin(PingPlugin);
+    #[tokio::test]
+    async fn pings_from_paired_devices_are_published_and_others_are_dropped() {
+        let (handle, _plugin, _commands) = handle_with_plugin(PingPlugin).await;
         let unpaired_id = "850bd4b9b4184ee497d6caf1da8151be";
         handle
             .discover_device(&make_identity(DEVICE_ID, Vec::new()), true, 1)
@@ -167,8 +170,12 @@ mod tests {
             other => panic!("unexpected event {other:?}"),
         };
         // The test bus holds one event, so check each ping as it lands.
-        handle.handle_peer_packet(unpaired_id, ping(Some("ignored")));
-        handle.handle_peer_packet(DEVICE_ID, ping(Some("pong")));
+        handle
+            .handle_peer_packet(unpaired_id, ping(Some("ignored")))
+            .await;
+        handle
+            .handle_peer_packet(DEVICE_ID, ping(Some("pong")))
+            .await;
         assert_eq!(
             received(),
             ReceivedPing {
@@ -177,7 +184,7 @@ mod tests {
                 message: Some("pong".into()),
             }
         );
-        handle.handle_peer_packet(DEVICE_ID, ping(None));
+        handle.handle_peer_packet(DEVICE_ID, ping(None)).await;
         assert_eq!(received().message, None);
         assert!(events.try_recv().is_err());
     }

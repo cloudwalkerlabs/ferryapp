@@ -127,12 +127,13 @@ pub struct FakePhone {
 
 impl FakePhone {
     pub async fn start(config: FakePhoneConfig) -> Self {
-        let store = Store::open(&config.data_dir).unwrap();
-        let identity = Arc::new(LocalIdentity::load_or_create(&store).unwrap());
+        let store = Store::open(&config.data_dir).await.unwrap();
+        let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
         let device_id = identity.device_id().to_owned();
         let host_key = if config.wrong_host_key {
-            let impostor =
-                LocalIdentity::load_or_create(&Store::open_in_memory().unwrap()).unwrap();
+            let impostor = LocalIdentity::load_or_create(&Store::open_in_memory().await.unwrap())
+                .await
+                .unwrap();
             decode_pkcs8(impostor.private_key_der(), None).unwrap()
         } else {
             decode_pkcs8(identity.private_key_der(), None).unwrap()

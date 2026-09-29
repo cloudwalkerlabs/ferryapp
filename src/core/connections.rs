@@ -46,7 +46,7 @@ impl Core {
     /// TLS handshake (with real signature verification and, for trusted
     /// devices, certificate pinning), and the inner post-TLS identity all
     /// agree on the peer's device ID and protocol version.
-    pub fn register_connection(
+    pub async fn register_connection(
         &self,
         device_id: &str,
         certificate_der: Vec<u8>,
@@ -55,6 +55,12 @@ impl Core {
         cancellation: CancellationToken,
         observed_at: u64,
     ) -> Result<DeviceSnapshot, CoreError> {
+        let operation = self.device_operation(device_id);
+        let _operation = operation.lock().await;
+        if cancellation.is_cancelled() {
+            return Err(CoreError::DeviceNotConnected);
+        }
+
         {
             let mut state = self
                 .state
@@ -72,8 +78,10 @@ impl Core {
             );
         }
         let snapshot = self.mark_device_connected(device_id, observed_at)?;
-        self.refresh_trusted_identity(&snapshot);
-        self.plugins.connected(&self.plugin_context(), &snapshot);
+        self.refresh_trusted_identity(&snapshot).await;
+        self.plugins
+            .connected(&self.plugin_context(), &snapshot)
+            .await;
         Ok(snapshot)
     }
 
@@ -93,11 +101,40 @@ impl Core {
     /// Remove a control channel, fail any pairing session in progress on it,
     /// cancel any transfer in progress with it, and mark the device
     /// unreachable.
-    pub fn unregister_connection(&self, device_id: &str) {
+    pub async fn unregister_connection(&self, device_id: &str) {
+        self.unregister_connection_inner(device_id, None).await;
+    }
+
+    /// A superseded handshake must not tear down its replacement.
+    pub(crate) async fn unregister_current_connection(
+        &self,
+        device_id: &str,
+        token: &CancellationToken,
+    ) {
+        self.unregister_connection_inner(device_id, Some(token))
+            .await;
+    }
+
+    async fn unregister_connection_inner(
+        &self,
+        device_id: &str,
+        token: Option<&CancellationToken>,
+    ) {
+        let operation = self.device_operation(device_id);
+        let _operation = operation.lock().await;
+
         let (had_connection, failed_pairing) = {
             let Ok(mut state) = self.state.write() else {
                 return;
             };
+            if let Some(token) = token
+                && !state
+                    .connections
+                    .get(device_id)
+                    .is_some_and(|connection| &connection.cancellation == token)
+            {
+                return;
+            }
             let had_connection = state.connections.remove(device_id).is_some();
             let failed_pairing =
                 fail_active_pairing(&mut state, device_id, OperationErrorCode::ConnectionFailed);
@@ -105,7 +142,9 @@ impl Core {
         };
         self.transfers.cancel_device(device_id);
         if had_connection {
-            self.plugins.disconnected(&self.plugin_context(), device_id);
+            self.plugins
+                .disconnected(&self.plugin_context(), device_id)
+                .await;
             let _ = self.mark_device_disconnected(device_id);
         }
         if let Some(snapshot) = failed_pairing {
@@ -120,14 +159,28 @@ impl Core {
     /// type is routed to the plugin that handles it, only if the sending
     /// device is currently paired; unpaired connections cannot trigger any
     /// other behavior. A type no plugin handles is dropped.
-    pub fn handle_peer_packet(&self, device_id: &str, packet: Packet) {
+    pub async fn handle_peer_packet(&self, device_id: &str, packet: Packet) {
+        let operation = self.device_operation(device_id);
+        let _operation = operation.lock_owned().await;
+
         tracing::debug!(device_id, packet_type = %packet.packet_type, "packet received");
         if packet.packet_type == "kdeconnect.pair" {
             let Ok(body) = packet.body_as::<PairingBody>() else {
                 tracing::debug!(device_id, "dropping malformed pair packet");
                 return;
             };
-            self.handle_pair_body(device_id, body, unix_seconds());
+            // Trust commits and their in-memory effects must finish together,
+            // even when the transport cancels the packet dispatcher.
+            let core = self.clone();
+            let device_id = device_id.to_owned();
+            let _ = self
+                .mutations
+                .spawn(async move {
+                    let _operation = _operation;
+                    core.handle_pair_body(&device_id, body, unix_seconds())
+                        .await;
+                })
+                .await;
             return;
         }
 
@@ -142,7 +195,9 @@ impl Core {
         };
 
         if let Some(plugin) = self.plugins.for_packet(&packet.packet_type) {
-            plugin.handle_packet(&self.plugin_context(), &device, &packet);
+            plugin
+                .handle_packet(&self.plugin_context(), &device, &packet)
+                .await;
         }
     }
 
@@ -274,8 +329,61 @@ mod tests {
     use crate::core::testing::handle;
 
     #[tokio::test]
+    async fn stale_connection_cleanup_preserves_its_replacement() {
+        let (core, _commands) = handle().await;
+        let identity =
+            crate::core::testing::make_identity("740bd4b9b4184ee497d6caf1da8151be", Vec::new());
+        core.discover_device(&identity, false, 1).unwrap();
+        let (old_tx, _old_rx) = mpsc::channel(1);
+        let old = CancellationToken::new();
+        core.register_connection(
+            "740bd4b9b4184ee497d6caf1da8151be",
+            vec![1],
+            8,
+            old_tx,
+            old.clone(),
+            1,
+        )
+        .await
+        .unwrap();
+        old.cancel();
+        let (new_tx, _new_rx) = mpsc::channel(1);
+        let current = CancellationToken::new();
+        core.register_connection(
+            "740bd4b9b4184ee497d6caf1da8151be",
+            vec![2],
+            8,
+            new_tx,
+            current.clone(),
+            2,
+        )
+        .await
+        .unwrap();
+        core.unregister_current_connection("740bd4b9b4184ee497d6caf1da8151be", &old)
+            .await;
+        assert_eq!(
+            core.device("740bd4b9b4184ee497d6caf1da8151be")
+                .unwrap()
+                .reachability,
+            super::super::DeviceReachability::Connected
+        );
+        assert_eq!(
+            core.state.read().unwrap().connections["740bd4b9b4184ee497d6caf1da8151be"].cancellation,
+            current
+        );
+        core.unregister_current_connection("740bd4b9b4184ee497d6caf1da8151be", &current)
+            .await;
+        assert_eq!(
+            core.device("740bd4b9b4184ee497d6caf1da8151be")
+                .unwrap()
+                .reachability,
+            super::super::DeviceReachability::Unavailable
+        );
+    }
+
+    #[tokio::test]
     async fn commands_are_bounded_and_observable() {
-        let (handle, mut commands) = handle();
+        let (handle, mut commands) = handle().await;
         handle.announce().unwrap();
         assert!(matches!(
             handle.announce(),
@@ -286,7 +394,7 @@ mod tests {
 
     #[tokio::test]
     async fn announcing_to_an_address_accepts_only_unicast() {
-        let (handle, mut commands) = handle();
+        let (handle, mut commands) = handle().await;
         for address in [
             Ipv4Addr::UNSPECIFIED,
             Ipv4Addr::BROADCAST,

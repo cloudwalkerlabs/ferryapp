@@ -826,12 +826,12 @@ pub(crate) mod tests {
     }
 
     impl Browser {
-        pub(super) fn new() -> Self {
-            Self::with_device(pixel())
+        pub(super) async fn new() -> Self {
+            Self::with_device(pixel()).await
         }
 
-        pub(super) fn with_device(device: DeviceSnapshot) -> Self {
-            let (core, _commands) = handle();
+        pub(super) async fn with_device(device: DeviceSnapshot) -> Self {
+            let (core, _commands) = handle().await;
             let mut ctx = UiContext::new(core, tokio::runtime::Handle::current());
             *ctx.store_mut() = testing::store("Desk", vec![device]);
             let files = phone_files();
@@ -926,7 +926,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn storage_then_folders_with_a_breadcrumb_back_up() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser
             .send(Message::Browse {
                 device_id: pixel().device_id,
@@ -965,7 +965,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_folder_opened_directly_still_names_its_root() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(&format!("{INTERNAL}/DCIM"))).await;
         assert_eq!(
             browser.files.calls(),
@@ -985,7 +985,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn opening_a_file_downloads_it() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         browser.click("notes.txt").await;
         assert!(
@@ -1011,7 +1011,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn renaming_moves_the_file_within_its_folder() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         browser.row_action("notes.txt", "Rename").await;
         let Prompt {
@@ -1054,7 +1054,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_name_with_a_slash_is_refused_before_asking_the_device() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         browser.click(widget::Id::from("New folder")).await;
         let Prompt {
@@ -1079,7 +1079,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn new_folders_are_created_in_the_open_folder() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         browser.click(widget::Id::from("New folder")).await;
         let Prompt {
@@ -1104,7 +1104,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn deleting_asks_first_and_warns_about_folder_contents() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         browser.row_action("DCIM", "Delete").await;
         let [
@@ -1143,7 +1143,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_failed_change_is_reported_and_the_folder_listed_again() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         *lock(&browser.files.fail_changes) = Some(|| BrowseError::Exists);
         browser.click(widget::Id::from("New folder")).await;
@@ -1158,7 +1158,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn files_dropped_on_a_folder_are_uploaded_into_it() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         let local = tempfile::tempdir().unwrap();
         let photo = local.path().join("photo.jpg");
         std::fs::write(&photo, "jpg").unwrap();
@@ -1199,7 +1199,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn upload_files_picks_files_for_the_open_folder() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(SD_CARD)).await;
         browser.click(widget::Id::from("Upload files")).await;
         let [ui::Message::PickFiles(PickFiles { title, then, .. })] = &browser.take_requests()[..]
@@ -1222,7 +1222,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn a_device_that_refuses_says_why_and_how_to_fix_it() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         *lock(&browser.files.refuse) = Some(|| BrowseError::Unavailable {
             reason: Some("No storage locations configured".into()),
         });
@@ -1255,19 +1255,19 @@ pub(crate) mod tests {
         away.reachability = DeviceReachability::Discovered;
         assert!(!browse(&away).enabled);
 
-        let mut browser = Browser::with_device(away);
+        let mut browser = Browser::with_device(away).await;
         browser.go(None).await;
         assert!(browser.shows("Connect Pixel to browse its files."));
         assert!(browser.files.calls().is_empty(), "nothing asked");
 
-        let mut browser = Browser::with_device(testing::device("Pixel"));
+        let mut browser = Browser::with_device(testing::device("Pixel")).await;
         browser.go(None).await;
         assert!(browser.shows("Pixel doesn’t share its files."));
     }
 
     #[tokio::test]
     async fn the_files_are_listed_again_once_the_device_is_back() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         let event = |device: DeviceSnapshot| CoreEvent {
             sequence: 1,
@@ -1294,7 +1294,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn only_the_newest_listing_of_a_folder_counts() {
-        let mut browser = Browser::new();
+        let mut browser = Browser::new().await;
         browser.go(Some(INTERNAL)).await;
         let stale = Message::Listed {
             device_id: pixel().device_id,

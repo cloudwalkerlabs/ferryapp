@@ -132,9 +132,8 @@ fn pairs_with_a_device_found_by_scanning() {
     });
     let code = request.verification_code.expect("a verification code");
     assert!(app.shows(&code), "the app shows the peer's code {code}");
-    test.peer
-        .core()
-        .accept_pairing(request.id)
+    test.runtime
+        .block_on(test.peer.core().accept_pairing(request.id))
         .expect("the peer accepts");
 
     app.wait_for(&format!("Paired with {}", test.peer.name));
@@ -543,9 +542,8 @@ impl Test {
             connected
         });
         let pairing = self
-            .peer
-            .core()
-            .start_outgoing_pairing(&app_id)
+            .runtime
+            .block_on(self.peer.core().start_outgoing_pairing(&app_id))
             .expect("the peer asks to pair");
         app.wait_for("Pairing request");
         let code = self.eventually_some("the peer's verification code", || {

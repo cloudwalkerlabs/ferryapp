@@ -72,6 +72,10 @@ pub enum Message {
         device_id: String,
         enabled: bool,
     },
+    EnabledSaved {
+        device_id: String,
+        error: Option<String>,
+    },
 }
 
 /// A notification as the page shows it: the plugin's, and its icon ready
@@ -288,16 +292,26 @@ impl NotificationsUi {
             }
             // The device's `device.updated` brings the switch's new state.
             Message::SetEnabled { device_id, enabled } => {
-                match self.plugin.set_enabled(&plugin_ctx, &device_id, enabled) {
-                    Ok(()) => {
-                        self.refresh(&device_id);
-                        Task::none()
-                    }
-                    Err(error) => {
-                        shell::failed(origin, fl!("notifications-sync-failed"), describe(&error))
-                    }
-                }
+                let plugin = self.plugin.clone();
+                ctx.spawn(
+                    async move {
+                        let error = plugin
+                            .set_enabled(&plugin_ctx, &device_id, enabled)
+                            .await
+                            .err()
+                            .map(|error| describe(&error));
+                        Message::EnabledSaved { device_id, error }
+                    },
+                    move |message| ui::Message::Feature(Feature::Notifications(message), origin),
+                )
             }
+            Message::EnabledSaved { device_id, error } => match error {
+                None => {
+                    self.refresh(&device_id);
+                    Task::none()
+                }
+                Some(error) => shell::failed(origin, fl!("notifications-sync-failed"), error),
+            },
         }
     }
 
@@ -549,20 +563,20 @@ mod tests {
 
     /// A phone sharing its notifications, connected to a core running the
     /// plugin the UI calls; what the core sends it.
-    fn phone() -> (
+    async fn phone() -> (
         Core,
         NotificationsUi,
         DeviceSnapshot,
         tokio::sync::mpsc::Receiver<Packet>,
     ) {
-        let (core, plugin, _commands) = handle_with_plugin(NotificationsPlugin::default());
+        let (core, plugin, _commands) = handle_with_plugin(NotificationsPlugin::default()).await;
         let (mut device, sent) =
-            testing::connect_peer(&core, PEER, &[REQUEST_PACKET_TYPE, REPLY_PACKET_TYPE]);
+            testing::connect_peer(&core, PEER, &[REQUEST_PACKET_TYPE, REPLY_PACKET_TYPE]).await;
         device.outgoing_capabilities = vec![PACKET_TYPE.into()];
         (core, NotificationsUi::new(plugin), device, sent)
     }
 
-    fn post(core: &Core, id: &str, text: &str) {
+    async fn post(core: &Core, id: &str, text: &str) {
         let body = json!({
             "id": id,
             "appName": "Messages",
@@ -571,7 +585,8 @@ mod tests {
             "isClearable": true,
             "requestReplyId": "r",
         });
-        core.handle_peer_packet(PEER, Packet::from_body(1_u64, PACKET_TYPE, &body).unwrap());
+        core.handle_peer_packet(PEER, Packet::from_body(1_u64, PACKET_TYPE, &body).unwrap())
+            .await;
     }
 
     fn posted(id: &str, alert: bool) -> CoreEvent {
@@ -602,11 +617,11 @@ mod tests {
 
     #[tokio::test]
     async fn news_is_announced_and_counted_on_the_action() {
-        let (core, mut ui, device, _sent) = phone();
+        let (core, mut ui, device, _sent) = phone().await;
         let [action] = ui.device_actions(&device).try_into().unwrap();
         assert_eq!(action.label, "Notifications");
 
-        post(&core, "a", "Dinner?");
+        post(&core, "a", "Dinner?").await;
         let outcomes = testing::outputs(ui.on_event(&posted("a", true))).await;
         let [ui::Message::Notify { title, body }] = &outcomes[..] else {
             panic!("unexpected outcomes: {outcomes:?}");
@@ -627,9 +642,9 @@ mod tests {
 
     #[tokio::test]
     async fn replying_asks_for_the_message_then_sends_it() {
-        let (core, mut ui, _device, mut sent) = phone();
+        let (core, mut ui, _device, mut sent) = phone().await;
         let _request_all = sent.try_recv();
-        post(&core, "a", "Dinner?");
+        post(&core, "a", "Dinner?").await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         let reply = Message::Reply {
             device_id: PEER.into(),
@@ -658,7 +673,7 @@ mod tests {
 
     #[tokio::test]
     async fn dismissing_one_that_is_gone_says_why() {
-        let (core, mut ui, _device, _sent) = phone();
+        let (core, mut ui, _device, _sent) = phone().await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         let dismiss = Message::Dismiss {
             device_id: PEER.into(),
@@ -680,7 +695,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_switch_turns_them_off_for_a_paired_device_that_shares_them() {
-        let (core, mut ui, device, _sent) = phone();
+        let (core, mut ui, device, _sent) = phone().await;
         assert_eq!(ui.device_settings(&device).len(), 1);
         let mut other = device.clone();
         other.outgoing_capabilities.clear();
@@ -689,7 +704,7 @@ mod tests {
         unpaired.paired = false;
         assert!(ui.device_settings(&unpaired).is_empty());
 
-        post(&core, "a", "Dinner?");
+        post(&core, "a", "Dinner?").await;
         ui.on_route(&Route::Notifications(PEER.into()));
         let [action] = ui.device_actions(&device).try_into().unwrap();
         assert_eq!(action.label, "Notifications (1)");
@@ -700,6 +715,11 @@ mod tests {
             panic!("a notifications message");
         };
         let outcomes = testing::outputs(ui.update(&ctx, off.clone(), Origin::Window)).await;
+        let [ui::Message::Feature(Feature::Notifications(saved), origin)] = &outcomes[..] else {
+            panic!("unexpected outcomes: {outcomes:?}");
+        };
+        assert!(matches!(saved, Message::EnabledSaved { error: None, .. }));
+        let outcomes = testing::outputs(ui.update(&ctx, saved.clone(), *origin)).await;
         assert!(outcomes.is_empty(), "{outcomes:?}");
         let mut device = core.device(PEER).unwrap();
         device.outgoing_capabilities = vec![PACKET_TYPE.into()];
@@ -709,15 +729,15 @@ mod tests {
         assert!(!action.enabled);
     }
 
-    #[test]
-    fn the_page_lists_them_or_says_why_it_is_empty() {
-        let (core, mut ui, device, _sent) = phone();
+    #[tokio::test]
+    async fn the_page_lists_them_or_says_why_it_is_empty() {
+        let (core, mut ui, device, _sent) = phone().await;
         {
             let mut empty = Simulator::new(ui.view(&device));
             assert!(empty.find("No notifications from Peer.").is_ok());
         }
 
-        post(&core, "a", "Dinner?");
+        post(&core, "a", "Dinner?").await;
         ui.on_route(&Route::Notifications(PEER.into()));
         let mut page = Simulator::new(ui.view(&device));
         assert!(page.find("Dinner?").is_ok());

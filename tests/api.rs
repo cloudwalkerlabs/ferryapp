@@ -38,8 +38,8 @@ impl TestServer {
 
     async fn start_with(token: Option<ApiToken>, request_timeout: Duration) -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::open(directory.path()).unwrap();
-        let identity = Arc::new(LocalIdentity::load_or_create(&store).unwrap());
+        let store = Store::open(directory.path()).await.unwrap();
+        let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
         let (application, commands) = Core::new(
             LocalDeviceSnapshot {
                 device_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
@@ -56,6 +56,7 @@ impl TestServer {
             TransferConfig::new(directory.path().join("downloads"))
                 .with_payload_bind_ip(std::net::Ipv4Addr::LOCALHOST),
         )
+        .await
         .unwrap();
         let mut devices = DeviceRegistry::new();
         devices
@@ -106,14 +107,14 @@ impl TestServer {
     /// layer would after a real handshake, so transfer and ping endpoints
     /// have somewhere to send a `kdeconnect.share.request` or
     /// `kdeconnect.ping`.
-    fn connect_and_pair(
+    async fn connect_and_pair(
         &self,
         device_id: &str,
     ) -> tokio::sync::mpsc::Receiver<ferry::protocol::Packet> {
-        self.connect(device_id, true)
+        self.connect(device_id, true).await
     }
 
-    fn connect(
+    async fn connect(
         &self,
         device_id: &str,
         paired: bool,
@@ -136,7 +137,9 @@ impl TestServer {
             .discover_device(&identity, paired, 20)
             .unwrap();
         // A real certificate, so pairing can derive a verification code.
-        let peer = LocalIdentity::load_or_create(&Store::open_in_memory().unwrap()).unwrap();
+        let peer = LocalIdentity::load_or_create(&Store::open_in_memory().await.unwrap())
+            .await
+            .unwrap();
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         self.application
             .register_connection(
@@ -147,6 +150,7 @@ impl TestServer {
                 CancellationToken::new(),
                 20,
             )
+            .await
             .unwrap();
         rx
     }
@@ -323,7 +327,7 @@ async fn pairings_are_listed_so_clients_can_recover_after_reconnecting() {
     assert_eq!(body(&empty), "[]");
 
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let _packets = server.connect(device_id, false);
+    let _packets = server.connect(device_id, false).await;
     let started = request_with_body(
         &server,
         "POST",
@@ -585,7 +589,7 @@ async fn settings_can_be_read_changed_and_are_announced() {
 async fn ping_is_queued_to_a_paired_device_with_an_optional_message() {
     let server = TestServer::start().await;
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let mut packets = server.connect_and_pair(device_id);
+    let mut packets = server.connect_and_pair(device_id).await;
 
     let with_message = request_with_body(
         &server,
@@ -643,7 +647,7 @@ async fn ping_is_queued_to_a_paired_device_with_an_optional_message() {
 async fn ring_asks_a_paired_device_to_ring() {
     let server = TestServer::start().await;
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let mut packets = server.connect_and_pair(device_id);
+    let mut packets = server.connect_and_pair(device_id).await;
 
     let response = request(
         &server,
@@ -678,7 +682,7 @@ async fn ring_asks_a_paired_device_to_ring() {
 async fn a_ringing_call_shows_and_its_ringer_can_be_muted() {
     let server = TestServer::start().await;
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let mut packets = server.connect_and_pair(device_id);
+    let mut packets = server.connect_and_pair(device_id).await;
     let call_path = format!("/api/v1/devices/{device_id}/call");
     let mute_path = format!("/api/v1/devices/{device_id}/call/mute");
 
@@ -695,7 +699,10 @@ async fn a_ringing_call_shows_and_its_ringer_can_be_muted() {
         &serde_json::json!({"event": "ringing", "contactName": "Ana"}),
     )
     .unwrap();
-    server.application.handle_peer_packet(device_id, ringing);
+    server
+        .application
+        .handle_peer_packet(device_id, ringing)
+        .await;
     let call = request(&server, "GET", &call_path, true).await;
     let call: serde_json::Value = serde_json::from_str(body(&call)).unwrap();
     assert_eq!(
@@ -724,7 +731,7 @@ async fn a_ringing_call_shows_and_its_ringer_can_be_muted() {
 async fn notifications_can_be_turned_off_for_one_device() {
     let server = TestServer::start().await;
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let _packets = server.connect_and_pair(device_id);
+    let _packets = server.connect_and_pair(device_id).await;
     let device_path = format!("/api/v1/devices/{device_id}");
     let enabled_path = format!("/api/v1/devices/{device_id}/notifications/enabled");
     let notifications_of = || async {
@@ -758,7 +765,10 @@ async fn notifications_can_be_turned_off_for_one_device() {
         &serde_json::json!({"id": "a", "appName": "Messages", "title": "Ana"}),
     )
     .unwrap();
-    server.application.handle_peer_packet(device_id, posted);
+    server
+        .application
+        .handle_peer_packet(device_id, posted)
+        .await;
     let listed = request(
         &server,
         "GET",
@@ -811,7 +821,7 @@ fn kde_connect_ports_are_rejected() {
 async fn sharing_a_file_streams_it_as_a_queryable_cancellable_transfer() {
     let server = TestServer::start().await;
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let _packets = server.connect_and_pair(device_id);
+    let _packets = server.connect_and_pair(device_id).await;
 
     let boundary = "ferry-test-boundary";
     let file_bytes = b"hello from the transfer test";
@@ -946,7 +956,7 @@ async fn slow_upload(server: &TestServer, device_id: &str, gap: Duration, stall:
 async fn sharing_a_file_may_outlast_the_request_deadline_but_not_stall() {
     let server = TestServer::start_with(None, Duration::from_millis(400)).await;
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let _packets = server.connect_and_pair(device_id);
+    let _packets = server.connect_and_pair(device_id).await;
 
     // Four 150 ms gaps: longer than the deadline in total, never idle for it.
     let response = slow_upload(&server, device_id, Duration::from_millis(150), false).await;
@@ -973,7 +983,7 @@ async fn sharing_a_file_may_outlast_the_request_deadline_but_not_stall() {
 async fn streaming_routes_take_bodies_over_the_default_limit() {
     let server = TestServer::start_with(None, Duration::from_millis(500)).await;
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let _packets = server.connect_and_pair(device_id);
+    let _packets = server.connect_and_pair(device_id).await;
 
     // Four times the default 64 KiB limit. The peer never dials in, so the
     // upload may stall once the transfer's small buffer is full; what
@@ -1162,7 +1172,7 @@ async fn cancelling_an_upload_answers_its_request_at_once() {
     // An idle timeout far longer than the test waits for the answer.
     let server = TestServer::start_with(None, Duration::from_secs(30)).await;
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let _packets = server.connect_and_pair(device_id);
+    let _packets = server.connect_and_pair(device_id).await;
 
     // Declare a large file but send only its first bytes, then wait, as a
     // client does while the device is slow to accept.
@@ -1216,7 +1226,7 @@ async fn cancelling_an_upload_answers_its_request_at_once() {
 async fn a_client_still_sending_a_cancelled_upload_is_told_it_was_cancelled() {
     let server = TestServer::start_with(None, Duration::from_secs(30)).await;
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let _packets = server.connect_and_pair(device_id);
+    let _packets = server.connect_and_pair(device_id).await;
 
     // Larger than the daemon can take in before the device accepts it, so
     // the client is still sending when the transfer is cancelled.
@@ -1271,7 +1281,7 @@ async fn small_upload(server: &TestServer, path: &str) -> String {
 async fn a_client_may_choose_the_id_of_the_transfer_it_uploads() {
     let server = TestServer::start_with(None, Duration::from_secs(15)).await;
     let device_id = "cccccccccccccccccccccccccccccccc";
-    let _packets = server.connect_and_pair(device_id);
+    let _packets = server.connect_and_pair(device_id).await;
     let id = uuid::Uuid::new_v4();
     let path = format!("/api/v1/devices/{device_id}/share?transferId={id}");
 

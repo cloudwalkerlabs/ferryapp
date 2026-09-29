@@ -98,9 +98,9 @@ mod tests {
 
     #[tokio::test]
     async fn ringing_asks_the_device_and_says_so() {
-        let (core, _commands) = handle();
+        let (core, _commands) = handle().await;
         let (device, mut sent) =
-            testing::connect_peer(&core, testing::PEER_ID, &[REQUEST_PACKET_TYPE]);
+            testing::connect_peer(&core, testing::PEER_ID, &[REQUEST_PACKET_TYPE]).await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         assert_eq!(
             report(&ctx, &device).await,
@@ -111,8 +111,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_device_that_cant_ring_says_so() {
-        let (core, _commands) = handle();
-        let (device, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[ping::PACKET_TYPE]);
+        let (core, _commands) = handle().await;
+        let (device, _sent) =
+            testing::connect_peer(&core, testing::PEER_ID, &[ping::PACKET_TYPE]).await;
         let ctx = UiContext::new(core, tokio::runtime::Handle::current());
         assert_eq!(
             report(&ctx, &device).await,

@@ -73,7 +73,8 @@ async fn patch_clipboard(
     Ok(Json(
         state
             .plugin
-            .set_sync_enabled(&state.ctx, request.sync_enabled)?,
+            .set_sync_enabled(&state.ctx, request.sync_enabled)
+            .await?,
     ))
 }
 

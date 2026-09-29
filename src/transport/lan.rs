@@ -325,7 +325,7 @@ async fn run(
                         && let Some(identity_body) = decode_identity(&datagram[..length])
                         && identity_body.device_id != local.device_id
                     {
-                        let paired = is_trusted(&store, &identity_body.device_id);
+                        let paired = is_trusted(&store, &identity_body.device_id).await;
                         let _ = core.discover_device(&identity_body, paired, unix_millis());
                         if let Some(port) = tcp_port(&identity_body)
                             && let Ok(permit) = connection_limit.clone().try_acquire_owned()
@@ -369,8 +369,8 @@ async fn run(
     connections.shutdown().await;
 }
 
-fn is_trusted(store: &Store, device_id: &str) -> bool {
-    matches!(store.device(device_id), Ok(Some(_)))
+async fn is_trusted(store: &Store, device_id: &str) -> bool {
+    matches!(store.device(device_id).await, Ok(Some(_)))
 }
 
 async fn announce(socket: &UdpSocket, targets: &[SocketAddr], announcement: &[u8]) {
@@ -416,8 +416,7 @@ fn spawn_outgoing(
                 registry.clone(),
                 shutdown,
                 identity_deadline,
-            )
-            .await;
+            ).await;
         } else if registry.release(&expected_device_id, reservation.id) {
             let _ = core.mark_device_disconnected(&expected_device_id);
         }
@@ -535,7 +534,14 @@ async fn handle_connection(
     };
     let device_id = pre_tls_identity.device_id.clone();
 
-    let trusted = store.device(&device_id).ok().flatten();
+    let trusted = match store.device(&device_id).await {
+        Ok(trusted) => trusted,
+        Err(error) => {
+            debug!(%device_id, %error, "could not load peer trust");
+            registry.release(&device_id, reservation.id);
+            return;
+        }
+    };
     let pin = match &trusted {
         Some(trusted_device) => PeerPin::Pinned(trusted_device.certificate_der.clone()),
         None => PeerPin::Unpinned,
@@ -591,7 +597,7 @@ async fn handle_connection(
         return;
     }
 
-    if reservation.cancellation.is_cancelled() {
+    if !registry.establish(&device_id, reservation.id) {
         registry.release(&device_id, reservation.id);
         return;
     }
@@ -610,67 +616,91 @@ async fn handle_connection(
     }
 
     let (packet_tx, mut packet_rx) = mpsc::channel::<Packet>(PACKET_QUEUE_CAPACITY);
-    // Keep one sender alive for the lifetime of this task so the receiver
-    // never observes a spurious `None` while the connection is registered.
     let _keep_alive = packet_tx.clone();
-    if let Err(error) = core.register_connection(
-        &device_id,
-        peer_certificate_der,
-        inner_identity.protocol_version,
-        packet_tx,
-        reservation.cancellation.clone(),
-        unix_millis(),
-    ) {
-        debug!(local_id = %local.device_id, %device_id, ?role, %error, "register_connection failed");
-        registry.release(&device_id, reservation.id);
-        return;
-    }
-    if let Some(peer_addr) = peer_addr {
-        core.set_connection_peer_addr(&device_id, peer_addr);
-    }
-    debug!(local_id = %local.device_id, %device_id, ?role, "session registered");
-
-    let mut codec = PacketCodec::new(MAX_PACKET_LINE);
-    let mut buffer = [0_u8; 4096];
-    loop {
-        tokio::select! {
-            _ = shutdown.cancelled() => { debug!(local_id = %local.device_id, %device_id, "loop end: shutdown"); break },
-            _ = reservation.cancellation.cancelled() => {
-                debug!(local_id = %local.device_id, %device_id, "loop end: cancelled");
-                // Packets queued just before cancelling (e.g. the unpair
-                // notice from `forget_device`) still reach the peer.
-                let _ = timeout(CLOSE_FLUSH_TIMEOUT, flush_queued(&mut packet_rx, &mut codec, &mut writer)).await;
-                break
-            },
-            outgoing = packet_rx.recv() => {
-                let Some(packet) = outgoing else { debug!(local_id = %local.device_id, %device_id, "loop end: packet_rx none"); break };
-                match codec.encode(&packet) {
-                    Ok(bytes) => {
-                        if writer.write_all(&bytes).await.is_err() {
-                            debug!(local_id = %local.device_id, %device_id, "loop end: write error");
-                            break;
-                        }
+    let (incoming_tx, mut incoming_rx) = mpsc::channel::<Packet>(PACKET_QUEUE_CAPACITY);
+    // Reading, writing and ordered callback dispatch have independent
+    // futures. A full dispatch queue backpressures only the reader.
+    {
+        let read_packets = async move {
+            let mut codec = PacketCodec::new(MAX_PACKET_LINE);
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let length = match reader.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(length) => length,
+                };
+                let packets = match codec.decode(&buffer[..length]) {
+                    Ok(packets) => packets,
+                    Err(_) => break,
+                };
+                for packet in packets {
+                    if incoming_tx.send(packet).await.is_err() {
+                        return;
                     }
-                    Err(error) => debug!(%error, "failed to encode outgoing packet"),
                 }
             }
-            read = reader.read(&mut buffer) => match read {
-                Ok(0) => { debug!(local_id = %local.device_id, %device_id, "loop end: read eof"); break }
-                Err(error) => { debug!(local_id = %local.device_id, %device_id, %error, "loop end: read error"); break }
-                Ok(length) => match codec.decode(&buffer[..length]) {
-                    Ok(packets) => {
-                        for packet in packets {
-                            core.handle_peer_packet(&device_id, packet);
-                        }
+            // EOF can follow a final unpair packet in the same read. Close
+            // the queue so dispatch can drain it; bound the grace period
+            // for a callback that never finishes. Shutdown still preempts it.
+            drop(incoming_tx);
+            tokio::time::sleep(CLOSE_FLUSH_TIMEOUT).await;
+        };
+        let write_packets = async {
+            let codec = PacketCodec::new(MAX_PACKET_LINE);
+            while let Some(packet) = packet_rx.recv().await {
+                let bytes = match codec.encode(&packet) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        debug!(%error, "failed to encode outgoing packet");
+                        continue;
                     }
-                    Err(error) => { debug!(local_id = %local.device_id, %device_id, %error, "loop end: decode error"); break }
-                },
-            },
+                };
+                if writer.write_all(&bytes).await.is_err() {
+                    break;
+                }
+            }
+        };
+        let dispatch = async {
+            if let Err(error) = core
+                .register_connection(
+                    &device_id,
+                    peer_certificate_der,
+                    inner_identity.protocol_version,
+                    packet_tx,
+                    reservation.cancellation.clone(),
+                    unix_millis(),
+                )
+                .await
+            {
+                debug!(%device_id, %error, "register_connection failed");
+                return;
+            }
+            if let Some(peer_addr) = peer_addr {
+                core.set_connection_peer_addr(&device_id, peer_addr);
+            }
+            while let Some(packet) = incoming_rx.recv().await {
+                core.handle_peer_packet(&device_id, packet).await;
+            }
+        };
+        tokio::select! {
+            _ = shutdown.cancelled() => {},
+            _ = reservation.cancellation.cancelled() => {},
+            _ = read_packets => {},
+            _ = write_packets => {},
+            _ = dispatch => {},
         }
+        // Dropping dispatch cancels the current callback before cleanup.
     }
-
-    debug!(local_id = %local.device_id, %device_id, "session ended, unregistering");
-    core.unregister_connection(&device_id);
+    if reservation.cancellation.is_cancelled() && !shutdown.is_cancelled() {
+        let mut codec = PacketCodec::new(MAX_PACKET_LINE);
+        let _ = timeout(
+            CLOSE_FLUSH_TIMEOUT,
+            flush_queued(&mut packet_rx, &mut codec, &mut writer),
+        )
+        .await;
+    }
+    core.unregister_current_connection(&device_id, &reservation.cancellation)
+        .await;
     registry.release(&device_id, reservation.id);
 }
 
@@ -1010,6 +1040,7 @@ enum Direction {
 struct ConnectionEntry {
     id: u64,
     direction: Direction,
+    established: bool,
     cancellation: CancellationToken,
 }
 
@@ -1042,7 +1073,7 @@ impl ConnectionRegistry {
         };
         let mut entries = self.entries.lock().ok()?;
         if let Some(existing) = entries.get(peer_id) {
-            if existing.direction == preferred || direction != preferred {
+            if existing.established || existing.direction == preferred || direction != preferred {
                 return None;
             }
             existing.cancellation.cancel();
@@ -1054,10 +1085,27 @@ impl ConnectionRegistry {
             ConnectionEntry {
                 id,
                 direction,
+                established: false,
                 cancellation: cancellation.clone(),
             },
         );
         Some(Reservation { id, cancellation })
+    }
+
+    /// Tie-breaking applies to competing handshakes, never to a live
+    /// authenticated connection whose queued actions must not be lost.
+    fn establish(&self, peer_id: &str, id: u64) -> bool {
+        let Ok(mut entries) = self.entries.lock() else {
+            return false;
+        };
+        let Some(entry) = entries.get_mut(peer_id) else {
+            return false;
+        };
+        if entry.id != id || entry.cancellation.is_cancelled() {
+            return false;
+        }
+        entry.established = true;
+        true
     }
 
     fn release(&self, peer_id: &str, id: u64) -> bool {
@@ -1101,4 +1149,25 @@ pub enum LanError {
     Task(#[source] tokio::task::JoinError),
     #[error("LAN service did not shut down before its deadline")]
     ShutdownDeadline,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tie_breaking_replaces_pending_handshakes_but_preserves_live_connections() {
+        let registry = ConnectionRegistry::default();
+        let pending = registry.reserve_incoming("a", "b").unwrap();
+        let preferred = registry.reserve_outgoing("a", "b").unwrap();
+        assert!(pending.cancellation.is_cancelled());
+        assert!(!registry.establish("b", pending.id));
+        assert!(registry.establish("b", preferred.id));
+
+        let registry = ConnectionRegistry::default();
+        let live = registry.reserve_incoming("a", "b").unwrap();
+        assert!(registry.establish("b", live.id));
+        assert!(registry.reserve_outgoing("a", "b").is_none());
+        assert!(!live.cancellation.is_cancelled());
+    }
 }

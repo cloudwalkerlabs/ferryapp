@@ -36,21 +36,23 @@ impl LocalIdentity {
     /// Load the identity from `store`, creating and storing one if there is
     /// none. A stored identity that is invalid is an error, never replaced:
     /// a new one would be a new device ID, and every pairing lost.
-    pub fn load_or_create(store: &Store) -> Result<Self, IdentityError> {
-        store.transaction(|transaction| {
-            let stored = transaction
-                .get_strict(&IDENTITY)
-                .map_err(|error| match error {
-                    StoreError::Undecodable { .. } => IdentityError::Corrupt,
-                    error => IdentityError::Store(error),
-                })?;
-            if let Some(stored) = stored {
-                return Self::from_stored(stored);
-            }
-            let identity = Self::generate()?;
-            transaction.set(&IDENTITY, &identity.to_stored())?;
-            Ok(identity)
-        })
+    pub async fn load_or_create(store: &Store) -> Result<Self, IdentityError> {
+        store
+            .transaction(|transaction| {
+                let stored = transaction
+                    .get_strict(&IDENTITY)
+                    .map_err(|error| match error {
+                        StoreError::Undecodable { .. } => IdentityError::Corrupt,
+                        error => IdentityError::Store(error),
+                    })?;
+                if let Some(stored) = stored {
+                    return Self::from_stored(stored);
+                }
+                let identity = Self::generate()?;
+                transaction.set(&IDENTITY, &identity.to_stored())?;
+                Ok(identity)
+            })
+            .await
     }
 
     pub fn device_id(&self) -> &str {
@@ -187,12 +189,15 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn identity_is_persistent_and_well_formed() {
+    #[tokio::test]
+    async fn identity_is_persistent_and_well_formed() {
         let directory = tempfile::tempdir().unwrap();
-        let first = LocalIdentity::load_or_create(&Store::open(directory.path()).unwrap()).unwrap();
-        let second =
-            LocalIdentity::load_or_create(&Store::open(directory.path()).unwrap()).unwrap();
+        let first = LocalIdentity::load_or_create(&Store::open(directory.path()).await.unwrap())
+            .await
+            .unwrap();
+        let second = LocalIdentity::load_or_create(&Store::open(directory.path()).await.unwrap())
+            .await
+            .unwrap();
 
         assert!(first == second);
         assert_eq!(first.device_id().len(), 32);
@@ -204,11 +209,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_certificate_and_key_are_stored_as_base64() {
-        let store = Store::open_in_memory().unwrap();
-        let identity = LocalIdentity::load_or_create(&store).unwrap();
-        let json = serde_json::to_value(store.get(&IDENTITY).unwrap().unwrap()).unwrap();
+    #[tokio::test]
+    async fn the_certificate_and_key_are_stored_as_base64() {
+        let store = Store::open_in_memory().await.unwrap();
+        let identity = LocalIdentity::load_or_create(&store).await.unwrap();
+        let json = serde_json::to_value(store.get(&IDENTITY).await.unwrap().unwrap()).unwrap();
         assert_eq!(json["deviceId"], identity.device_id());
         assert_eq!(
             json["certificateDer"]
@@ -219,30 +224,30 @@ mod tests {
         assert!(json["privateKeyDer"].is_string());
     }
 
-    #[test]
-    fn a_corrupt_identity_is_rejected_without_replacement() {
+    #[tokio::test]
+    async fn a_corrupt_identity_is_rejected_without_replacement() {
         const PARTIAL: ConfigKey<serde_json::Value> = ConfigKey::new("core.identity");
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let partial = serde_json::json!({"deviceId": "unfinished"});
-        store.set(&PARTIAL, &partial).unwrap();
+        store.set(&PARTIAL, &partial).await.unwrap();
 
         assert!(matches!(
-            LocalIdentity::load_or_create(&store),
+            LocalIdentity::load_or_create(&store).await,
             Err(IdentityError::Corrupt)
         ));
-        assert_eq!(store.get(&PARTIAL).unwrap(), Some(partial));
+        assert_eq!(store.get(&PARTIAL).await.unwrap(), Some(partial));
     }
 
-    #[test]
-    fn certificate_common_name_must_match_device_id() {
-        let store = Store::open_in_memory().unwrap();
-        LocalIdentity::load_or_create(&store).unwrap();
-        let mut stored = store.get(&IDENTITY).unwrap().unwrap();
+    #[tokio::test]
+    async fn certificate_common_name_must_match_device_id() {
+        let store = Store::open_in_memory().await.unwrap();
+        LocalIdentity::load_or_create(&store).await.unwrap();
+        let mut stored = store.get(&IDENTITY).await.unwrap().unwrap();
         stored.device_id = "11111111111111111111111111111111".into();
-        store.set(&IDENTITY, &stored).unwrap();
+        store.set(&IDENTITY, &stored).await.unwrap();
 
         assert!(matches!(
-            LocalIdentity::load_or_create(&store),
+            LocalIdentity::load_or_create(&store).await,
             Err(IdentityError::CertificateIdentityMismatch)
         ));
     }

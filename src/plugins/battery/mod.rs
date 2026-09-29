@@ -70,6 +70,7 @@ impl BatteryPlugin {
     }
 }
 
+#[async_trait::async_trait]
 impl Plugin for BatteryPlugin {
     fn id(&self) -> &'static str {
         ID
@@ -83,7 +84,7 @@ impl Plugin for BatteryPlugin {
         &[]
     }
 
-    fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
+    async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
         let Ok(body) = packet.body_as::<BatteryBody>() else {
             tracing::debug!(
                 device_id = device.device_id,
@@ -107,11 +108,11 @@ impl Plugin for BatteryPlugin {
         serde_json::to_value(battery).ok()
     }
 
-    fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
+    async fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {
         self.set(device_id, None);
     }
 
-    fn unpaired(&self, _ctx: &PluginContext, device_id: &str) {
+    async fn unpaired(&self, _ctx: &PluginContext, device_id: &str) {
         self.set(device_id, None);
     }
 }
@@ -144,17 +145,18 @@ mod tests {
     }
 
     /// A paired device, connected, with events subscribed after it was.
-    fn connected() -> (
+    async fn connected() -> (
         Core,
         tokio::sync::broadcast::Receiver<crate::core::CoreEvent>,
     ) {
-        let (handle, _plugin, _commands) = handle_with_plugin(BatteryPlugin::default());
+        let (handle, _plugin, _commands) = handle_with_plugin(BatteryPlugin::default()).await;
         handle
             .discover_device(&make_identity(PAIRED_ID, Vec::new()), true, 1)
             .unwrap();
         let (tx, _rx) = mpsc::channel(4);
         handle
             .register_connection(PAIRED_ID, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
         let events = handle.subscribe();
         (handle, events)
@@ -166,20 +168,22 @@ mod tests {
         events.try_recv().unwrap().event
     }
 
-    #[test]
-    fn reports_from_paired_devices_update_the_device_once_per_change() {
-        let (handle, mut events) = connected();
+    #[tokio::test]
+    async fn reports_from_paired_devices_update_the_device_once_per_change() {
+        let (handle, mut events) = connected().await;
         let unpaired_id = "850bd4b9b4184ee497d6caf1da8151be";
         handle
             .discover_device(&make_identity(unpaired_id, Vec::new()), false, 1)
             .unwrap();
         let _ = device_event(&mut events);
 
-        handle.handle_peer_packet(unpaired_id, report(40, false));
+        handle
+            .handle_peer_packet(unpaired_id, report(40, false))
+            .await;
         assert_eq!(battery(&handle, unpaired_id), None);
         assert!(events.try_recv().is_err());
 
-        handle.handle_peer_packet(PAIRED_ID, report(82, true));
+        handle.handle_peer_packet(PAIRED_ID, report(82, true)).await;
         let expected = Some(BatteryStatus {
             charge: 82,
             charging: true,
@@ -195,11 +199,13 @@ mod tests {
         assert_eq!(battery(&handle, PAIRED_ID), expected);
 
         // A repeat changes nothing, so it publishes nothing.
-        handle.handle_peer_packet(PAIRED_ID, report(82, true));
+        handle.handle_peer_packet(PAIRED_ID, report(82, true)).await;
         assert!(events.try_recv().is_err());
 
         // A report of no battery removes it.
-        handle.handle_peer_packet(PAIRED_ID, report(-1, false));
+        handle
+            .handle_peer_packet(PAIRED_ID, report(-1, false))
+            .await;
         let EventData::DeviceUpdated(device) = device_event(&mut events) else {
             panic!("expected device.updated");
         };
@@ -207,10 +213,12 @@ mod tests {
         assert!(events.try_recv().is_err());
     }
 
-    #[test]
-    fn the_battery_survives_rediscovery_but_not_disconnecting() {
-        let (handle, mut events) = connected();
-        handle.handle_peer_packet(PAIRED_ID, report(50, false));
+    #[tokio::test]
+    async fn the_battery_survives_rediscovery_but_not_disconnecting() {
+        let (handle, mut events) = connected().await;
+        handle
+            .handle_peer_packet(PAIRED_ID, report(50, false))
+            .await;
         let _ = device_event(&mut events);
 
         let rediscovered = handle
@@ -219,7 +227,7 @@ mod tests {
         assert!(BatteryStatus::of(&rediscovered).is_some());
         let _ = device_event(&mut events);
 
-        handle.unregister_connection(PAIRED_ID);
+        handle.unregister_connection(PAIRED_ID).await;
         // The disconnect itself shows the battery gone; no extra update.
         let EventData::DeviceDisconnected(device) = device_event(&mut events) else {
             panic!("expected device.disconnected");
@@ -229,14 +237,16 @@ mod tests {
         assert_eq!(battery(&handle, PAIRED_ID), None);
     }
 
-    #[test]
-    fn the_battery_is_dropped_when_the_peer_unpairs() {
-        let (handle, mut events) = connected();
-        handle.handle_peer_packet(PAIRED_ID, report(50, false));
+    #[tokio::test]
+    async fn the_battery_is_dropped_when_the_peer_unpairs() {
+        let (handle, mut events) = connected().await;
+        handle
+            .handle_peer_packet(PAIRED_ID, report(50, false))
+            .await;
         let _ = device_event(&mut events);
 
         let unpair = Packet::from_body(3_u64, "kdeconnect.pair", &json!({"pair": false})).unwrap();
-        handle.handle_peer_packet(PAIRED_ID, unpair);
+        handle.handle_peer_packet(PAIRED_ID, unpair).await;
         let EventData::DeviceUpdated(device) = device_event(&mut events) else {
             panic!("expected device.updated");
         };
@@ -245,13 +255,15 @@ mod tests {
         assert_eq!(battery(&handle, PAIRED_ID), None);
     }
 
-    #[test]
-    fn the_battery_is_dropped_when_the_device_is_forgotten() {
-        let (handle, mut events) = connected();
-        handle.handle_peer_packet(PAIRED_ID, report(50, false));
+    #[tokio::test]
+    async fn the_battery_is_dropped_when_the_device_is_forgotten() {
+        let (handle, mut events) = connected().await;
+        handle
+            .handle_peer_packet(PAIRED_ID, report(50, false))
+            .await;
         let _ = device_event(&mut events);
 
-        handle.forget_device(PAIRED_ID).unwrap();
+        handle.forget_device(PAIRED_ID).await.unwrap();
         let EventData::DeviceForgotten(device) = device_event(&mut events) else {
             panic!("expected device.forgotten");
         };

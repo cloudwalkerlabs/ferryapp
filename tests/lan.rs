@@ -32,10 +32,14 @@ struct Peer {
     _directory: tempfile::TempDir,
 }
 
-fn peer(name: &str) -> Peer {
+async fn peer(name: &str) -> Peer {
+    peer_with_plugins(name, ferry::plugins::builtin(InMemoryClipboard::shared())).await
+}
+
+async fn peer_with_plugins(name: &str, plugins: Vec<Arc<dyn ferry::core::Plugin>>) -> Peer {
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path()).unwrap();
-    let identity = Arc::new(LocalIdentity::load_or_create(&store).unwrap());
+    let store = Store::open(directory.path()).await.unwrap();
+    let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
     let public_key_der = subject_public_key_info(identity.certificate_der()).unwrap();
     let (application, commands) = Core::new(
         LocalDeviceSnapshot {
@@ -45,13 +49,14 @@ fn peer(name: &str) -> Peer {
         8,
         public_key_der,
         store.clone(),
-        ferry::plugins::builtin(InMemoryClipboard::shared()),
+        plugins,
         32,
         128,
         identity.clone(),
         ferry::core::TransferConfig::new(directory.path().join("downloads"))
             .with_payload_bind_ip(Ipv4Addr::LOCALHOST),
     )
+    .await
     .unwrap();
     Peer {
         identity,
@@ -107,8 +112,8 @@ async fn wait_for_reachability(application: &Core, device_id: &str, expected: De
 
 #[tokio::test]
 async fn a_renamed_device_is_seen_under_its_new_name() {
-    let a = peer("Peer A");
-    let b = peer("Peer B");
+    let a = peer("Peer A").await;
+    let b = peer("Peer B").await;
     let a_id = a.identity.device_id().to_owned();
     let b_id = b.identity.device_id().to_owned();
     let a_udp = free_udp_addr();
@@ -144,6 +149,7 @@ async fn a_renamed_device_is_seen_under_its_new_name() {
             device_name: Some(Some("Renamed A".into())),
             ..Default::default()
         })
+        .await
         .unwrap();
     timeout(Duration::from_secs(3), async {
         loop {
@@ -164,8 +170,8 @@ async fn a_renamed_device_is_seen_under_its_new_name() {
 
 #[tokio::test]
 async fn two_peers_discover_connect_deduplicate_and_follow_address_changes() {
-    let a = peer("Peer A");
-    let b = peer("Peer B");
+    let a = peer("Peer A").await;
+    let b = peer("Peer B").await;
     let a_id = a.identity.device_id().to_owned();
     let b_id = b.identity.device_id().to_owned();
     let a_udp = free_udp_addr();
@@ -219,7 +225,7 @@ async fn two_peers_discover_connect_deduplicate_and_follow_address_changes() {
     wait_for_reachability(&b.application, &a_id, DeviceReachability::Unavailable).await;
 
     let new_a_udp = free_udp_addr();
-    let new_a = peer("Peer A");
+    let new_a = peer("Peer A").await;
     // Re-use the original device ID's identity directory so the restarted
     // peer keeps its certificate (as the real daemon would across restarts).
     let new_a_service = LanService::start(
@@ -249,8 +255,8 @@ async fn two_peers_discover_connect_deduplicate_and_follow_address_changes() {
 
 #[tokio::test]
 async fn a_peer_added_by_address_connects_without_broadcast() {
-    let a = peer("Peer A");
-    let b = peer("Peer B");
+    let a = peer("Peer A").await;
+    let b = peer("Peer B").await;
     let a_id = a.identity.device_id().to_owned();
     let b_id = b.identity.device_id().to_owned();
     let b_udp = free_udp_addr();
@@ -306,9 +312,9 @@ async fn a_peer_added_by_address_connects_without_broadcast() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn loopback_only_peers_bind_nothing_but_loopback_and_still_meet() {
-    let a = peer("Peer A");
-    let b = peer("Peer B");
-    let c = peer("Peer C");
+    let a = peer("Peer A").await;
+    let b = peer("Peer B").await;
+    let c = peer("Peer C").await;
     let a_id = a.identity.device_id().to_owned();
     let b_id = b.identity.device_id().to_owned();
     let c_id = c.identity.device_id().to_owned();
@@ -387,9 +393,9 @@ async fn loopback_only_peers_bind_nothing_but_loopback_and_still_meet() {
 
 #[tokio::test]
 async fn accepts_a_kde_connect_dialer_as_tls_client() {
-    let local_peer = peer("Local");
+    let local_peer = peer("Local").await;
     let local_id = local_peer.identity.device_id().to_owned();
-    let kde = peer("KDE Connect");
+    let kde = peer("KDE Connect").await;
     let kde_id = kde.identity.device_id().to_owned();
     let kde_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let service = LanService::start(
@@ -454,9 +460,9 @@ async fn accepts_a_kde_connect_dialer_as_tls_client() {
 
 #[tokio::test]
 async fn dials_a_kde_connect_peer_as_tls_server() {
-    let local_peer = peer("Local");
+    let local_peer = peer("Local").await;
     let local_id = local_peer.identity.device_id().to_owned();
-    let kde = peer("KDE Connect");
+    let kde = peer("KDE Connect").await;
     let kde_id = kde.identity.device_id().to_owned();
     let service = LanService::start(
         test_config(free_udp_addr(), free_udp_addr()),
@@ -568,7 +574,7 @@ async fn read_line<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S) -> String 
 
 #[tokio::test]
 async fn malformed_oversized_self_and_unsupported_discovery_are_ignored() {
-    let local_peer = peer("Local");
+    let local_peer = peer("Local").await;
     let local_id = local_peer.identity.device_id().to_owned();
     let bind = free_udp_addr();
     let service = LanService::start(
@@ -614,7 +620,7 @@ async fn malformed_oversized_self_and_unsupported_discovery_are_ignored() {
 #[tokio::test]
 async fn service_can_restart_without_leaking_sockets_or_tasks() {
     for _ in 0..3 {
-        let restart_peer = peer("Restart");
+        let restart_peer = peer("Restart").await;
         let id = restart_peer.identity.device_id().to_owned();
         let service = LanService::start(
             test_config(free_udp_addr(), free_udp_addr()).with_announcement_targets(Vec::new()),
@@ -663,7 +669,7 @@ async fn ports_held_on_the_wildcard_address_are_skipped() {
         bind_payload_listener(Ipv4Addr::LOCALHOST, port..=port).await,
         Err(PayloadError::NoPort)
     ));
-    let local_peer = peer("Local");
+    let local_peer = peer("Local").await;
     let id = local_peer.identity.device_id().to_owned();
     let started = LanService::start(
         test_config(free_udp_addr(), free_udp_addr())
@@ -694,4 +700,164 @@ fn identity_packet(device_id: &str, protocol_version: u8) -> Vec<u8> {
     PacketCodec::new(MAX_DISCOVERY_DATAGRAM)
         .encode(&packet)
         .unwrap()
+}
+
+struct AwaitingEcho {
+    completed: mpsc::UnboundedSender<u64>,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    cleaned: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl ferry::core::Plugin for AwaitingEcho {
+    fn id(&self) -> &'static str {
+        "awaiting-echo"
+    }
+    fn incoming(&self) -> &'static [&'static str] {
+        &["test.echo"]
+    }
+    fn outgoing(&self) -> &'static [&'static str] {
+        &["test.echo"]
+    }
+    async fn handle_packet(
+        &self,
+        ctx: &ferry::core::PluginContext,
+        device: &ferry::core::DeviceSnapshot,
+        packet: &Packet,
+    ) {
+        let sequence = packet.body["sequence"].as_u64().unwrap();
+        if packet
+            .body
+            .get("wait")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            ctx.send(
+                &device.device_id,
+                Packet::from_body(1, "test.echo", &json!({"sequence": sequence + 100})).unwrap(),
+            )
+            .unwrap();
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        self.completed.send(sequence).unwrap();
+    }
+    async fn disconnected(&self, _: &ferry::core::PluginContext, _: &str) {
+        self.cleaned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn awaiting_callbacks_preserve_order_and_allow_socket_writes_and_shutdown() {
+    fn plugin() -> (Arc<AwaitingEcho>, mpsc::UnboundedReceiver<u64>) {
+        let (completed, receiver) = mpsc::unbounded_channel();
+        (
+            Arc::new(AwaitingEcho {
+                completed,
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+                cleaned: std::sync::atomic::AtomicBool::new(false),
+            }),
+            receiver,
+        )
+    }
+    let (a_plugin, mut a_completed) = plugin();
+    let (b_plugin, mut b_completed) = plugin();
+    let a = peer_with_plugins("Async A", vec![a_plugin]).await;
+    let b = peer_with_plugins("Async B", vec![b_plugin.clone()]).await;
+    let a_id = a.identity.device_id().to_owned();
+    let b_id = b.identity.device_id().to_owned();
+    for (store, identity) in [(&a.store, &b.identity), (&b.store, &a.identity)] {
+        store
+            .put_device(&ferry::store::TrustedDevice {
+                device_id: identity.device_id().to_owned(),
+                certificate_der: identity.certificate_der().to_vec(),
+                last_trusted_protocol_version: 8,
+                last_identity: None,
+            })
+            .await
+            .unwrap();
+    }
+    let a_udp = free_udp_addr();
+    let b_udp = free_udp_addr();
+    let info = |id: &str, name: &str| {
+        let mut info = local(id, name);
+        info.incoming_capabilities = vec!["test.echo".into()];
+        info.outgoing_capabilities = vec!["test.echo".into()];
+        info
+    };
+    let a_service = LanService::start(
+        test_config(a_udp, b_udp),
+        info(&a_id, "Async A"),
+        a.application.clone(),
+        a.commands,
+        a.identity.clone(),
+        a.store.clone(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let b_service = LanService::start(
+        test_config(b_udp, a_udp),
+        info(&b_id, "Async B"),
+        b.application.clone(),
+        b.commands,
+        b.identity.clone(),
+        b.store.clone(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    wait_for_reachability(&a.application, &b_id, DeviceReachability::Connected).await;
+    wait_for_reachability(&b.application, &a_id, DeviceReachability::Connected).await;
+    let send = |sequence, wait| {
+        a.application
+            .plugin_context()
+            .send(
+                &b_id,
+                Packet::from_body(1, "test.echo", &json!({"sequence": sequence, "wait": wait}))
+                    .unwrap(),
+            )
+            .unwrap();
+    };
+    send(1, true);
+    timeout(Duration::from_secs(1), b_plugin.entered.notified())
+        .await
+        .unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(1), a_completed.recv())
+            .await
+            .unwrap(),
+        Some(101)
+    );
+    send(2, false);
+    assert!(b_completed.try_recv().is_err());
+    b_plugin.release.notify_one();
+    assert_eq!(
+        timeout(Duration::from_secs(1), b_completed.recv())
+            .await
+            .unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        timeout(Duration::from_secs(1), b_completed.recv())
+            .await
+            .unwrap(),
+        Some(2)
+    );
+    send(3, true);
+    timeout(Duration::from_secs(1), b_plugin.entered.notified())
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(3), b_service.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(b_plugin.cleaned.load(std::sync::atomic::Ordering::SeqCst));
+    b_plugin.release.notify_one();
+    tokio::task::yield_now().await;
+    assert!(b_completed.try_recv().is_err());
+    a_service.shutdown().await.unwrap();
 }

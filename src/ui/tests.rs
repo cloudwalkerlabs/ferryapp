@@ -225,13 +225,13 @@ pub(super) fn features() -> Features {
 }
 
 /// An app over a test core.
-pub(super) fn running() -> App {
-    running_with_commands().0
+pub(super) async fn running() -> App {
+    running_with_commands().await.0
 }
 
 /// An app over a test core, and what the core asks of the network.
-pub(super) fn running_with_commands() -> (App, tokio::sync::mpsc::Receiver<LanCommand>) {
-    let (core, commands) = handle();
+pub(super) async fn running_with_commands() -> (App, tokio::sync::mpsc::Receiver<LanCommand>) {
+    let (core, commands) = handle().await;
     (running_on(core), commands)
 }
 
@@ -353,7 +353,7 @@ pub(super) fn picker(answer: Option<PathBuf>) -> Arc<FakePicker> {
 }
 #[tokio::test]
 async fn back_goes_to_the_parent_page() {
-    let mut app = running();
+    let mut app = running().await;
     app.route = Route::Browse {
         device: "phone".into(),
         folder: Some("/storage/emulated/0".into()),
@@ -366,7 +366,7 @@ async fn back_goes_to_the_parent_page() {
 }
 #[tokio::test]
 async fn the_version_is_shown() {
-    let mut app = running();
+    let mut app = running().await;
     settle(&mut app, Message::Reload).await;
     settle(&mut app, Message::Navigate(Route::Settings, Origin::Window)).await;
     assert!(shows(&app, "Version 1.2.3 (test)"));
@@ -376,7 +376,7 @@ async fn the_version_is_shown() {
 }
 #[tokio::test]
 async fn a_browse_page_of_a_forgotten_device_says_so() {
-    let mut app = running();
+    let mut app = running().await;
     app.route = Route::Browse {
         device: "gone".into(),
         folder: None,
@@ -430,7 +430,7 @@ async fn snapshot_documentation_gallery() {
     use crate::core::{DeviceReachability, TransferDirection, TransferStatus};
     use crate::protocol::DeviceType;
 
-    let mut app = running();
+    let mut app = running().await;
     app.options.version = env!("CARGO_PKG_VERSION").into();
     let mut phone = testing::device("Pixel 8a");
     phone.incoming_capabilities = vec![

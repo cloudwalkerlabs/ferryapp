@@ -122,6 +122,7 @@ impl ApiSwitch {
             ApiMode::Stored { port, token } => {
                 let stored = store
                     .get(&API)
+                    .await
                     .unwrap_or_else(|error| {
                         // Off rather than not starting; it is rewritten
                         // when the user turns it on.
@@ -154,7 +155,7 @@ impl ApiSwitch {
             let mut state = switch.0.state.lock().await;
             if state.enabled() {
                 if !always {
-                    switch.0.ensure_token(&mut state)?;
+                    switch.0.ensure_token(&mut state).await?;
                 }
                 if let Err(error) = switch.0.listen(&mut state).await {
                     if always {
@@ -210,20 +211,21 @@ impl ApiSwitch {
         let mut stored = state.stored.clone();
         stored.enabled = enabled;
         if enabled {
-            self.0.ensure_token(&mut state)?;
+            self.0.ensure_token(&mut state).await?;
             if state.server.is_none() {
                 self.0.listen(&mut state).await?;
             }
             // `ensure_token` may have stored a new token.
             stored = state.stored.clone();
             stored.enabled = true;
-            if let Err(error) = store.set(&API, &stored) {
+            if let Err(error) = store.set(&API, &stored).await {
                 self.0.stop(&mut state).await;
                 return Err(error).context("couldn't save the API settings");
             }
         } else {
             store
                 .set(&API, &stored)
+                .await
                 .context("couldn't save the API settings")?;
             // Switching off also ends this run's `--api-port`.
             state.port_override = None;
@@ -249,6 +251,7 @@ impl ApiSwitch {
         stored.set_token(&token);
         store
             .set(&API, &stored)
+            .await
             .context("couldn't save the API settings")?;
         state.stored = stored;
         state.token = Some(token);
@@ -299,7 +302,7 @@ impl Inner {
 
     /// Use the stored token, or make and store one: the app's API always
     /// has one.
-    fn ensure_token(&self, state: &mut State) -> Result<()> {
+    async fn ensure_token(&self, state: &mut State) -> Result<()> {
         if state.token.is_some() {
             return Ok(());
         }
@@ -316,6 +319,7 @@ impl Inner {
         stored.set_token(&token);
         store
             .set(&API, &stored)
+            .await
             .context("couldn't save the API settings")?;
         state.stored = stored;
         state.token = Some(token);
@@ -355,20 +359,20 @@ mod tests {
     use super::*;
     use crate::core::testing;
 
-    fn test_core() -> Core {
-        testing::handle().0
+    async fn test_core() -> Core {
+        testing::handle().await.0
     }
 
     #[tokio::test]
     async fn the_stored_api_starts_off_and_switches_on_with_a_kept_token() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let switch = ApiSwitch::start(
             ApiMode::Stored {
                 port: None,
                 token: None,
             },
             store.clone(),
-            test_core(),
+            test_core().await,
             CancellationToken::new(),
         )
         .await
@@ -380,15 +384,15 @@ mod tests {
         assert_eq!(status.port, DEFAULT_API_PORT);
 
         // Not the default port, which the owner's app may hold.
-        let mut stored = store.get(&API).unwrap().unwrap_or_default();
+        let mut stored = store.get(&API).await.unwrap().unwrap_or_default();
         stored.port = Some(free_port());
-        store.set(&API, &stored).unwrap();
+        store.set(&API, &stored).await.unwrap();
         let switch = restart(&store).await;
 
         let on = switch.set_enabled(true).await.unwrap();
         let address = on.address.expect("it listens");
         let token = on.token.clone().expect("it made a token");
-        let stored = store.get(&API).unwrap().unwrap_or_default();
+        let stored = store.get(&API).await.unwrap().unwrap_or_default();
         assert!(stored.enabled);
         assert_eq!(stored.token(), Some(token.clone()));
         assert_eq!(get(address, None).await, 401);
@@ -413,31 +417,31 @@ mod tests {
         let off = switch.set_enabled(false).await.unwrap();
         assert!(!off.enabled);
         assert_eq!(off.address, None);
-        let stored = store.get(&API).unwrap().unwrap_or_default();
+        let stored = store.get(&API).await.unwrap().unwrap_or_default();
         assert!(!stored.enabled);
         assert_eq!(stored.token(), Some(new_token), "the token is kept");
     }
 
     #[tokio::test]
     async fn a_port_in_use_leaves_it_off_and_says_why() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = taken.local_addr().unwrap().port();
         let stored = StoredApi {
             port: Some(port),
             ..StoredApi::default()
         };
-        store.set(&API, &stored).unwrap();
+        store.set(&API, &stored).await.unwrap();
         let switch = restart(&store).await;
         assert!(switch.set_enabled(true).await.is_err());
         let status = switch.status().await;
         assert!(!status.enabled);
-        assert!(!store.get(&API).unwrap().unwrap_or_default().enabled);
+        assert!(!store.get(&API).await.unwrap().unwrap_or_default().enabled);
 
         // Stored as on, it starts anyway, with the reason.
-        let mut stored = store.get(&API).unwrap().unwrap_or_default();
+        let mut stored = store.get(&API).await.unwrap().unwrap_or_default();
         stored.enabled = true;
-        store.set(&API, &stored).unwrap();
+        store.set(&API, &stored).await.unwrap();
         let status = restart(&store).await.status().await;
         assert!(status.enabled);
         assert_eq!(status.address, None);
@@ -449,7 +453,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_port_for_the_run_turns_it_on_without_storing_that() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let token = ApiToken::from_secret("for-this-run").unwrap();
         let switch = ApiSwitch::start(
             ApiMode::Stored {
@@ -457,7 +461,7 @@ mod tests {
                 token: Some(token.clone()),
             },
             store.clone(),
-            test_core(),
+            test_core().await,
             CancellationToken::new(),
         )
         .await
@@ -466,12 +470,12 @@ mod tests {
         assert!(status.enabled);
         assert_eq!(status.token, Some(token));
         assert_ne!(status.address.unwrap().port(), 0);
-        assert!(!store.get(&API).unwrap().unwrap_or_default().enabled);
+        assert!(!store.get(&API).await.unwrap().unwrap_or_default().enabled);
     }
 
     #[tokio::test]
     async fn an_always_on_api_cant_be_switched() {
-        let store = Store::open_in_memory().unwrap();
+        let store = Store::open_in_memory().await.unwrap();
         let switch = ApiSwitch::start(
             ApiMode::Always {
                 host: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -479,7 +483,7 @@ mod tests {
                 token: None,
             },
             store.clone(),
-            test_core(),
+            test_core().await,
             CancellationToken::new(),
         )
         .await
@@ -489,7 +493,7 @@ mod tests {
         assert_eq!(get(status.address.unwrap(), None).await, 200);
         assert!(switch.set_enabled(false).await.is_err());
         assert!(switch.new_token().await.is_err());
-        assert_eq!(store.get(&API).unwrap(), None);
+        assert_eq!(store.get(&API).await.unwrap(), None);
     }
 
     async fn restart(store: &Store) -> ApiSwitch {
@@ -499,7 +503,7 @@ mod tests {
                 token: None,
             },
             store.clone(),
-            test_core(),
+            test_core().await,
             CancellationToken::new(),
         )
         .await

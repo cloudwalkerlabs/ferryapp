@@ -37,10 +37,10 @@ struct Peer {
     _directory: tempfile::TempDir,
 }
 
-fn peer(name: &str) -> Peer {
+async fn peer(name: &str) -> Peer {
     let directory = tempfile::tempdir().unwrap();
-    let store = Store::open(directory.path()).unwrap();
-    let identity = Arc::new(LocalIdentity::load_or_create(&store).unwrap());
+    let store = Store::open(directory.path()).await.unwrap();
+    let identity = Arc::new(LocalIdentity::load_or_create(&store).await.unwrap());
     let (core, commands) = Core::new(
         LocalDeviceSnapshot {
             device_id: identity.device_id().to_owned(),
@@ -56,6 +56,7 @@ fn peer(name: &str) -> Peer {
         TransferConfig::new(directory.path().join("downloads"))
             .with_payload_bind_ip(Ipv4Addr::LOCALHOST),
     )
+    .await
     .unwrap();
     Peer {
         id: identity.device_id().to_owned(),
@@ -140,8 +141,8 @@ async fn next_share(
 async fn paired_ferry_peers_share_text_and_links() {
     let a_udp = free_udp_addr();
     let b_udp = free_udp_addr();
-    let (a, a_id, a_lan, _a_dir) = start_lan(peer("Peer A"), "Peer A", a_udp, b_udp).await;
-    let (b, b_id, b_lan, _b_dir) = start_lan(peer("Peer B"), "Peer B", b_udp, a_udp).await;
+    let (a, a_id, a_lan, _a_dir) = start_lan(peer("Peer A").await, "Peer A", a_udp, b_udp).await;
+    let (b, b_id, b_lan, _b_dir) = start_lan(peer("Peer B").await, "Peer B", b_udp, a_udp).await;
     let connected = |core: &Core, id: &str| {
         core.device(id)
             .is_some_and(|device| device.reachability == DeviceReachability::Connected)
@@ -165,8 +166,8 @@ async fn paired_ferry_peers_share_text_and_links() {
         "unexpected result: {early:?}"
     );
 
-    let pairing = a.start_outgoing_pairing(&b_id).unwrap();
     let mut b_events = b.subscribe();
+    let pairing = a.start_outgoing_pairing(&b_id).await.unwrap();
     let incoming = timeout(Duration::from_secs(3), async {
         loop {
             if let EventData::PairingRequested(snapshot) = b_events.recv().await.unwrap().event {
@@ -177,7 +178,7 @@ async fn paired_ferry_peers_share_text_and_links() {
     .await
     .unwrap();
     assert_eq!(incoming.verification_code, pairing.verification_code);
-    b.accept_pairing(incoming.id).unwrap();
+    b.accept_pairing(incoming.id).await.unwrap();
     eventually(|| {
         a.device(&b_id).is_some_and(|device| device.paired)
             && b.device(&a_id).is_some_and(|device| device.paired)

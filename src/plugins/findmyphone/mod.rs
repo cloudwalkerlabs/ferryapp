@@ -21,6 +21,7 @@ pub const ID: &str = "findmyphone";
 
 pub struct FindMyPhonePlugin;
 
+#[async_trait::async_trait]
 impl Plugin for FindMyPhonePlugin {
     fn id(&self) -> &'static str {
         ID
@@ -62,9 +63,9 @@ mod tests {
         plugins::ping,
     };
 
-    #[test]
-    fn devices_that_accept_it_can_be_asked_to_ring() {
-        let (handle, _plugin, _commands) = handle_with_plugin(FindMyPhonePlugin);
+    #[tokio::test]
+    async fn devices_that_accept_it_can_be_asked_to_ring() {
+        let (handle, _plugin, _commands) = handle_with_plugin(FindMyPhonePlugin).await;
         let ctx = handle.plugin_context();
         let device_id = "740bd4b9b4184ee497d6caf1da8151be";
         let identity = make_identity(device_id, vec![ping::PACKET_TYPE.into()]);
@@ -72,6 +73,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         handle
             .register_connection(device_id, vec![1, 2, 3], 8, tx, CancellationToken::new(), 1)
+            .await
             .unwrap();
 
         // Accepting pings says nothing about ringing.

@@ -146,7 +146,12 @@ impl Core {
     }
 
     /// Start an outgoing pairing session with a connected device.
-    pub fn start_outgoing_pairing(&self, device_id: &str) -> Result<PairingSnapshot, CoreError> {
+    pub async fn start_outgoing_pairing(
+        &self,
+        device_id: &str,
+    ) -> Result<PairingSnapshot, CoreError> {
+        let operation = self.device_operation(device_id);
+        let _operation = operation.lock().await;
         let timestamp = unix_seconds();
         let now = unix_millis();
         let (pairing_id, sender, packet) = {
@@ -228,7 +233,18 @@ impl Core {
     /// Confirm a locally displayed verification code for an incoming
     /// pairing request. Trust is pinned before the pairing is marked
     /// accepted, and never before this explicit local confirmation.
-    pub fn accept_pairing(&self, pairing_id: Uuid) -> Result<PairingSnapshot, CoreError> {
+    pub async fn accept_pairing(&self, pairing_id: Uuid) -> Result<PairingSnapshot, CoreError> {
+        let core = self.clone();
+        self.mutations
+            .spawn(async move { core.accept_pairing_inner(pairing_id).await })
+            .await
+            .map_err(|_| CoreError::StateUnavailable)?
+    }
+
+    async fn accept_pairing_inner(&self, pairing_id: Uuid) -> Result<PairingSnapshot, CoreError> {
+        let device_id = self.pairing_snapshot(pairing_id)?.device_id;
+        let operation = self.device_operation(&device_id);
+        let _operation = operation.lock().await;
         let (device_id, connection) = {
             let state = self.state.read().map_err(|_| CoreError::StateUnavailable)?;
             let runtime = state
@@ -257,6 +273,7 @@ impl Core {
                 last_trusted_protocol_version: connection.protocol_version,
                 last_identity: self.known_identity(&device_id),
             })
+            .await
             .map_err(CoreError::Store)?;
 
         let snapshot = {
@@ -293,12 +310,15 @@ impl Core {
         self.events
             .publish(EventData::PairingUpdated(snapshot.clone()))?;
         self.publish_device_update(&device_id);
-        self.run_paired_hooks(&device_id);
+        self.run_paired_hooks(&device_id).await;
         Ok(snapshot)
     }
 
     /// Reject an incoming pairing or cancel an outgoing one.
-    pub fn cancel_pairing(&self, pairing_id: Uuid) -> Result<PairingSnapshot, CoreError> {
+    pub async fn cancel_pairing(&self, pairing_id: Uuid) -> Result<PairingSnapshot, CoreError> {
+        let device_id = self.pairing_snapshot(pairing_id)?.device_id;
+        let operation = self.device_operation(&device_id);
+        let _operation = operation.lock().await;
         let (_device_id, sender, snapshot) = {
             let mut state = self
                 .state
@@ -344,15 +364,27 @@ impl Core {
         Ok(snapshot)
     }
 
-    pub(super) fn handle_pair_body(&self, device_id: &str, body: PairingBody, received_at: i64) {
+    pub(super) async fn handle_pair_body(
+        &self,
+        device_id: &str,
+        body: PairingBody,
+        received_at: i64,
+    ) {
         if !body.pair {
+            let has_pairing = self
+                .state
+                .read()
+                .ok()
+                .is_some_and(|state| state.pairing_by_device.contains_key(device_id));
+            if !has_pairing {
+                self.handle_peer_unpair(device_id).await;
+                return;
+            }
             let snapshot = {
                 let Ok(mut state) = self.state.write() else {
                     return;
                 };
                 let Some(&pairing_id) = state.pairing_by_device.get(device_id) else {
-                    drop(state);
-                    self.handle_peer_unpair(device_id);
                     return;
                 };
                 let Some(runtime) = state.pairings.get_mut(&pairing_id) else {
@@ -400,7 +432,7 @@ impl Core {
         };
 
         match outcome {
-            Outcome::ConfirmOutgoing(pairing_id) => self.confirm_outgoing_pairing(pairing_id),
+            Outcome::ConfirmOutgoing(pairing_id) => self.confirm_outgoing_pairing(pairing_id).await,
             Outcome::NewIncoming => self.begin_incoming_pairing(device_id, body, received_at),
             Outcome::Ignore => {}
         }
@@ -410,25 +442,33 @@ impl Core {
     /// the peer has unpaired us. Remove its trust and mark it unpaired, but
     /// keep the connection open, as KDE Connect does, so the device stays
     /// reachable and can be paired again.
-    fn handle_peer_unpair(&self, device_id: &str) {
+    async fn handle_peer_unpair(&self, device_id: &str) {
         let was_paired = self
             .state
             .read()
             .ok()
             .and_then(|state| state.devices.get(device_id))
             .is_some_and(|device| device.paired);
-        let was_trusted = self.store.remove_device(device_id).unwrap_or(false);
+        let was_trusted = match self.store.remove_device(device_id).await {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::warn!(device_id, %error, "could not remove peer trust");
+                return;
+            }
+        };
         if !was_paired && !was_trusted {
             return;
         }
         if let Ok(mut state) = self.state.write() {
             let _ = state.devices.set_paired(device_id, false);
         }
-        self.plugins.unpaired(&self.plugin_context(), device_id);
+        self.plugins
+            .unpaired(&self.plugin_context(), device_id)
+            .await;
         self.publish_device_update(device_id);
     }
 
-    fn confirm_outgoing_pairing(&self, pairing_id: Uuid) {
+    async fn confirm_outgoing_pairing(&self, pairing_id: Uuid) {
         let Some((device_id, certificate_der, protocol_version)) = ({
             let Ok(state) = self.state.read() else {
                 return;
@@ -459,6 +499,7 @@ impl Core {
                 certificate_der,
                 last_trusted_protocol_version: protocol_version,
             })
+            .await
             .is_err()
         {
             let snapshot = self.fail_pairing(pairing_id, OperationErrorCode::Internal);
@@ -486,13 +527,13 @@ impl Core {
         };
         let _ = self.events.publish(EventData::PairingUpdated(snapshot));
         self.publish_device_update(&device_id);
-        self.run_paired_hooks(&device_id);
+        self.run_paired_hooks(&device_id).await;
     }
 
     /// Tell the plugins `device_id` is now paired, as it is connected.
-    fn run_paired_hooks(&self, device_id: &str) {
+    async fn run_paired_hooks(&self, device_id: &str) {
         if let Some(device) = self.device(device_id) {
-            self.plugins.paired(&self.plugin_context(), &device);
+            self.plugins.paired(&self.plugin_context(), &device).await;
         }
     }
 
@@ -615,7 +656,7 @@ impl Core {
         let handle = self.clone();
         let task = tokio::spawn(async move {
             sleep(PAIRING_TIMEOUT).await;
-            handle.expire_pairing(pairing_id);
+            handle.expire_pairing(pairing_id).await;
         });
         let Ok(mut state) = self.state.write() else {
             task.abort();
@@ -627,7 +668,12 @@ impl Core {
         }
     }
 
-    fn expire_pairing(&self, pairing_id: Uuid) {
+    async fn expire_pairing(&self, pairing_id: Uuid) {
+        let Ok(pairing) = self.pairing_snapshot(pairing_id) else {
+            return;
+        };
+        let operation = self.device_operation(&pairing.device_id);
+        let _operation = operation.lock().await;
         let snapshot = {
             let Ok(mut state) = self.state.write() else {
                 return;
@@ -719,11 +765,11 @@ mod tests {
         assert!(pairing.transition(PairingStatus::Rejected, None).is_err());
     }
 
-    #[test]
-    fn pairing_requires_a_connected_device() {
-        let (handle, _commands) = handle();
+    #[tokio::test]
+    async fn pairing_requires_a_connected_device() {
+        let (handle, _commands) = handle().await;
         assert!(matches!(
-            handle.start_outgoing_pairing("missing"),
+            handle.start_outgoing_pairing("missing").await,
             Err(CoreError::UnknownDevice)
         ));
     }
@@ -737,13 +783,14 @@ mod tests {
         Packet::from_body(1, "kdeconnect.pair", &body).unwrap()
     }
 
-    #[test]
-    fn unpair_from_a_paired_peer_removes_trust_and_keeps_the_connection() {
-        let (handle, _commands) = handle();
+    #[tokio::test]
+    async fn unpair_from_a_paired_peer_removes_trust_and_keeps_the_connection() {
+        let (handle, _commands) = handle().await;
         let device_id = "740bd4b9b4184ee497d6caf1da8151be";
         handle
             .store
             .put_device(&crate::store::testing::trusted_device(device_id))
+            .await
             .unwrap();
         handle
             .discover_device(&make_identity(device_id, Vec::new()), true, 1)
@@ -752,12 +799,13 @@ mod tests {
         let cancellation = CancellationToken::new();
         handle
             .register_connection(device_id, vec![1, 2, 3], 8, tx, cancellation.clone(), 1)
+            .await
             .unwrap();
         let mut events = handle.subscribe();
 
-        handle.handle_peer_packet(device_id, unpair_packet());
+        handle.handle_peer_packet(device_id, unpair_packet()).await;
 
-        assert!(handle.store.device(device_id).unwrap().is_none());
+        assert!(handle.store.device(device_id).await.unwrap().is_none());
         match events.try_recv().unwrap().event {
             super::EventData::DeviceUpdated(device) => {
                 assert!(!device.paired);
@@ -771,16 +819,16 @@ mod tests {
         assert!(!cancellation.is_cancelled());
     }
 
-    #[test]
-    fn unpair_from_an_unpaired_peer_is_ignored() {
-        let (handle, _commands) = handle();
+    #[tokio::test]
+    async fn unpair_from_an_unpaired_peer_is_ignored() {
+        let (handle, _commands) = handle().await;
         let device_id = "740bd4b9b4184ee497d6caf1da8151be";
         handle
             .discover_device(&make_identity(device_id, Vec::new()), false, 1)
             .unwrap();
         let mut events = handle.subscribe();
 
-        handle.handle_peer_packet(device_id, unpair_packet());
+        handle.handle_peer_packet(device_id, unpair_packet()).await;
 
         assert!(events.try_recv().is_err());
     }

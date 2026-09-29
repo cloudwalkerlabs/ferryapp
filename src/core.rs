@@ -69,6 +69,9 @@ pub struct Core {
     local_device_id: Arc<str>,
     /// Locked before, never while holding, `state`.
     settings: Arc<Mutex<Settings>>,
+    settings_updates: Arc<tokio::sync::Mutex<()>>,
+    mutations: tokio_util::task::TaskTracker,
+    device_operations: Arc<Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
     /// The device name in effect, watched by the LAN transport so a rename
     /// reaches peers.
     local_device_name: Arc<watch::Sender<String>>,
@@ -96,7 +99,7 @@ impl Core {
     /// A core running `plugins`: in the daemon, `plugins::builtin()`, chosen
     /// by [`crate::daemon`].
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub async fn new(
         local_device: LocalDeviceSnapshot,
         protocol_version: u8,
         local_public_key_der: Vec<u8>,
@@ -112,7 +115,7 @@ impl Core {
         }
         let (commands, receiver) = mpsc::channel(command_capacity);
         let events = EventBus::new(event_capacity)?;
-        let devices = paired_devices(&store);
+        let devices = paired_devices(&store).await;
         let plugins = PluginRegistry::new(plugins);
         let settings = Settings::new(SettingsDefaults {
             device_name: local_device.device_name.clone(),
@@ -125,6 +128,9 @@ impl Core {
                 started_at: Instant::now(),
                 local_device_id: local_device.device_id.into(),
                 settings,
+                settings_updates: Arc::new(tokio::sync::Mutex::new(())),
+                mutations: tokio_util::task::TaskTracker::new(),
+                device_operations: Arc::new(Mutex::new(HashMap::new())),
                 local_device_name: Arc::new(watch::Sender::new(local_device.device_name)),
                 protocol_version,
                 local_public_key_der: Arc::new(local_public_key_der),
@@ -143,6 +149,20 @@ impl Core {
             },
             receiver,
         ))
+    }
+
+    fn device_operation(&self, device_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut operations = self
+            .device_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        operations.retain(|_, operation| operation.strong_count() > 0);
+        if let Some(operation) = operations.get(device_id).and_then(std::sync::Weak::upgrade) {
+            return operation;
+        }
+        let operation = Arc::new(tokio::sync::Mutex::new(()));
+        operations.insert(device_id.to_owned(), Arc::downgrade(&operation));
+        operation
     }
 
     /// The core as plugins see it.
@@ -237,15 +257,33 @@ impl Core {
     /// Validate, persist, and apply a settings change, then publish
     /// `settings.changed` if anything changed. A new device name is
     /// re-announced to the network by the LAN transport.
-    pub fn update_settings(&self, patch: SettingsPatch) -> Result<SettingsSnapshot, CoreError> {
-        // Holding the lock across the file write keeps concurrent updates
-        // from saving out of order.
+    pub async fn update_settings(
+        &self,
+        patch: SettingsPatch,
+    ) -> Result<SettingsSnapshot, CoreError> {
+        let core = self.clone();
+        self.mutations
+            .spawn(async move { core.update_settings_inner(patch).await })
+            .await
+            .map_err(|_| CoreError::StateUnavailable)?
+    }
+
+    async fn update_settings_inner(
+        &self,
+        patch: SettingsPatch,
+    ) -> Result<SettingsSnapshot, CoreError> {
+        let _update = self.settings_updates.lock().await;
         let mut settings = self
             .settings
             .lock()
-            .map_err(|_| CoreError::StateUnavailable)?;
+            .map_err(|_| CoreError::StateUnavailable)?
+            .clone();
         let before = settings.snapshot();
-        let after = settings.update(patch)?;
+        let after = settings.update(patch).await?;
+        *self
+            .settings
+            .lock()
+            .map_err(|_| CoreError::StateUnavailable)? = settings;
         if after != before {
             self.apply_settings(&after);
             self.events
@@ -268,13 +306,15 @@ impl Core {
 
     /// Start what plugins run of their own. Called once by the code that
     /// starts the daemon, inside the async runtime.
-    pub fn start_plugins(&self) {
-        self.plugins.started(&self.plugin_context());
+    pub async fn start_plugins(&self) {
+        self.plugins.started(&self.plugin_context()).await;
     }
 
     /// Stop every plugin's own work and close what plugins hold open.
     /// Called during daemon shutdown, after [`Self::shutdown_transfers`].
     pub async fn shutdown_plugins(&self) {
+        self.mutations.close();
+        self.mutations.wait().await;
         self.plugins.shutdown().await;
     }
 
@@ -336,12 +376,54 @@ mod tests {
     use super::*;
     use crate::core::testing::handle;
 
-    #[test]
-    fn status_and_empty_snapshots_are_readable() {
-        let (handle, _commands) = handle();
+    #[tokio::test]
+    async fn status_and_empty_snapshots_are_readable() {
+        let (handle, _commands) = handle().await;
         assert_eq!(handle.status().protocol_version, 8);
         assert_eq!(handle.devices().unwrap(), Vec::new());
         assert_eq!(handle.pairings().unwrap(), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn cancelled_settings_call_still_updates_memory_and_persistence() {
+        let (core, _commands) = handle().await;
+        let settings = Settings::new(SettingsDefaults {
+            device_name: "Ferry".into(),
+            download_dir: std::env::temp_dir(),
+        })
+        .with_store(core.store.clone())
+        .await;
+        core.install_settings(settings);
+        let gate = core.settings_updates.lock().await;
+        let caller = tokio::spawn({
+            let core = core.clone();
+            async move {
+                core.update_settings(SettingsPatch {
+                    device_name: Some(Some("Renamed".into())),
+                    ..Default::default()
+                })
+                .await
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while core.mutations.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        drop(gate);
+        tokio::time::timeout(std::time::Duration::from_secs(1), core.shutdown_plugins())
+            .await
+            .unwrap();
+        assert_eq!(core.settings().unwrap().device_name, "Renamed");
+        assert_eq!(core.local_device_name(), "Renamed");
+        assert_eq!(
+            core.store.get(&DEVICE_NAME).await.unwrap().as_deref(),
+            Some("Renamed")
+        );
     }
 
     #[test]
