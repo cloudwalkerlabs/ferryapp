@@ -659,7 +659,7 @@ against an external daemon (`--dart-define=MYCONNECT_API_URL=...`).
 > but is not Android. The app was checked live against
 > `cargo run --example fake_phone`. The research behind the approach
 > (mounting vs. an in-app browser) is in
-> `docs/research/remote-file-browsing.md`.
+> `docs/archive/remote-file-browsing.md`.
 >
 > **Checked on the owner's Pixel 8a** (2026-09-24, CLI daemon, not the
 > app). The host key matched the pinned certificate, and Android accepted

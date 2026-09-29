@@ -8,7 +8,7 @@
 //! built-in plugins to [`super::Core::new`]; nothing is loaded at runtime.
 //!
 //! See `docs/ARCHITECTURE.md` §2 for the shape, and
-//! `docs/research/feature-modules.md` for how the daemon got it.
+//! `docs/archive/feature-modules.md` for how the daemon got it.
 
 use std::{
     collections::{BTreeMap, HashMap},

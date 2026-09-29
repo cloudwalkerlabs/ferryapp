@@ -4,7 +4,7 @@
 # a native speaker: corrections are welcome as pull requests. The comments
 # describing each message are in en-US/ferry.ftl; keys and arguments must
 # match that file (`ui::i18n::tests` checks). Chinese has one plural form,
-# so counts need no selector. See docs/PLAN_I18N.md.
+# so counts need no selector. See docs/archive/PLAN_I18N.md.
 
 ## Files dropped on the window or the tray icon (src/ui/drops.rs)
 

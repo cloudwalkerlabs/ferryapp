@@ -2,7 +2,7 @@
 # The app's translations, for the packages: what the system shows about the
 # app outside it (the Linux menu entry, macOS's permission prompts and
 # dialogs, the Windows installer) in each language the app ships, from the
-# `package-*` messages in i18n/<lang>/ferry.ftl (docs/PLAN_I18N.md).
+# `package-*` messages in i18n/<lang>/ferry.ftl (docs/archive/PLAN_I18N.md).
 #
 #   i18n.sh languages          the shipped languages, en-US first
 #   i18n.sh message LANG KEY   one package-* message

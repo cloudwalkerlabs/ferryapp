@@ -17,7 +17,7 @@ the OS file manager would need a different mechanism on each platform:
 - FUSE or GVfs on Linux.
 
 A mount of a phone that drops off Wi-Fi is also where file managers hang.
-The research is in `docs/research/remote-file-browsing.md`.
+The research is in `docs/archive/remote-file-browsing.md`.
 
 Every other resource is a snapshot plus events ([0003](0003-snapshot-plus-events-state-sync.md)).
 A device's files can't be: nothing tells the daemon when they change on the

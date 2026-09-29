@@ -1,7 +1,13 @@
 # Research: browsing a paired device's files
 
+> Archived on 2026-09-29: the chosen in-app browser is implemented.
+> Current behavior and open verification are in
+> [ARCHITECTURE §12](../ARCHITECTURE.md#12-browsing-a-devices-files) and
+> [HANDOFF.md](../HANDOFF.md).
+
 Status: research (2026-09-24). Option B, the in-app browser, was then
-built; see `ui/docs/adr/0008` and ARCHITECTURE §12. Question: should
+built; see [the archived browsing ADR](flutter-adr/0008-browse-device-files-in-the-app.md)
+and [ARCHITECTURE §12](../ARCHITECTURE.md#12-browsing-a-devices-files). Question: should
 Ferry show another device's files through an OS mount (FUSE and
 friends), or through a file browser inside the app?
 

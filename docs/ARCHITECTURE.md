@@ -180,7 +180,7 @@ A new feature is:
 
 The UI calls the typed API, never the routes, so anything the UI does the
 CLI can do too. Update this document by hand.
-[`research/feature-modules.md`](research/feature-modules.md) records how
+[`archive/feature-modules.md`](archive/feature-modules.md) records how
 the daemon was moved to this shape, feature by feature, and what each step
 taught.
 
@@ -628,7 +628,8 @@ which [`adr/0001`](adr/0001-native-ui-in-iced.md) carries over.
 
 The desktop app is translated; the CLI, the HTTP API (it reports error
 codes, which the app words), logs and the website stay in English. The
-plan and its decisions are in [`PLAN_I18N.md`](PLAN_I18N.md).
+completed implementation plan is in
+[`archive/PLAN_I18N.md`](archive/PLAN_I18N.md).
 
 - **Messages.** Every word the app shows is a Fluent message in
   `i18n/<lang>/ferry.ftl`, embedded in the binary (`rust-embed`). en-US is

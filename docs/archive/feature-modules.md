@@ -1,5 +1,9 @@
 # Research: one module per feature
 
+> Archived on 2026-09-29: this completed implementation history is
+> superseded by the current [architecture](../ARCHITECTURE.md) and
+> [active handoff](../HANDOFF.md).
+
 > The UI half of this (each feature's `ui.rs` next to its plugin, behind a
 > `UiPlugin` seam) was replaced on 2026-09-26: all UI code now lives in
 > `src/ui/`. See [`adr/0001`](../adr/0001-native-ui-in-iced.md).

@@ -10,7 +10,7 @@
 //! until then, and in tests, [`LOADER`] holds en-US, the fallback for any
 //! key a translation lacks. Numbers in messages and dates are in the user's
 //! locale ([`format`]). `FERRY_LANG=en-XA` shows a pseudo-locale
-//! generated from en-US ([`pseudo`]). See `docs/PLAN_I18N.md`.
+//! generated from en-US ([`pseudo`]). See `docs/archive/PLAN_I18N.md`.
 
 pub mod format;
 pub mod pseudo;

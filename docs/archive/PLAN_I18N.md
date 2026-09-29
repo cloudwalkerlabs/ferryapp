@@ -1,5 +1,10 @@
 # Plan: localising the app
 
+> Archived on 2026-09-29: implementation is complete. Outstanding manual
+> verification is tracked in [the active handoff](../HANDOFF.md#localization-verification).
+> The phase instructions and notes below are historical. Current rules
+> live in [HANDOFF.md](../HANDOFF.md) and [ARCHITECTURE §13](../ARCHITECTURE.md#13-the-apps-languages).
+
 How the desktop app (`ferry-gui`, `src/ui/`) gets translated. Each phase
 is done by one agent: read this plan and `HANDOFF.md`, do the phase,
 pass the "done means" checks in `HANDOFF.md` (run under a private display

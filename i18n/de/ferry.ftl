@@ -3,7 +3,7 @@
 # Written by an AI agent from i18n/en-US/ferry.ftl and not yet reviewed by
 # a native speaker: corrections are welcome as pull requests. The comments
 # describing each message are in en-US/ferry.ftl; keys and arguments must
-# match that file (`ui::i18n::tests` checks). See docs/PLAN_I18N.md.
+# match that file (`ui::i18n::tests` checks). See docs/archive/PLAN_I18N.md.
 
 ## Files dropped on the window or the tray icon (src/ui/drops.rs)
 
