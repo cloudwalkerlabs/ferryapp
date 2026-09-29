@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use crate::{config::LocalIdentity, store::Store};
 
+mod addresses;
 mod connections;
 mod devices;
 mod error;
@@ -40,6 +41,7 @@ use devices::paired_devices;
 use pairing::PairingRuntime;
 pub(crate) use settings::{Settings, StoredSettings};
 
+pub use addresses::{ADDRESSES, CONNECT_TIMEOUT, MAX_ADDRESSES};
 pub use connections::LanCommand;
 pub use devices::{DeviceReachability, DeviceRegistry, DeviceRegistryError, DeviceSnapshot};
 pub use error::{CoreError, OperationErrorCode};
@@ -93,6 +95,9 @@ struct CoreState {
     connections: HashMap<String, Connection>,
     pairings: BTreeMap<Uuid, PairingRuntime>,
     pairing_by_device: HashMap<String, Uuid>,
+    /// The address each unpaired device connected from after
+    /// [`Core::connect_address`], saved once it is paired.
+    pending_addresses: HashMap<String, std::net::Ipv4Addr>,
 }
 
 impl Core {
@@ -141,6 +146,7 @@ impl Core {
                     connections: HashMap::new(),
                     pairings: BTreeMap::new(),
                     pairing_by_device: HashMap::new(),
+                    pending_addresses: HashMap::new(),
                 })),
                 commands,
                 events,

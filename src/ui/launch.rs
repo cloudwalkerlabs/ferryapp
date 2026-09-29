@@ -214,6 +214,8 @@ impl App {
             searching: false,
             scan: 0,
             starting: None,
+            connecting: None,
+            attempts: 0,
             cancelling: None,
             answering: None,
             answer_error: None,

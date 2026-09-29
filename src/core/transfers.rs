@@ -847,6 +847,7 @@ mod tests {
             pairing: false,
             last_seen_at: 1,
             plugins: Default::default(),
+            addresses: Vec::new(),
         }
     }
 

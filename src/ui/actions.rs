@@ -5,10 +5,11 @@
 use std::{future::Future, net::Ipv4Addr, path::PathBuf, sync::Arc};
 
 use iced::{Element, Task};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{
-    App, CliCopy, Message, Origin, Phase, context, error,
+    App, CliCopy, Message, Origin, Phase, Route, context, error,
     i18n::fl,
     overlay::{
         dialog::{Dialog, Field, Submit},
@@ -17,9 +18,19 @@ use super::{
     pages::{add_device, settings},
 };
 use crate::{
-    core::{Core, CoreError, SettingsPatch},
+    core::{CoreError, DeviceSnapshot, SettingsPatch},
     daemon::{ApiStatus, ApiSwitch},
 };
+
+/// An address being tried for a device to add: which try, so the answer of
+/// a cancelled one is ignored; the address, for the page to show; and the
+/// token that stops the wait on the daemon.
+pub(super) struct Connecting {
+    attempt: u64,
+    pub(super) address: Ipv4Addr,
+    cancel: CancellationToken,
+}
+
 impl App {
     /// Announce this computer so devices nearby answer, and show that the
     /// page is searching.
@@ -44,14 +55,10 @@ impl App {
         )
     }
 
-    /// Ask for an IP address and announce this computer to it. The dialog
-    /// stays open with the reason until the address is accepted, then the
-    /// page shows it is searching.
+    /// Ask for the IP address of a device to add. The dialog stays open
+    /// with the reason until the address is one that can be tried, then the
+    /// page waits for the device to answer ([`Self::connect`]).
     pub(super) fn add_by_address(&mut self) -> Task<Message> {
-        let Some(running) = self.running() else {
-            return Task::none();
-        };
-        let core = running.ctx.core().clone();
         self.dialogs.open(Dialog::prompt(
             fl!("shell-add-by-address-title"),
             Field {
@@ -61,10 +68,178 @@ impl App {
                 ..Field::default()
             },
             fl!("shell-add-by-address-confirm"),
-            Submit::Run(Arc::new(move |address| {
-                Task::done(announce_to(&core, &address).map(|()| Message::ShowSearching))
+            Submit::Run(Arc::new(|address| {
+                Task::done(unicast_address(&address).map(Message::Connect))
             })),
         ))
+    }
+
+    /// Wait for a device to answer at `address`, off the UI thread, so the
+    /// page can show it and offer to cancel. An answer starts pairing with
+    /// the device, and pairing saves the address ([`Core::connect_address`]);
+    /// a device already paired keeps it at once.
+    pub(super) fn connect(&mut self, address: Ipv4Addr) -> Task<Message> {
+        if self.connecting.is_some() {
+            return Task::none();
+        }
+        let Some(running) = self.running() else {
+            return Task::none();
+        };
+        let core = running.ctx.core().clone();
+        self.attempts += 1;
+        let attempt = self.attempts;
+        let cancel = CancellationToken::new();
+        self.connecting = Some(Connecting {
+            attempt,
+            address,
+            cancel: cancel.clone(),
+        });
+        self.core_future(
+            async move {
+                tokio::select! {
+                    () = cancel.cancelled() => Err(CoreError::AddressUnreachable),
+                    result = core.connect_address(address) => result,
+                }
+            },
+            move |result| Message::Connected { attempt, result },
+        )
+    }
+
+    /// The wait for an address ended. A device that answered is paired
+    /// with, unless it already is, then its page shows.
+    pub(super) fn connected(
+        &mut self,
+        attempt: u64,
+        result: Result<DeviceSnapshot, String>,
+    ) -> Task<Message> {
+        if self
+            .connecting
+            .as_ref()
+            .map(|connecting| connecting.attempt)
+            != Some(attempt)
+        {
+            return Task::none();
+        }
+        self.connecting = None;
+        let device = match result {
+            Ok(device) => device,
+            Err(error) => return self.toast(error, None),
+        };
+        let device_id = device.device_id.clone();
+        let paired = device.paired;
+        if let Some(running) = self.running() {
+            running
+                .ctx
+                .store_mut()
+                .apply_event(&crate::core::EventData::DeviceUpdated(device));
+        }
+        if self.route != Route::AddDevice {
+            return Task::none();
+        }
+        if paired {
+            self.go(Route::Device(device_id))
+        } else {
+            self.pair(device_id)
+        }
+    }
+
+    /// Stop waiting for the address being tried.
+    pub(super) fn cancel_connect(&mut self) -> Task<Message> {
+        self.abandon_connect();
+        Task::none()
+    }
+
+    /// Stop the wait, if one runs, and forget its answer.
+    pub(super) fn abandon_connect(&mut self) {
+        if let Some(connecting) = self.connecting.take() {
+            connecting.cancel.cancel();
+        }
+    }
+
+    /// Ask for an address of a paired device: a new one, or the value
+    /// `editing` should have. The dialog stays open with the reason until
+    /// the daemon accepts the change.
+    pub(super) fn ask_address(
+        &mut self,
+        device_id: String,
+        name: String,
+        editing: Option<Ipv4Addr>,
+    ) -> Task<Message> {
+        let Some(running) = self.running() else {
+            return Task::none();
+        };
+        let core = running.ctx.core().clone();
+        let runtime = self.options.runtime.clone();
+        let (title, confirm) = match editing {
+            Some(_) => (fl!("shell-address-edit-title"), fl!("shell-address-save")),
+            None => (
+                fl!("shell-address-add-title"),
+                fl!("shell-add-by-address-confirm"),
+            ),
+        };
+        self.dialogs.open(
+            Dialog::prompt(
+                title,
+                Field {
+                    value: editing
+                        .map(|address| address.to_string())
+                        .unwrap_or_default(),
+                    label: Some(fl!("shell-add-by-address-label")),
+                    hint: Some("192.168.1.20".into()),
+                    ..Field::default()
+                },
+                confirm,
+                Submit::Run(Arc::new(move |text| {
+                    let core = core.clone();
+                    let device_id = device_id.clone();
+                    let address = match unicast_address(&text) {
+                        Ok(address) => address,
+                        Err(error) => return Task::done(Err(error)),
+                    };
+                    context::on_runtime(&runtime, async move {
+                        let mut addresses = core
+                            .device(&device_id)
+                            .ok_or(CoreError::UnknownDevice)
+                            .map(|device| device.addresses);
+                        if let Ok(addresses) = &mut addresses {
+                            match editing.and_then(|old| addresses.iter().position(|a| *a == old)) {
+                                Some(index) => addresses[index] = address,
+                                None => addresses.push(address),
+                            }
+                        }
+                        let saved = match addresses {
+                            Ok(addresses) => core.set_device_addresses(&device_id, addresses).await,
+                            Err(error) => Err(error),
+                        };
+                        saved
+                            .and_then(|_| core.device(&device_id).ok_or(CoreError::UnknownDevice))
+                            .map(|device| Message::AddressesSaved(Ok(device)))
+                            .map_err(|error| error::describe_error(&error))
+                    })
+                })),
+            )
+            .with_body(fl!("shell-address-body", name = name)),
+        )
+    }
+
+    /// Forget one of a device's saved addresses.
+    pub(super) fn remove_address(&mut self, device_id: String, address: Ipv4Addr) -> Task<Message> {
+        let Some(running) = self.running() else {
+            return Task::none();
+        };
+        let core = running.ctx.core().clone();
+        self.core_future(
+            async move {
+                let mut addresses = core
+                    .device(&device_id)
+                    .ok_or(CoreError::UnknownDevice)?
+                    .addresses;
+                addresses.retain(|saved| *saved != address);
+                core.set_device_addresses(&device_id, addresses).await?;
+                core.device(&device_id).ok_or(CoreError::UnknownDevice)
+            },
+            Message::AddressesSaved,
+        )
     }
 
     /// Start pairing with `device_id` on the daemon's runtime, which times
@@ -456,14 +631,17 @@ impl App {
     }
 }
 
-/// Announce this computer to `address`, typed by the user.
-fn announce_to(core: &Core, address: &str) -> Result<(), String> {
+/// The IPv4 address the user typed, if a device can be reached at it: not
+/// `0.0.0.0`, broadcast or multicast.
+fn unicast_address(address: &str) -> Result<Ipv4Addr, String> {
     let address: Ipv4Addr = address
         .trim()
         .parse()
         .map_err(|_| error::describe_code("invalid_address"))?;
-    core.announce_to(address)
-        .map_err(|error| error::describe_error(&error))
+    if address.is_unspecified() || address.is_broadcast() || address.is_multicast() {
+        return Err(error::describe_code("invalid_address"));
+    }
+    Ok(address)
 }
 
 #[cfg(test)]
@@ -587,13 +765,14 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn add_by_ip_says_why_an_address_is_refused_then_announces_to_it() {
+    async fn add_by_ip_says_why_an_address_is_refused_then_waits_for_it() {
         let (mut app, mut commands) = running_with_commands().await;
         app.route = Route::AddDevice;
+        settle(&mut app, Message::Reload).await;
         settle(&mut app, Message::AddByAddress).await;
         assert_eq!(app.dialogs.current().unwrap().title, "Add by IP address");
 
-        for refused in ["300.1.1.1", "255.255.255.255"] {
+        for refused in ["300.1.1.1", "255.255.255.255", "0.0.0.0"] {
             settle(
                 &mut app,
                 Message::Dialog(DialogEvent::Input(refused.into())),
@@ -608,7 +787,7 @@ mod tests {
             );
             assert!(!dialog.is_busy());
         }
-        assert!(commands.try_recv().is_err());
+        assert!(app.connecting.is_none());
 
         settle(
             &mut app,
@@ -621,15 +800,151 @@ mod tests {
             then.extend(step(&mut app, message).await);
         }
         assert!(app.dialogs.current().is_none());
+        let address = Ipv4Addr::new(192, 168, 1, 20);
+        let [Message::Connect(tried)] = &then[..] else {
+            panic!("unexpected outputs: {then:?}");
+        };
+        assert_eq!(*tried, address);
+
+        // The page waits for the device, announcing to the address, until
+        // the user cancels.
+        let waiting = app.update(Message::Connect(address));
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         assert_eq!(
             commands.try_recv().unwrap(),
-            LanCommand::AnnounceTo {
-                address: Ipv4Addr::new(192, 168, 1, 20)
-            }
+            LanCommand::AnnounceTo { address }
         );
-        assert!(matches!(then[..], [Message::ShowSearching]));
-        let _ = app.update(Message::ShowSearching);
-        assert!(app.searching, "the page searches for the device");
+        assert!(shows(&app, "Connecting to 192.168.1.20…"));
+        let _ = app.update(Message::CancelConnect);
+        assert!(app.connecting.is_none());
+        assert!(!shows(&app, "Connecting to 192.168.1.20…"));
+        drop(waiting);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_address_nobody_answers_at_says_so() {
+        let (mut app, _commands) = running_with_commands().await;
+        app.route = Route::AddDevice;
+        settle(&mut app, Message::Connect(Ipv4Addr::new(100, 64, 0, 7))).await;
+        assert!(app.connecting.is_none());
+        assert_eq!(app.route, Route::AddDevice);
+        assert_eq!(
+            app.toasts.items()[0].text,
+            "No device answered at that address. Make sure Ferry or KDE Connect is running there."
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn leaving_add_device_stops_waiting_for_the_address() {
+        let (mut app, _commands) = running_with_commands().await;
+        app.route = Route::AddDevice;
+        let waiting = app.update(Message::Connect(Ipv4Addr::new(100, 64, 0, 7)));
+        assert!(app.connecting.is_some());
+        let _ = app.update(Message::Navigate(Route::Devices, Origin::Window));
+        assert!(app.connecting.is_none());
+        drop(waiting);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_device_that_answers_is_paired_with_and_keeps_the_address_once_paired() {
+        let (mut app, _commands) = running_with_commands().await;
+        let core = core(&app);
+        app.route = Route::AddDevice;
+        let address = Ipv4Addr::new(100, 64, 0, 7);
+        let waiting = app.update(Message::Connect(address));
+
+        let (peer, mut sent) = testing::connect_unpaired_peer(&core, testing::PEER_ID).await;
+        core.set_connection_peer_addr(
+            &peer.device_id,
+            std::net::SocketAddr::new(address.into(), 40000),
+        );
+        for message in testing::outputs(waiting).await {
+            settle(&mut app, message).await;
+        }
+        assert!(app.connecting.is_none());
+        assert!(
+            matches!(app.route, Route::Pairing(_)),
+            "the pairing page shows, not {:?}",
+            app.route
+        );
+        assert_eq!(sent.try_recv().unwrap().packet_type, "kdeconnect.pair");
+        assert!(
+            core.device(testing::PEER_ID).unwrap().addresses.is_empty(),
+            "nothing is kept before it is paired"
+        );
+
+        testing::request_pairing(&core, testing::PEER_ID).await;
+        let device = core.device(testing::PEER_ID).unwrap();
+        assert!(device.paired);
+        assert_eq!(device.addresses, [address]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn saved_addresses_are_added_edited_and_removed_from_the_device_page() {
+        let (core, _commands) = handle().await;
+        let mut app = running_on(core.clone());
+        let (peer, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[]).await;
+        settle(&mut app, Message::Reload).await;
+        let device_id = peer.device_id;
+        let a = Ipv4Addr::new(100, 64, 0, 7);
+        let b = Ipv4Addr::new(192, 168, 1, 20);
+        let saved = |app: &App| store(app).device(&device_id).unwrap().addresses.clone();
+
+        settle(
+            &mut app,
+            Message::AddAddress {
+                device_id: device_id.clone(),
+                name: "Peer".into(),
+            },
+        )
+        .await;
+        assert_eq!(app.dialogs.current().unwrap().title, "Add address");
+        settle(
+            &mut app,
+            Message::Dialog(DialogEvent::Input("255.255.255.255".into())),
+        )
+        .await;
+        settle(&mut app, Message::Dialog(DialogEvent::Submit)).await;
+        assert!(app.dialogs.current().unwrap().error().is_some());
+        settle(
+            &mut app,
+            Message::Dialog(DialogEvent::Input("100.64.0.7".into())),
+        )
+        .await;
+        settle(&mut app, Message::Dialog(DialogEvent::Submit)).await;
+        assert!(app.dialogs.current().is_none());
+        assert_eq!(saved(&app), [a]);
+
+        settle(
+            &mut app,
+            Message::EditAddress {
+                device_id: device_id.clone(),
+                name: "Peer".into(),
+                address: a,
+            },
+        )
+        .await;
+        let dialog = app.dialogs.current().unwrap();
+        assert_eq!(dialog.title, "Edit address");
+        assert_eq!(dialog.field.as_ref().unwrap().value, "100.64.0.7");
+        settle(
+            &mut app,
+            Message::Dialog(DialogEvent::Input("192.168.1.20".into())),
+        )
+        .await;
+        settle(&mut app, Message::Dialog(DialogEvent::Submit)).await;
+        assert_eq!(saved(&app), [b]);
+        assert_eq!(core.device(&device_id).unwrap().addresses, [b]);
+
+        settle(
+            &mut app,
+            Message::RemoveAddress {
+                device_id: device_id.clone(),
+                address: b,
+            },
+        )
+        .await;
+        assert!(saved(&app).is_empty());
     }
 
     #[tokio::test(start_paused = true)]

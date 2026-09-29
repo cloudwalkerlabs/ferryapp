@@ -127,6 +127,13 @@ variables for a script run elsewhere.
   Broadcast a discovery request and list unpaired devices that answer.
   `--address` announces to that IPv4 address instead, for networks where
   broadcast doesn't reach the other device.
+- `ferry-cli connect <ip>` - Wait for a device to answer at an IPv4 address
+  (for networks where broadcast doesn't reach it, like a tailnet) and list
+  it, ready to pair. Once it is paired the address is kept and tried
+  again whenever the device isn't found.
+- `ferry-cli addresses <device-id> [--add <ip>] [--remove <ip>]` - Show or
+  change the addresses a paired device is reached at when broadcast
+  doesn't find it.
 - `ferry-cli pair <device-id>` - Start pairing with a discovered device.
 - `ferry-cli pair accept|reject <pairing-id>` - Resolve a pairing request.
 - `ferry-cli unpair <device-id>` - Remove trust and forget a device.

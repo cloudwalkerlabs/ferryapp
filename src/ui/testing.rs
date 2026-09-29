@@ -30,6 +30,7 @@ pub fn device(name: &str) -> DeviceSnapshot {
         pairing: false,
         last_seen_at: 0,
         plugins: Default::default(),
+        addresses: Vec::new(),
     }
 }
 

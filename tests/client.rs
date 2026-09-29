@@ -135,6 +135,7 @@ fn device() -> DeviceSnapshot {
         pairing: false,
         last_seen_at: 10,
         plugins: Default::default(),
+        addresses: Vec::new(),
     }
 }
 

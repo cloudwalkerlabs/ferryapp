@@ -136,6 +136,9 @@ impl Core {
                 return;
             }
             let had_connection = state.connections.remove(device_id).is_some();
+            if had_connection {
+                state.pending_addresses.remove(device_id);
+            }
             let failed_pairing =
                 fail_active_pairing(&mut state, device_id, OperationErrorCode::ConnectionFailed);
             (had_connection, failed_pairing)
@@ -213,13 +216,11 @@ impl Core {
     /// accepted, so this can't be used to spray the identity at a
     /// broadcast or multicast group.
     pub fn announce_to(&self, address: Ipv4Addr) -> Result<(), CoreError> {
-        if address.is_unspecified() || address.is_broadcast() || address.is_multicast() {
-            return Err(CoreError::InvalidDiscoveryAddress);
-        }
+        let address = super::addresses::unicast(address)?;
         self.send_lan_command(LanCommand::AnnounceTo { address })
     }
 
-    fn send_lan_command(&self, command: LanCommand) -> Result<(), CoreError> {
+    pub(super) fn send_lan_command(&self, command: LanCommand) -> Result<(), CoreError> {
         self.commands
             .try_send(command)
             .map_err(|error| match error {
