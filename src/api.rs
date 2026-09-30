@@ -45,8 +45,8 @@ pub(crate) use upload::{
 use crate::{
     config::ApiToken,
     core::{
-        Core, CoreError, CoreEvent, DEFAULT_MAX_TRANSFER_BYTES, DeviceSnapshot, PairingSnapshot,
-        SettingsPatch, SettingsSnapshot, StatusSnapshot, TransferSnapshot,
+        Core, CoreError, CoreEvent, DEFAULT_MAX_TRANSFER_BYTES, DeviceSnapshot, Host,
+        PairingSnapshot, SettingsPatch, SettingsSnapshot, StatusSnapshot, TransferSnapshot,
     },
 };
 
@@ -391,10 +391,9 @@ async fn post_discovery(
     match request.and_then(|Json(request)| request.address) {
         Some(address) => {
             let address = address
-                .trim()
-                .parse()
+                .parse::<Host>()
                 .map_err(|_| ApiProblem::bad_request("invalid_address"))?;
-            state.core.announce_to(address)?;
+            state.core.announce_to(&address).await?;
         }
         None => state.core.announce()?,
     }
@@ -406,7 +405,7 @@ struct ConnectRequest {
     address: String,
 }
 
-/// Wait for a device to answer at an IPv4 address, announcing to it until
+/// Wait for a device to answer at an IPv4 address or hostname, announcing to it until
 /// one does (up to `CONNECT_TIMEOUT`), and answer with the device, ready to
 /// pair. A device that pairs afterwards keeps the address. `504
 /// address_unreachable` if nothing answered; nothing is saved then.
@@ -416,8 +415,7 @@ async fn post_connect(
 ) -> Result<Json<DeviceSnapshot>, ApiProblem> {
     let address = request
         .address
-        .trim()
-        .parse()
+        .parse::<Host>()
         .map_err(|_| ApiProblem::bad_request("invalid_address"))?;
     Ok(Json(state.core.connect_address(address).await?))
 }
@@ -437,7 +435,7 @@ async fn put_addresses(
     let addresses = request
         .addresses
         .iter()
-        .map(|address| address.trim().parse())
+        .map(|address| address.parse::<Host>())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| ApiProblem::bad_request("invalid_address"))?;
     let saved = state
@@ -620,6 +618,7 @@ fn map_error(error: CoreError) -> ApiProblem {
             ApiProblem::new(StatusCode::GATEWAY_TIMEOUT, "Address unreachable", code)
         }
         CoreError::InvalidDiscoveryAddress
+        | CoreError::AddressUnresolvable
         | CoreError::TooManyAddresses
         | CoreError::InvalidFileName
         | CoreError::InvalidDeviceName

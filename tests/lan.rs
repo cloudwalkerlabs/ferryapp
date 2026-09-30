@@ -293,7 +293,10 @@ async fn a_peer_added_by_address_connects_without_broadcast() {
         devices if devices.is_empty()
     ));
 
-    a.application.announce_to(Ipv4Addr::LOCALHOST).unwrap();
+    a.application
+        .announce_to(&Ipv4Addr::LOCALHOST.into())
+        .await
+        .unwrap();
     // B hears A and dials back; A learns about B from that connection.
     wait_for_reachability(&a.application, &b_id, DeviceReachability::Connected).await;
     wait_for_reachability(&b.application, &a_id, DeviceReachability::Connected).await;
@@ -376,7 +379,7 @@ async fn a_paired_peer_is_announced_to_at_its_saved_address_until_it_connects() 
     );
 
     a_core
-        .set_device_addresses(&b_id, vec![Ipv4Addr::LOCALHOST])
+        .set_device_addresses(&b_id, vec![Ipv4Addr::LOCALHOST.into()])
         .await
         .unwrap();
     wait_for_reachability(&a_core, &b_id, DeviceReachability::Connected).await;
@@ -460,9 +463,13 @@ async fn loopback_only_peers_bind_nothing_but_loopback_and_still_meet() {
     .await
     .unwrap();
     c.application
-        .announce_to(Ipv4Addr::new(192, 0, 2, 1))
+        .announce_to(&Ipv4Addr::new(192, 0, 2, 1).into())
+        .await
         .unwrap();
-    c.application.announce_to(Ipv4Addr::LOCALHOST).unwrap();
+    c.application
+        .announce_to(&Ipv4Addr::LOCALHOST.into())
+        .await
+        .unwrap();
     wait_for_reachability(&a.application, &c_id, DeviceReachability::Connected).await;
 
     a_service.shutdown().await.unwrap();

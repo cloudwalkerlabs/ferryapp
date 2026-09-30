@@ -1,6 +1,6 @@
 //! Client for the local Ferry control API.
 
-use std::{env, future::Future, net::Ipv4Addr, path::Path, pin::Pin, time::Duration};
+use std::{env, future::Future, path::Path, pin::Pin, time::Duration};
 
 use futures_core::Stream;
 use futures_util::StreamExt;
@@ -19,8 +19,8 @@ use crate::{
     api::DEFAULT_API_PORT,
     config::ApiToken,
     core::{
-        CoreEvent, DeviceSnapshot, EventData, PairingSnapshot, PluginEventKind, SettingsPatch,
-        SettingsSnapshot, TransferSnapshot,
+        CoreEvent, DeviceSnapshot, EventData, Host, PairingSnapshot, PluginEventKind,
+        SettingsPatch, SettingsSnapshot, TransferSnapshot,
     },
     plugins::{
         browse::{DirectoryListing, FileEntry},
@@ -119,9 +119,9 @@ impl ApiClient {
 
     /// Trigger an immediate discovery broadcast, so newly reachable devices
     /// show up in [`ApiClient::devices`] without waiting for the periodic
-    /// announce interval. With an `address`, announce to that IPv4 address
+    /// announce interval. With an `address`, announce to that address or hostname
     /// only, for networks where broadcast doesn't reach the peer.
-    pub async fn scan(&self, address: Option<Ipv4Addr>) -> Result<(), ClientError> {
+    pub async fn scan(&self, address: Option<&Host>) -> Result<(), ClientError> {
         #[derive(Serialize)]
         struct Discovery {
             address: String,
@@ -142,7 +142,7 @@ impl ApiClient {
     /// return it, ready to pair. A device that pairs afterwards keeps the
     /// address, to be reached at when broadcast doesn't find it. Fails with
     /// `address_unreachable` when nothing answers.
-    pub async fn connect(&self, address: Ipv4Addr) -> Result<DeviceSnapshot, ClientError> {
+    pub async fn connect(&self, address: &Host) -> Result<DeviceSnapshot, ClientError> {
         #[derive(Serialize)]
         struct Connect {
             address: String,
@@ -165,7 +165,7 @@ impl ApiClient {
     pub async fn set_device_addresses(
         &self,
         device_id: &str,
-        addresses: &[Ipv4Addr],
+        addresses: &[Host],
     ) -> Result<(), ClientError> {
         #[derive(Serialize)]
         struct Addresses {

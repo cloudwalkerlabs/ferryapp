@@ -38,6 +38,7 @@ pub fn describe_code(code: &str) -> String {
         "invalid_download_dir" => fl!("error-invalid_download_dir"),
         "invalid_address" => fl!("error-invalid_address"),
         "address_unreachable" => fl!("error-address_unreachable"),
+        "unresolvable_address" => fl!("error-unresolvable_address"),
         "too_many_addresses" => fl!("error-too_many_addresses"),
         code => fl!("error-unknown", code = code),
     }
@@ -154,11 +155,15 @@ mod tests {
             ),
             (
                 "invalid_address",
-                "Enter an IPv4 address, like 192.168.1.20.",
+                "Enter an IPv4 address like 192.168.1.20, or a hostname like phone.example.net.",
             ),
             (
                 "address_unreachable",
                 "No device answered at that address. Make sure Ferry or KDE Connect is running there.",
+            ),
+            (
+                "unresolvable_address",
+                "That name couldn’t be resolved to an IPv4 address. Check the spelling and your DNS or VPN.",
             ),
             ("too_many_addresses", "A device can keep up to 8 addresses."),
             ("teapot", "Something went wrong (teapot)."),
@@ -175,7 +180,7 @@ mod tests {
         );
         assert_eq!(
             describe_error(&CoreError::InvalidDiscoveryAddress),
-            "Enter an IPv4 address, like 192.168.1.20."
+            "Enter an IPv4 address like 192.168.1.20, or a hostname like phone.example.net."
         );
         assert_eq!(
             describe_error(&CoreError::Internal),

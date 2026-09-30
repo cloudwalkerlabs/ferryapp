@@ -1101,7 +1101,7 @@ async fn discovery_can_be_sent_to_one_unicast_address() {
 
     for address in [
         "192.168.1",
-        "desk.local",
+        "bad name",
         "192.168.1.20:1716",
         "::1",
         "0.0.0.0",
@@ -1123,6 +1123,37 @@ async fn discovery_can_be_sent_to_one_unicast_address() {
     }
     assert!(server.commands.try_recv().is_err());
 
+    // A hostname is resolved by the system and announced to at what it
+    // stands for; one that doesn't resolve is refused.
+    let named = request_with_body(
+        &server,
+        "POST",
+        "/api/v1/discovery",
+        r#"{"address":"LocalHost"}"#,
+    )
+    .await;
+    assert!(named.starts_with("HTTP/1.1 202 Accepted"), "{named}");
+    assert_eq!(
+        server.commands.recv().await,
+        Some(LanCommand::AnnounceTo {
+            address: "127.0.0.1".parse().unwrap()
+        })
+    );
+    // Reserved by RFC 2606: never resolves.
+    let unresolved = request_with_body(
+        &server,
+        "POST",
+        "/api/v1/discovery",
+        r#"{"address":"nothing.invalid"}"#,
+    )
+    .await;
+    assert!(
+        unresolved.starts_with("HTTP/1.1 400 Bad Request"),
+        "{unresolved}"
+    );
+    assert!(body(&unresolved).contains("unresolvable_address"));
+    assert!(server.commands.try_recv().is_err());
+
     server.server.shutdown().await.unwrap();
 }
 
@@ -1131,7 +1162,7 @@ async fn connecting_to_an_address_waits_for_the_device_and_saved_addresses_are_r
     let mut server = TestServer::start().await;
     let peer = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    for address in ["desk.local", "0.0.0.0", "255.255.255.255", "224.0.0.251"] {
+    for address in ["bad name", "0.0.0.0", "255.255.255.255", "224.0.0.251"] {
         let rejected = request_with_body(
             &server,
             "POST",

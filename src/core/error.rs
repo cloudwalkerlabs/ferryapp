@@ -31,8 +31,10 @@ pub enum CoreError {
     EventBus(#[from] EventBusError),
     #[error("unknown device")]
     UnknownDevice,
-    #[error("discovery address must be a unicast IPv4 address")]
+    #[error("discovery address must be a unicast IPv4 address or a hostname")]
     InvalidDiscoveryAddress,
+    #[error("that name doesn't resolve to an IPv4 address")]
+    AddressUnresolvable,
     #[error("no device answered at that address")]
     AddressUnreachable,
     #[error("a device keeps at most 8 addresses")]
@@ -88,6 +90,7 @@ impl CoreError {
             Self::CommandQueueClosed => "application_unavailable",
             Self::UnknownDevice => "device_not_found",
             Self::InvalidDiscoveryAddress => "invalid_address",
+            Self::AddressUnresolvable => "unresolvable_address",
             Self::AddressUnreachable => "address_unreachable",
             Self::TooManyAddresses => "too_many_addresses",
             Self::UnknownPairing => "pairing_not_found",

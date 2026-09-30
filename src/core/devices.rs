@@ -1,7 +1,7 @@
 //! Devices: the registry of known peers, and what clients see of a device,
 //! with what plugins add to it.
 
-use std::{collections::BTreeMap, net::Ipv4Addr};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -48,7 +48,7 @@ pub struct DeviceSnapshot {
     /// The addresses saved for reaching the device when broadcast doesn't
     /// (see [`crate::core::ADDRESSES`]). Filled like `plugins`.
     #[serde(default)]
-    pub addresses: Vec<Ipv4Addr>,
+    pub addresses: Vec<super::Host>,
 }
 
 #[derive(Clone, Debug)]

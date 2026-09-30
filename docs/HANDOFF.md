@@ -278,7 +278,7 @@ and that the Downloads folder permission survives a `brew upgrade`.
   in `ferry-cli devices`) were checked against the fake phone only. The
   tray shows only the network type ("LTE"), since its items have no
   icons for the bars.
-- Saved device addresses (Add device's "Add by IP address" waits for the
+- Saved device addresses (Add device's "Add by IP address or hostname" waits for the
   device, pairs, and keeps the address; the device page edits them) were
   checked between Ferry instances and in tests only. Worth checking against
   KDE Connect for Android over a real tailnet. The device page's gallery

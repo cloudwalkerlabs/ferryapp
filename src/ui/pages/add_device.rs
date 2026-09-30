@@ -1,8 +1,6 @@
 //! Add device: devices nearby that could be paired, a scan, and adding a
 //! device by its IP address.
 
-use std::net::Ipv4Addr;
-
 use iced::{
     Alignment, Element, Length, Theme,
     widget::{Space, button, column, container, row, rule, scrollable, space, text},
@@ -11,7 +9,7 @@ use iced_fonts::lucide;
 
 use super::devices::{device_icon, is_connected, reachability_label};
 use crate::{
-    core::DeviceSnapshot,
+    core::{DeviceSnapshot, Host},
     ui::{
         activity::activity_bar,
         i18n::fl,
@@ -29,7 +27,7 @@ pub struct Actions<M> {
     pub back: M,
     /// Scan again.
     pub scan: M,
-    /// Open the "Add by IP address" dialog.
+    /// Open the "Add by IP address or hostname" dialog.
     pub add_by_address: M,
     /// Stop trying the address being connected to.
     pub cancel_connect: M,
@@ -42,13 +40,13 @@ pub struct Actions<M> {
 /// The page, from what `store` holds. `searching` shows the bar under the
 /// header and disables Scan again; `starting` names the device a pairing
 /// is being started with, which disables every Pair button; `connecting`
-/// is the address being tried, which replaces the "Add by IP address" row
+/// is the address being tried, which replaces the "Add by IP address or hostname" row
 /// with a card that can be cancelled.
 pub fn view<'a, M: Clone + 'a>(
     store: &'a Store,
     searching: bool,
     starting: Option<&str>,
-    connecting: Option<Ipv4Addr>,
+    connecting: Option<Host>,
     actions: Actions<M>,
 ) -> Element<'a, M> {
     let header = widgets::page_header(
@@ -159,7 +157,7 @@ fn candidate<'a, M: Clone + 'a>(
 }
 
 /// The address being tried: what for, a bar while it waits, and Cancel.
-fn connecting_card<'a, M: Clone + 'a>(address: Ipv4Addr, cancel: M) -> Element<'a, M> {
+fn connecting_card<'a, M: Clone + 'a>(address: Host, cancel: M) -> Element<'a, M> {
     widgets::card(
         row![
             lucide::network().size(22),
@@ -183,7 +181,7 @@ fn connecting_card<'a, M: Clone + 'a>(address: Ipv4Addr, cancel: M) -> Element<'
     .into()
 }
 
-/// The row that opens the "Add by IP address" dialog.
+/// The row that opens the "Add by IP address or hostname" dialog.
 fn add_by_address<'a, M: Clone + 'a>(open: M) -> Element<'a, M> {
     let content = row![
         lucide::network().size(22),
@@ -306,7 +304,7 @@ mod tests {
             "Not connected",
             "Tablet",
             "Pairing in progress",
-            "Add by IP address",
+            "Add by IP address or hostname",
         ] {
             assert!(ui.find(shown).is_ok(), "{shown} is shown");
         }
@@ -373,7 +371,7 @@ mod tests {
     fn opens_add_by_address_and_goes_back() {
         let store = candidates();
         assert_eq!(
-            click(&store, false, None, "Add by IP address"),
+            click(&store, false, None, "Add by IP address or hostname"),
             [Asked::AddByAddress]
         );
         assert_eq!(
@@ -385,12 +383,12 @@ mod tests {
     #[test]
     fn trying_an_address_shows_it_and_can_be_cancelled() {
         let store = candidates();
-        let address = Ipv4Addr::new(100, 64, 0, 7);
+        let address = "100.64.0.7".parse::<Host>().unwrap();
         let connecting = || view(&store, false, None, Some(address), actions());
         let mut ui = Simulator::new(connecting());
         assert!(ui.find("Connecting to 100.64.0.7…").is_ok());
         assert!(
-            ui.find("Add by IP address").is_err(),
+            ui.find("Add by IP address or hostname").is_err(),
             "replaced by the card"
         );
         ui.click("Cancel").unwrap();
@@ -432,7 +430,7 @@ mod tests {
                 &empty,
                 false,
                 None,
-                Some(Ipv4Addr::new(100, 64, 0, 7)),
+                Some("100.64.0.7".parse::<Host>().unwrap()),
                 actions(),
             )
         });

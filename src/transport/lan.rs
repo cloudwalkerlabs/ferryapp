@@ -286,7 +286,7 @@ async fn run(
                 // Paired devices that aren't connected and were given an
                 // address: broadcast doesn't reach them (a tailnet, another
                 // subnet), so ask them directly.
-                for address in core.fallback_addresses() {
+                for address in core.fallback_addresses().await {
                     announce_to(&udp, &config, &announcement, address).await;
                 }
             }
