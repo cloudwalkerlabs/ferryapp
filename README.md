@@ -123,15 +123,15 @@ variables for a script run elsewhere.
   discovery to another port (the same for every instance that should
   meet).
 - `ferry-cli devices [--watch]` - List devices and optionally follow changes.
-- `ferry-cli scan [--address <ip>] [--timeout <seconds>] [--watch]` -
+- `ferry-cli scan [--address <host>] [--timeout <seconds>] [--watch]` -
   Broadcast a discovery request and list unpaired devices that answer.
-  `--address` announces to that IPv4 address instead, for networks where
+  `--address` announces to that IPv4 address or hostname instead, for networks where
   broadcast doesn't reach the other device.
-- `ferry-cli connect <ip>` - Wait for a device to answer at an IPv4 address
+- `ferry-cli connect <host>` - Wait for a device to answer at an IPv4 address or hostname
   (for networks where broadcast doesn't reach it, like a tailnet) and list
   it, ready to pair. Once it is paired the address is kept and tried
   again whenever the device isn't found.
-- `ferry-cli addresses <device-id> [--add <ip>] [--remove <ip>]` - Show or
+- `ferry-cli addresses <device-id> [--add <host>] [--remove <host>]` - Show or
   change the addresses a paired device is reached at when broadcast
   doesn't find it.
 - `ferry-cli pair <device-id>` - Start pairing with a discovered device.

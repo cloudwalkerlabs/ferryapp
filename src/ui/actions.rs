@@ -2,7 +2,7 @@
 //! by address, pairing and unpairing, transfers and received files,
 //! settings, and command line access.
 
-use std::{future::Future, net::Ipv4Addr, path::PathBuf, sync::Arc};
+use std::{future::Future, path::PathBuf, sync::Arc};
 
 use iced::{Element, Task};
 use tokio_util::sync::CancellationToken;
@@ -18,7 +18,7 @@ use super::{
     pages::{add_device, settings},
 };
 use crate::{
-    core::{CoreError, DeviceSnapshot, SettingsPatch},
+    core::{CoreError, DeviceSnapshot, Host, SettingsPatch},
     daemon::{ApiStatus, ApiSwitch},
 };
 
@@ -27,7 +27,7 @@ use crate::{
 /// token that stops the wait on the daemon.
 pub(super) struct Connecting {
     attempt: u64,
-    pub(super) address: Ipv4Addr,
+    pub(super) address: Host,
     cancel: CancellationToken,
 }
 
@@ -63,7 +63,7 @@ impl App {
             fl!("shell-add-by-address-title"),
             Field {
                 label: Some(fl!("shell-add-by-address-label")),
-                hint: Some("192.168.1.20".into()),
+                hint: Some("192.168.1.20 or phone.example.ts.net".into()),
                 helper: Some(fl!("shell-add-by-address-helper")),
                 ..Field::default()
             },
@@ -78,7 +78,7 @@ impl App {
     /// page can show it and offer to cancel. An answer starts pairing with
     /// the device, and pairing saves the address ([`Core::connect_address`]);
     /// a device already paired keeps it at once.
-    pub(super) fn connect(&mut self, address: Ipv4Addr) -> Task<Message> {
+    pub(super) fn connect(&mut self, address: Host) -> Task<Message> {
         if self.connecting.is_some() {
             return Task::none();
         }
@@ -91,7 +91,7 @@ impl App {
         let cancel = CancellationToken::new();
         self.connecting = Some(Connecting {
             attempt,
-            address,
+            address: address.clone(),
             cancel: cancel.clone(),
         });
         self.core_future(
@@ -163,7 +163,7 @@ impl App {
         &mut self,
         device_id: String,
         name: String,
-        editing: Option<Ipv4Addr>,
+        editing: Option<Host>,
     ) -> Task<Message> {
         let Some(running) = self.running() else {
             return Task::none();
@@ -182,16 +182,18 @@ impl App {
                 title,
                 Field {
                     value: editing
-                        .map(|address| address.to_string())
+                        .as_ref()
+                        .map(ToString::to_string)
                         .unwrap_or_default(),
                     label: Some(fl!("shell-add-by-address-label")),
-                    hint: Some("192.168.1.20".into()),
+                    hint: Some("192.168.1.20 or phone.example.ts.net".into()),
                     ..Field::default()
                 },
                 confirm,
                 Submit::Run(Arc::new(move |text| {
                     let core = core.clone();
                     let device_id = device_id.clone();
+                    let editing = editing.clone();
                     let address = match unicast_address(&text) {
                         Ok(address) => address,
                         Err(error) => return Task::done(Err(error)),
@@ -223,7 +225,7 @@ impl App {
     }
 
     /// Forget one of a device's saved addresses.
-    pub(super) fn remove_address(&mut self, device_id: String, address: Ipv4Addr) -> Task<Message> {
+    pub(super) fn remove_address(&mut self, device_id: String, address: Host) -> Task<Message> {
         let Some(running) = self.running() else {
             return Task::none();
         };
@@ -631,17 +633,12 @@ impl App {
     }
 }
 
-/// The IPv4 address the user typed, if a device can be reached at it: not
-/// `0.0.0.0`, broadcast or multicast.
-fn unicast_address(address: &str) -> Result<Ipv4Addr, String> {
-    let address: Ipv4Addr = address
-        .trim()
+/// The address the user typed, if a device can be reached at it: an IPv4
+/// address (not `0.0.0.0`, broadcast or multicast) or a hostname.
+fn unicast_address(address: &str) -> Result<Host, String> {
+    address
         .parse()
-        .map_err(|_| error::describe_code("invalid_address"))?;
-    if address.is_unspecified() || address.is_broadcast() || address.is_multicast() {
-        return Err(error::describe_code("invalid_address"));
-    }
-    Ok(address)
+        .map_err(|_| error::describe_code("invalid_address"))
 }
 
 #[cfg(test)]
@@ -770,7 +767,7 @@ mod tests {
         app.route = Route::AddDevice;
         settle(&mut app, Message::Reload).await;
         settle(&mut app, Message::AddByAddress).await;
-        assert_eq!(app.dialogs.current().unwrap().title, "Add by IP address");
+        assert_eq!(app.dialogs.current().unwrap().title, "Add by address");
 
         for refused in ["300.1.1.1", "255.255.255.255", "0.0.0.0"] {
             settle(
@@ -782,7 +779,9 @@ mod tests {
             let dialog = app.dialogs.current().expect("the dialog stays open");
             assert_eq!(
                 dialog.error(),
-                Some("Enter an IPv4 address, like 192.168.1.20."),
+                Some(
+                    "Enter an IPv4 address like 192.168.1.20, or a hostname like phone.example.net."
+                ),
                 "{refused}"
             );
             assert!(!dialog.is_busy());
@@ -800,7 +799,7 @@ mod tests {
             then.extend(step(&mut app, message).await);
         }
         assert!(app.dialogs.current().is_none());
-        let address = Ipv4Addr::new(192, 168, 1, 20);
+        let address = "192.168.1.20".parse::<Host>().unwrap();
         let [Message::Connect(tried)] = &then[..] else {
             panic!("unexpected outputs: {then:?}");
         };
@@ -808,11 +807,13 @@ mod tests {
 
         // The page waits for the device, announcing to the address, until
         // the user cancels.
-        let waiting = app.update(Message::Connect(address));
+        let waiting = app.update(Message::Connect(address.clone()));
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         assert_eq!(
             commands.try_recv().unwrap(),
-            LanCommand::AnnounceTo { address }
+            LanCommand::AnnounceTo {
+                address: "192.168.1.20".parse().unwrap()
+            }
         );
         assert!(shows(&app, "Connecting to 192.168.1.20…"));
         let _ = app.update(Message::CancelConnect);
@@ -825,7 +826,11 @@ mod tests {
     async fn an_address_nobody_answers_at_says_so() {
         let (mut app, _commands) = running_with_commands().await;
         app.route = Route::AddDevice;
-        settle(&mut app, Message::Connect(Ipv4Addr::new(100, 64, 0, 7))).await;
+        settle(
+            &mut app,
+            Message::Connect("100.64.0.7".parse::<Host>().unwrap()),
+        )
+        .await;
         assert!(app.connecting.is_none());
         assert_eq!(app.route, Route::AddDevice);
         assert_eq!(
@@ -838,7 +843,7 @@ mod tests {
     async fn leaving_add_device_stops_waiting_for_the_address() {
         let (mut app, _commands) = running_with_commands().await;
         app.route = Route::AddDevice;
-        let waiting = app.update(Message::Connect(Ipv4Addr::new(100, 64, 0, 7)));
+        let waiting = app.update(Message::Connect("100.64.0.7".parse::<Host>().unwrap()));
         assert!(app.connecting.is_some());
         let _ = app.update(Message::Navigate(Route::Devices, Origin::Window));
         assert!(app.connecting.is_none());
@@ -850,13 +855,13 @@ mod tests {
         let (mut app, _commands) = running_with_commands().await;
         let core = core(&app);
         app.route = Route::AddDevice;
-        let address = Ipv4Addr::new(100, 64, 0, 7);
-        let waiting = app.update(Message::Connect(address));
+        let address = "100.64.0.7".parse::<Host>().unwrap();
+        let waiting = app.update(Message::Connect(address.clone()));
 
         let (peer, mut sent) = testing::connect_unpaired_peer(&core, testing::PEER_ID).await;
         core.set_connection_peer_addr(
             &peer.device_id,
-            std::net::SocketAddr::new(address.into(), 40000),
+            std::net::SocketAddr::new("100.64.0.7".parse().unwrap(), 40000),
         );
         for message in testing::outputs(waiting).await {
             settle(&mut app, message).await;
@@ -886,8 +891,8 @@ mod tests {
         let (peer, _sent) = testing::connect_peer(&core, testing::PEER_ID, &[]).await;
         settle(&mut app, Message::Reload).await;
         let device_id = peer.device_id;
-        let a = Ipv4Addr::new(100, 64, 0, 7);
-        let b = Ipv4Addr::new(192, 168, 1, 20);
+        let a = "100.64.0.7".parse::<Host>().unwrap();
+        let b = "192.168.1.20".parse::<Host>().unwrap();
         let saved = |app: &App| store(app).device(&device_id).unwrap().addresses.clone();
 
         settle(
@@ -913,7 +918,7 @@ mod tests {
         .await;
         settle(&mut app, Message::Dialog(DialogEvent::Submit)).await;
         assert!(app.dialogs.current().is_none());
-        assert_eq!(saved(&app), [a]);
+        assert_eq!(saved(&app), std::slice::from_ref(&a));
 
         settle(
             &mut app,
@@ -933,8 +938,11 @@ mod tests {
         )
         .await;
         settle(&mut app, Message::Dialog(DialogEvent::Submit)).await;
-        assert_eq!(saved(&app), [b]);
-        assert_eq!(core.device(&device_id).unwrap().addresses, [b]);
+        assert_eq!(saved(&app), std::slice::from_ref(&b));
+        assert_eq!(
+            core.device(&device_id).unwrap().addresses,
+            std::slice::from_ref(&b)
+        );
 
         settle(
             &mut app,

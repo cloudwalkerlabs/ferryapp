@@ -13,7 +13,7 @@ use ferry::{
     },
     config::{ApiToken, StoredApi, default_config_dir},
     core::{
-        Appearance, CoreEvent, DeviceSnapshot, EventData, PairingSnapshot, SettingsPatch,
+        Appearance, CoreEvent, DeviceSnapshot, EventData, Host, PairingSnapshot, SettingsPatch,
         SettingsSnapshot, TransferSnapshot,
     },
     daemon::{ApiMode, RunRequest},
@@ -109,10 +109,10 @@ enum Command {
     },
     /// Broadcast a discovery request and list unpaired devices that answer.
     Scan {
-        /// Announce to this IPv4 address instead of broadcasting, for
+        /// Announce to this IPv4 address or hostname instead of broadcasting, for
         /// networks where broadcast doesn't reach the other device.
-        #[arg(long, value_name = "IP")]
-        address: Option<Ipv4Addr>,
+        #[arg(long, value_name = "HOST")]
+        address: Option<Host>,
         /// Seconds to wait for devices to respond before listing results.
         #[arg(long, default_value_t = 3)]
         timeout: u64,
@@ -120,21 +120,21 @@ enum Command {
         #[arg(long)]
         watch: bool,
     },
-    /// Wait for a device to answer at an IPv4 address (for networks where
+    /// Wait for a device to answer at an IPv4 address or hostname (for networks where
     /// broadcast doesn't reach it, like a tailnet) and print it, ready to
     /// pair. Once it is paired, the address is kept and tried again when
     /// the device isn't found.
-    Connect { address: Ipv4Addr },
+    Connect { address: Host },
     /// Show or change the addresses a paired device is reached at when
     /// broadcast doesn't find it.
     Addresses {
         device_id: String,
-        /// Add this IPv4 address.
-        #[arg(long, value_name = "IP")]
-        add: Vec<Ipv4Addr>,
-        /// Forget this IPv4 address.
-        #[arg(long, value_name = "IP")]
-        remove: Vec<Ipv4Addr>,
+        /// Add this IPv4 address or hostname.
+        #[arg(long, value_name = "HOST")]
+        add: Vec<Host>,
+        /// Forget this IPv4 address or hostname.
+        #[arg(long, value_name = "HOST")]
+        remove: Vec<Host>,
     },
     /// Start, accept, or reject pairing.
     Pair {
@@ -364,7 +364,7 @@ impl Cli {
                 timeout,
                 watch,
             } => {
-                client.scan(address).await?;
+                client.scan(address.as_ref()).await?;
                 if watch {
                     client
                         .watch_devices(cancellation_on_ctrl_c(), |update| match update {
@@ -382,7 +382,7 @@ impl Cli {
                     print_devices(&unpaired(client.devices().await?), json);
                 }
             }
-            Command::Connect { address } => print_devices(&[client.connect(address).await?], json),
+            Command::Connect { address } => print_devices(&[client.connect(&address).await?], json),
             Command::Addresses {
                 device_id,
                 add,

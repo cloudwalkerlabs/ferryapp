@@ -2,8 +2,6 @@
 //! actions), the features' settings for it, the addresses it is reached
 //! at when broadcast doesn't find it, its recent transfers, and Unpair.
 
-use std::net::Ipv4Addr;
-
 use iced::{
     Alignment, Background, Border, Element, Length, Theme,
     widget::{button, column, container, row, scrollable, space, text},
@@ -15,7 +13,7 @@ use super::{
     transfers::{self, transfer_row},
 };
 use crate::{
-    core::DeviceSnapshot,
+    core::{DeviceSnapshot, Host},
     protocol::DeviceType,
     ui::{
         features::{DeviceAction, DeviceStatus, Feature},
@@ -40,9 +38,9 @@ pub struct Actions<M> {
     /// Ask for a new saved address of the device.
     pub add_address: fn(&DeviceSnapshot) -> M,
     /// Ask for a new value for one of the device's saved addresses.
-    pub edit_address: fn(&DeviceSnapshot, Ipv4Addr) -> M,
+    pub edit_address: fn(&DeviceSnapshot, Host) -> M,
     /// Forget one of the device's saved addresses.
-    pub remove_address: fn(&DeviceSnapshot, Ipv4Addr) -> M,
+    pub remove_address: fn(&DeviceSnapshot, Host) -> M,
     /// The recent transfers' buttons.
     pub transfer: transfers::Actions<M>,
 }
@@ -200,7 +198,7 @@ fn addresses<'a, Message: Clone + 'a>(
                 .style(text::secondary),
         );
     }
-    for &address in &device.addresses {
+    for address in &device.addresses {
         rows = rows.push(
             row![
                 lucide::network().size(16).style(text::secondary),
@@ -209,12 +207,12 @@ fn addresses<'a, Message: Clone + 'a>(
                 widgets::icon_button(
                     lucide::pencil,
                     fl!("device-address-edit"),
-                    Some((actions.edit_address)(device, address)),
+                    Some((actions.edit_address)(device, address.clone())),
                 ),
                 widgets::icon_button(
                     lucide::trash,
                     fl!("device-address-remove"),
-                    Some((actions.remove_address)(device, address)),
+                    Some((actions.remove_address)(device, address.clone())),
                 ),
             ]
             .spacing(10)
@@ -370,8 +368,8 @@ mod tests {
         Feature(String),
         Unpair(String),
         AddAddress(String),
-        EditAddress(String, Ipv4Addr),
-        RemoveAddress(String, Ipv4Addr),
+        EditAddress(String, Host),
+        RemoveAddress(String, Host),
         Cancel(uuid::Uuid),
         Open(std::path::PathBuf),
         Reveal(std::path::PathBuf),
@@ -515,8 +513,8 @@ mod tests {
     #[test]
     fn saved_addresses_can_be_added_edited_and_removed() {
         let mut device = pixel(&[], DeviceReachability::Unavailable);
-        let a = Ipv4Addr::new(100, 64, 0, 7);
-        let b = Ipv4Addr::new(192, 168, 1, 20);
+        let a = "100.64.0.7".parse::<Host>().unwrap();
+        let b = "192.168.1.20".parse::<Host>().unwrap();
         let store = testing::store("Desk", vec![device.clone()]);
         let mut ui = Simulator::new(page(&store, &device.device_id, false));
         assert!(ui.find("No addresses saved").is_ok());
@@ -525,7 +523,7 @@ mod tests {
             [Asked::AddAddress(device.device_id.clone())]
         );
 
-        device.addresses = vec![a, b];
+        device.addresses = vec![a.clone(), b];
         let store = testing::store("Desk", vec![device.clone()]);
         let mut ui = Simulator::new(page(&store, &device.device_id, false));
         assert!(ui.find("No addresses saved").is_err());
@@ -534,7 +532,7 @@ mod tests {
         }
         assert_eq!(
             click(&store, &device, iced::widget::Id::from("Edit")),
-            [Asked::EditAddress(device.device_id.clone(), a)]
+            [Asked::EditAddress(device.device_id.clone(), a.clone())]
         );
         assert_eq!(
             click(&store, &device, iced::widget::Id::from("Remove")),
@@ -647,7 +645,10 @@ mod tests {
             page(&offline_store, &offline.device_id, true)
         });
         let mut addressed = offline.clone();
-        addressed.addresses = vec![Ipv4Addr::new(100, 64, 0, 7), Ipv4Addr::new(192, 168, 1, 20)];
+        addressed.addresses = vec![
+            "100.64.0.7".parse::<Host>().unwrap(),
+            "192.168.1.20".parse::<Host>().unwrap(),
+        ];
         let addressed_store = testing::store("Desk", vec![addressed.clone()]);
         testing::snapshot("device-addresses", (440.0, 760.0), || {
             page(&addressed_store, &addressed.device_id, false)

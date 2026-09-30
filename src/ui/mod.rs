@@ -44,7 +44,6 @@ pub mod widgets;
 
 use std::{
     fmt,
-    net::Ipv4Addr,
     path::PathBuf,
     rc::Rc,
     sync::{Arc, Mutex, PoisonError},
@@ -60,7 +59,7 @@ use iced_fonts::lucide;
 use uuid::Uuid;
 
 use crate::{
-    core::{Appearance, DeviceSnapshot, PairingSnapshot, SettingsPatch, SettingsSnapshot},
+    core::{Appearance, DeviceSnapshot, Host, PairingSnapshot, SettingsPatch, SettingsSnapshot},
     daemon::{ApiStatus, ApiSwitch},
 };
 use context::UiContext;
@@ -213,7 +212,7 @@ pub(crate) enum Message {
     /// Ask for the address of a device to add.
     AddByAddress,
     /// Wait for a device to answer at this address, then pair with it.
-    Connect(Ipv4Addr),
+    Connect(Host),
     /// Reaching a device at an address finished, or why it didn't; `attempt`
     /// says which try, so a cancelled one's answer is ignored.
     Connected {
@@ -231,12 +230,12 @@ pub(crate) enum Message {
     EditAddress {
         device_id: String,
         name: String,
-        address: Ipv4Addr,
+        address: Host,
     },
     /// Forget one of a device's saved addresses.
     RemoveAddress {
         device_id: String,
-        address: Ipv4Addr,
+        address: Host,
     },
     /// A device's saved addresses changed, or why they couldn't.
     AddressesSaved(Result<DeviceSnapshot, String>),
@@ -983,7 +982,7 @@ impl App {
                 self.starting.as_deref(),
                 self.connecting
                     .as_ref()
-                    .map(|connecting| connecting.address),
+                    .map(|connecting| connecting.address.clone()),
                 add_device::Actions {
                     back: Message::Back,
                     scan: Message::Scan,

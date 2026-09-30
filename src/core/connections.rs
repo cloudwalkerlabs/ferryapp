@@ -211,13 +211,20 @@ impl Core {
     }
 
     /// Announce this device to one address, for networks where broadcast
-    /// discovery doesn't reach the peer. A peer that hears it dials back
-    /// over TCP, as it would after a broadcast. Only unicast addresses are
-    /// accepted, so this can't be used to spray the identity at a
+    /// discovery doesn't reach the peer. A name is resolved first and every
+    /// address it stands for is announced to; a peer that hears it dials
+    /// back over TCP, as it would after a broadcast. Only unicast addresses
+    /// are announced to, so this can't be used to spray the identity at a
     /// broadcast or multicast group.
-    pub fn announce_to(&self, address: Ipv4Addr) -> Result<(), CoreError> {
-        let address = super::addresses::unicast(address)?;
-        self.send_lan_command(LanCommand::AnnounceTo { address })
+    pub async fn announce_to(&self, host: &super::Host) -> Result<(), CoreError> {
+        let addresses = host.resolve().await;
+        if addresses.is_empty() {
+            return Err(CoreError::AddressUnresolvable);
+        }
+        for address in addresses {
+            self.send_lan_command(LanCommand::AnnounceTo { address })?;
+        }
+        Ok(())
     }
 
     pub(super) fn send_lan_command(&self, command: LanCommand) -> Result<(), CoreError> {
@@ -395,22 +402,47 @@ mod tests {
 
     #[tokio::test]
     async fn announcing_to_an_address_accepts_only_unicast() {
-        let (handle, mut commands) = handle().await;
-        for address in [
-            Ipv4Addr::UNSPECIFIED,
-            Ipv4Addr::BROADCAST,
-            Ipv4Addr::new(224, 0, 0, 251),
+        for text in [
+            "0.0.0.0",
+            "255.255.255.255",
+            "224.0.0.251",
+            "1.2.3",
+            "a b",
+            "-x.y",
         ] {
             assert!(matches!(
-                handle.announce_to(address),
+                text.parse::<super::super::Host>(),
                 Err(CoreError::InvalidDiscoveryAddress)
             ));
         }
+        let (handle, mut commands) = handle().await;
         let address = Ipv4Addr::new(192, 168, 1, 20);
-        handle.announce_to(address).unwrap();
+        handle.announce_to(&address.into()).await.unwrap();
         assert_eq!(
             commands.recv().await,
             Some(LanCommand::AnnounceTo { address })
         );
+    }
+
+    #[tokio::test]
+    async fn announcing_to_a_name_goes_to_what_the_system_resolves() {
+        let (handle, mut commands) = handle().await;
+        handle
+            .announce_to(&"localhost".parse().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            commands.recv().await,
+            Some(LanCommand::AnnounceTo {
+                address: Ipv4Addr::LOCALHOST
+            })
+        );
+        // Reserved by RFC 2606: never resolves.
+        assert!(matches!(
+            handle
+                .announce_to(&"nothing.invalid".parse().unwrap())
+                .await,
+            Err(CoreError::AddressUnresolvable)
+        ));
     }
 }

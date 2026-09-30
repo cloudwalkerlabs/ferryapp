@@ -79,7 +79,8 @@ error-invalid_transfer_state = That transfer has already finished.
 error-request_timeout = Ferry took too long to respond.
 error-invalid_device_name = Use 1 to 32 characters, without . , : ; ! ? ( ) [ ] < > or quotes.
 error-invalid_download_dir = That folder can’t be used for downloads.
-error-invalid_address = Enter an IPv4 address, like 192.168.1.20.
+error-invalid_address = Enter an IPv4 address like 192.168.1.20, or a hostname like phone.example.net.
+error-unresolvable_address = That name couldn’t be resolved to an IPv4 address. Check the spelling and your DNS or VPN.
 error-address_unreachable = No device answered at that address. Make sure Ferry or KDE Connect is running there.
 error-too_many_addresses = A device can keep up to 8 addresses.
 # Any other code; `code` is the API's, such as `internal_error`.
@@ -123,8 +124,8 @@ shell-open-failed = Couldn’t open { $path }
 # `url` is a web address.
 shell-open-link-failed = Couldn’t open { $url }
 shell-start-on-login-failed = Couldn’t change starting on login.
-shell-add-by-address-title = Add by IP address
-shell-add-by-address-label = IP address
+shell-add-by-address-title = Add by address
+shell-add-by-address-label = IP address or hostname
 shell-add-by-address-helper = Ferry or KDE Connect must be running on that device. Ferry connects to it, pairs, and keeps the address.
 shell-add-by-address-confirm = Add
 # Dialog titles for adding and editing a device's saved address.
@@ -239,9 +240,9 @@ add-device-none-found = No devices found
 add-device-pairing = Pairing in progress
 add-device-not-connected = Not connected
 add-device-pair = Pair
-add-device-by-address = Add by IP address
+add-device-by-address = Add by IP address or hostname
 add-device-by-address-detail = For networks where the device doesn’t show up on its own
-# Shown while an address is tried; `address` is the IPv4 address. Then a pairing starts.
+# Shown while an address is tried; `address` is the IPv4 address or hostname. Then a pairing starts.
 add-device-connecting = Connecting to { $address }…
 add-device-connecting-detail = Waiting for the device to answer
 # Stops trying the address.

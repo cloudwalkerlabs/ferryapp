@@ -41,7 +41,7 @@ use devices::paired_devices;
 use pairing::PairingRuntime;
 pub(crate) use settings::{Settings, StoredSettings};
 
-pub use addresses::{ADDRESSES, CONNECT_TIMEOUT, MAX_ADDRESSES};
+pub use addresses::{ADDRESSES, CONNECT_TIMEOUT, Host, MAX_ADDRESSES};
 pub use connections::LanCommand;
 pub use devices::{DeviceReachability, DeviceRegistry, DeviceRegistryError, DeviceSnapshot};
 pub use error::{CoreError, OperationErrorCode};
@@ -97,7 +97,7 @@ struct CoreState {
     pairing_by_device: HashMap<String, Uuid>,
     /// The address each unpaired device connected from after
     /// [`Core::connect_address`], saved once it is paired.
-    pending_addresses: HashMap<String, std::net::Ipv4Addr>,
+    pending_addresses: HashMap<String, addresses::Host>,
 }
 
 impl Core {
