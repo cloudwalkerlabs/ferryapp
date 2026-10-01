@@ -4,9 +4,12 @@
 //! The plugin holds the synced text (`GET`/`PUT /clipboard`, with
 //! `clipboard.changed` events) and mirrors it to a [`ClipboardService`]:
 //! the desktop clipboard ([`SystemClipboard`]) or an in-memory one. Text set
-//! here, copied locally (see [`ClipboardPlugin::follow_local_changes`]), or
-//! received from a peer is sent to every other paired, connected device
-//! that accepts `kdeconnect.clipboard`. On connecting, a device is sent the
+//! here or copied locally (see [`ClipboardPlugin::follow_local_changes`]) is
+//! sent to every paired, connected device that accepts
+//! `kdeconnect.clipboard`. Text received from a peer is applied but sent
+//! nowhere: as in KDE Connect, only a change made on this machine goes
+//! out, so no arrangement of devices can pass text around in a loop (see
+//! [`ECHO_WINDOW`] for the desktop clipboard's part). On connecting, a device is sent the
 //! current text as `kdeconnect.clipboard.connect`, which it adopts only if
 //! it is newer than its own. `POST /devices/{id}/clipboard` sends the text
 //! to one device on request.
@@ -24,8 +27,9 @@ mod http;
 pub mod packet;
 
 use std::{
+    collections::VecDeque,
     sync::{Arc, Mutex, PoisonError},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::Router;
@@ -65,6 +69,18 @@ pub const SYNC_ENABLED: ConfigKey<bool> = ConfigKey::new("clipboard.syncEnabled"
 /// rather than a generic body-too-large rejection.
 pub const MAX_CLIPBOARD_TEXT_BYTES: usize = 32 * 1024;
 
+/// How long text the clipboard held is taken for an echo, not a copy, when
+/// it shows up again as a local change. Writing text from a peer to the
+/// desktop clipboard can bring the text it replaced back moments later (a
+/// clipboard manager restoring its last entry, or another process taking
+/// the selection back); syncing that as a copy would send old text out
+/// for every new text that comes in, which with a phone connected to two
+/// machines alternates their texts on it forever.
+pub const ECHO_WINDOW: Duration = Duration::from_secs(5);
+
+/// How many replaced texts are kept for [`ECHO_WINDOW`].
+const ECHO_HISTORY: usize = 8;
+
 /// The synced clipboard text and whether sync is on: `GET /clipboard`, and
 /// the data of `clipboard.changed`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,9 +108,33 @@ struct Synced {
     text: String,
     updated_at: u64,
     source_device_id: Option<String>,
+    /// Texts this replaced, newest first, with when: see [`ECHO_WINDOW`].
+    replaced: VecDeque<(String, Instant)>,
 }
 
 impl Synced {
+    /// Take `text` as the synced text, remembering the one it replaces.
+    fn replace(&mut self, text: String, updated_at: u64, source_device_id: Option<String>) {
+        let previous = std::mem::replace(&mut self.text, text);
+        if !previous.is_empty() {
+            self.replaced.push_front((previous, Instant::now()));
+            self.replaced.truncate(ECHO_HISTORY);
+        }
+        self.updated_at = updated_at;
+        self.source_device_id = source_device_id;
+    }
+
+    /// Whether a local change to `text` is an echo of what the clipboard
+    /// holds or held within [`ECHO_WINDOW`], rather than a copy. Line
+    /// endings don't count: a clipboard may turn `\n` into `\r\n`.
+    fn is_echo(&self, text: &str) -> bool {
+        same_text(text, &self.text)
+            || self
+                .replaced
+                .iter()
+                .any(|(old, at)| at.elapsed() < ECHO_WINDOW && same_text(text, old))
+    }
+
     fn snapshot(&self, sync_enabled: bool) -> ClipboardSnapshot {
         ClipboardSnapshot {
             text: self.text.clone(),
@@ -204,17 +244,13 @@ impl ClipboardPlugin {
             if synced.text == text {
                 return Ok(synced.snapshot(sync_enabled));
             }
-            *synced = Synced {
-                text: text.clone(),
-                updated_at: unix_millis(),
-                source_device_id: None,
-            };
+            synced.replace(text.clone(), unix_millis(), None);
             synced.snapshot(sync_enabled)
         };
         let _ = self.backend.set(&text);
         ctx.publish(&snapshot)?;
         if sync_enabled {
-            broadcast(ctx, text, None);
+            broadcast(ctx, text);
         }
         Ok(snapshot)
     }
@@ -270,6 +306,10 @@ impl ClipboardPlugin {
                 if !sync_enabled(&ctx) {
                     continue;
                 }
+                if self.lock().is_echo(&text) {
+                    tracing::debug!(length = text.len(), "clipboard echo not synced");
+                    continue;
+                }
                 if let Err(error) = self.set_text(&ctx, text) {
                     tracing::debug!(%error, "local clipboard change not synced");
                 }
@@ -280,8 +320,7 @@ impl ClipboardPlugin {
     /// Apply text received from a paired device. `timestamp`, sent only
     /// with `kdeconnect.clipboard.connect`, gates staleness: text that is
     /// not strictly newer than ours is ignored. Text we already have is
-    /// always ignored, which is also what keeps two devices from bouncing
-    /// text back and forth.
+    /// always ignored. The text is sent to no one: see the module docs.
     async fn apply_remote(
         &self,
         ctx: &PluginContext,
@@ -310,22 +349,15 @@ impl ClipboardPlugin {
             {
                 return;
             }
-            *synced = Synced {
-                text: content.clone(),
-                updated_at: timestamp
-                    .map(|value| value.max(0) as u64)
-                    .unwrap_or_else(unix_millis),
-                source_device_id: Some(device_id.to_owned()),
-            };
+            let updated_at = timestamp
+                .map(|value| value.max(0) as u64)
+                .unwrap_or_else(unix_millis);
+            synced.replace(content.clone(), updated_at, Some(device_id.to_owned()));
             synced.snapshot(true)
         };
         let backend = self.backend.clone();
-        let copied = content.clone();
-        let _ = tokio::task::spawn_blocking(move || backend.set(&copied)).await;
+        let _ = tokio::task::spawn_blocking(move || backend.set(&content)).await;
         let _ = ctx.publish(&snapshot);
-        // Forward to other paired devices, but never back to the one the
-        // text just came from.
-        broadcast(ctx, content, Some(device_id));
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Synced> {
@@ -437,12 +469,16 @@ fn sync_enabled(ctx: &PluginContext) -> bool {
         .unwrap_or(true)
 }
 
-/// Send `text` to every paired, connected device that accepts it, except
-/// `except`.
-fn broadcast(ctx: &PluginContext, text: String, except: Option<&str>) {
+/// Send `text` to every paired, connected device that accepts it.
+fn broadcast(ctx: &PluginContext, text: String) {
     if let Ok(packet) = build_packet(unix_millis(), text) {
-        ctx.broadcast(&packet, except);
+        ctx.broadcast(&packet, None);
     }
+}
+
+/// Whether two texts are the same but for `\r\n` against `\n`.
+fn same_text(a: &str, b: &str) -> bool {
+    a == b || a.replace("\r\n", "\n") == b.replace("\r\n", "\n")
 }
 
 fn unix_millis() -> u64 {
@@ -543,7 +579,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remote_text_is_applied_and_forwarded_but_not_echoed_back() {
+    async fn remote_text_is_applied_but_sent_to_no_one() {
         let (handle, plugin, ctx) = clipboard().await;
         let mut sender_rx = connect_paired_peer(&handle, DEVICE_ID).await;
         let mut other_rx = connect_paired_peer(&handle, OTHER_ID).await;
@@ -556,10 +592,138 @@ mod tests {
         assert_eq!(snapshot.text, "from peer");
         assert_eq!(snapshot.source_device_id.as_deref(), Some(DEVICE_ID));
         assert_eq!(plugin.backend.get().unwrap().as_deref(), Some("from peer"));
-        // Never straight back to the device it came from...
+        // Not back to the device it came from, nor on to another: only
+        // a change made here goes out.
         assert!(sender_rx.try_recv().is_err());
-        // ...but on to other paired, connected devices that accept it.
-        assert_eq!(content(&other_rx.try_recv().unwrap()), "from peer");
+        assert!(other_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn echoes_are_text_held_moments_ago_whatever_the_line_endings() {
+        let mut synced = Synced::default();
+        synced.replace("old".into(), 1, None);
+        synced.replace("line\n".into(), 2, Some(DEVICE_ID.into()));
+        assert!(synced.is_echo("line\n"));
+        assert!(synced.is_echo("line\r\n"));
+        assert!(synced.is_echo("old"));
+        assert!(!synced.is_echo("new"));
+
+        // Text replaced longer ago than the window is a copy again.
+        synced.replaced[0].1 = Instant::now() - ECHO_WINDOW - Duration::from_millis(1);
+        assert!(!synced.is_echo("old"));
+    }
+
+    #[tokio::test]
+    async fn local_copies_of_text_just_held_are_not_synced() {
+        let (handle, plugin, ctx) = clipboard().await;
+        let mut rx = connect_paired_peer(&handle, DEVICE_ID).await;
+        let (changes, receiver) = watch::channel(None);
+        let shutdown = CancellationToken::new();
+        let _follower =
+            plugin
+                .clone()
+                .follow_local_changes(ctx.clone(), receiver, shutdown.clone());
+
+        plugin.set_text(&ctx, "mine".into()).unwrap();
+        rx.try_recv().unwrap();
+        handle
+            .handle_peer_packet(DEVICE_ID, build_packet(1_u64, "theirs\n".into()).unwrap())
+            .await;
+
+        // The text the peer's replaced coming back is an echo, as is the
+        // peer's own text with other line endings. (A `watch` keeps only
+        // the latest value, so give the follower time to see each.)
+        for echo in ["mine", "theirs\r\n"] {
+            changes.send_replace(Some(echo.into()));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(plugin.snapshot(&ctx).text, "theirs\n");
+        assert!(rx.try_recv().is_err());
+
+        // ...but new text is a copy.
+        changes.send_replace(Some("copied".into()));
+        let sent = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(content(&sent), "copied");
+        shutdown.cancel();
+    }
+
+    /// A desktop clipboard at its worst: writing text to it brings back the
+    /// text it replaced as a local change, as a clipboard manager restoring
+    /// its last entry does.
+    struct RestoringClipboard {
+        memory: InMemoryClipboard,
+        changes: watch::Sender<Option<String>>,
+    }
+
+    impl ClipboardService for RestoringClipboard {
+        fn get(&self) -> Result<Option<String>, ClipboardError> {
+            self.memory.get()
+        }
+        fn set(&self, text: &str) -> Result<(), ClipboardError> {
+            let previous = self.memory.get()?;
+            self.memory.set(text)?;
+            if let Some(previous) = previous.filter(|previous| previous != text) {
+                self.changes.send_replace(Some(previous));
+            }
+            Ok(())
+        }
+        fn watch_local_changes(&self) -> Option<watch::Receiver<Option<String>>> {
+            Some(self.changes.subscribe())
+        }
+    }
+
+    /// A phone connected to two machines, which passes on whatever one sends
+    /// it to the other (as KDE Connect for Android can when two updates
+    /// arrive together), no longer alternates their texts forever.
+    #[tokio::test]
+    async fn a_phone_between_two_machines_does_not_loop() {
+        const PHONE_ID: &str = DEVICE_ID;
+        let mut hosts = Vec::new();
+        for _ in 0..2 {
+            let backend = Arc::new(RestoringClipboard {
+                memory: InMemoryClipboard::new(),
+                changes: watch::Sender::new(None),
+            });
+            let (handle, plugin, _commands) =
+                handle_with_plugin(ClipboardPlugin::new(backend)).await;
+            let ctx = handle.plugin_context();
+            hosts.push((handle, plugin, ctx));
+        }
+        let [(a, plugin_a, ctx_a), (b, plugin_b, ctx_b)] = &hosts[..] else {
+            unreachable!();
+        };
+        plugin_b.set_text(ctx_b, "b".into()).unwrap();
+        let mut to_phone_from_a = connect_paired_peer(a, PHONE_ID).await;
+        let mut to_phone_from_b = connect_paired_peer(b, PHONE_ID).await;
+        a.start_plugins().await;
+        b.start_plugins().await;
+        // B offers its text on connecting; the phone keeps its own.
+        while to_phone_from_b.try_recv().is_ok() {}
+
+        plugin_a.set_text(ctx_a, "a".into()).unwrap();
+        let mut passed_on = 0;
+        while passed_on < 20 {
+            let quiet = tokio::time::sleep(Duration::from_millis(300));
+            tokio::select! {
+                Some(packet) = to_phone_from_a.recv() => {
+                    b.handle_peer_packet(PHONE_ID, packet).await;
+                }
+                Some(packet) = to_phone_from_b.recv() => {
+                    a.handle_peer_packet(PHONE_ID, packet).await;
+                }
+                () = quiet => break,
+            }
+            passed_on += 1;
+        }
+
+        assert_eq!(passed_on, 1, "only A's copy reaches B");
+        assert_eq!(plugin_a.snapshot(ctx_a).text, "a");
+        assert_eq!(plugin_b.snapshot(ctx_b).text, "a");
+        a.shutdown_plugins().await;
+        b.shutdown_plugins().await;
     }
 
     #[tokio::test]
