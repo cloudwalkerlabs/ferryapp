@@ -82,7 +82,7 @@ pub enum CoreError {
 }
 
 impl CoreError {
-    /// The code clients see for this error: the HTTP API's `problem+json`
+    /// The code clients see for this error: the control socket's `data.code`
     /// `code`, and what the UI words its message from.
     pub fn code(&self) -> &'static str {
         match self {

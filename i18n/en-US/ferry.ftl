@@ -61,7 +61,6 @@ incoming-accept = Accept
 ## Errors, keyed by the code the HTTP API reports (src/ui/error.rs)
 
 error-daemon_unavailable = Ferry is not responding.
-error-unauthorized = Ferry rejected this app’s access token.
 error-device_not_found = That device is no longer known.
 error-device_not_connected = The device is not connected right now.
 error-already_paired = The device is already paired.
@@ -76,7 +75,6 @@ error-invalid_file_name = That file name can’t be sent.
 error-transfer_too_large = The file is too large to send.
 error-transfer_not_found = That transfer no longer exists.
 error-invalid_transfer_state = That transfer has already finished.
-error-request_timeout = Ferry took too long to respond.
 error-invalid_device_name = Use 1 to 32 characters, without . , : ; ! ? ( ) [ ] < > or quotes.
 error-invalid_download_dir = That folder can’t be used for downloads.
 error-invalid_address = Enter an IPv4 address like 192.168.1.20, or a hostname like phone.example.net.

@@ -81,7 +81,8 @@ of its bytes (`share.file`, `files.upload`); the daemon reads it with
 `share::send_path` and `BrowsePlugin::upload_path`, which the app already
 uses. The request answers once the whole file has gone into the transfer,
 as the upload's response did, so interrupting the CLI before then ends the
-transfer as short. Multipart uploads, body limits and the idle timeout and
+transfer as short once the device connects for it (until then it waits
+for the device, as it did over HTTP). Multipart uploads, body limits and the idle timeout and
 drain go away.
 
 **One definition per method.** A method is its params type:

@@ -1,6 +1,6 @@
 //! Notifications end to end: a fake phone shares its notifications (one
 //! with an icon over a payload connection), and the desktop lists, answers,
-//! and dismisses them through the HTTP API.
+//! and dismisses them through its control socket.
 
 mod support;
 
@@ -11,15 +11,21 @@ use std::{
 };
 
 use ferry::{
-    api::{ApiServer, ApiServerConfig},
-    client::{ApiClient, ClientError},
+    client::{Client, ClientError},
     config::LocalIdentity,
     core::{Core, DeviceReachability, LocalDeviceSnapshot, TransferConfig},
     plugins::{
         clipboard::InMemoryClipboard,
-        notifications::{self, Notification, REPLY_PACKET_TYPE, REQUEST_PACKET_TYPE},
+        notifications::{
+            self, Notification, REPLY_PACKET_TYPE, REQUEST_PACKET_TYPE,
+            rpc::{
+                DismissNotification, ListNotifications, ReplyToNotification, RunNotificationAction,
+                SetNotificationsEnabled,
+            },
+        },
     },
     protocol::{DeviceType, Packet},
+    rpc::{ListDevices, RpcServer},
     store::Store,
     transport::{
         lan::{LanConfig, LanService, LocalDeviceInfo, TCP_PORT_RANGE},
@@ -33,9 +39,9 @@ use tokio_util::sync::CancellationToken;
 struct Harness {
     phone: FakePhone,
     phone_id: String,
-    client: ApiClient,
+    client: Client,
     _lan: LanService,
-    _api: ApiServer,
+    _server: RpcServer,
     _desktop_dir: tempfile::TempDir,
     _phone_dir: tempfile::TempDir,
 }
@@ -124,21 +130,21 @@ async fn harness() -> Harness {
     })
     .await;
 
-    let api = ApiServer::start(
-        ApiServerConfig::new(0).unwrap(),
-        desktop.clone(),
-        None,
+    let socket = desktop_dir.path().join("ferry.sock");
+    let server = RpcServer::start(
+        socket.clone(),
+        ferry::rpc::all(&desktop),
         CancellationToken::new(),
     )
     .await
     .unwrap();
-    let client = ApiClient::new(&format!("http://{}", api.local_addr()), None).unwrap();
+    let client = Client::connect(&socket).await.unwrap();
     Harness {
         phone,
         phone_id,
         client,
         _lan: lan,
-        _api: api,
+        _server: server,
         _desktop_dir: desktop_dir,
         _phone_dir: phone_dir,
     }
@@ -160,7 +166,12 @@ where
 
 impl Harness {
     async fn notifications(&self) -> Vec<Notification> {
-        self.client.notifications(&self.phone_id).await.unwrap()
+        self.client
+            .call(ListNotifications {
+                device_id: self.phone_id.clone(),
+            })
+            .await
+            .unwrap()
     }
 
     /// The notification packets the phone got, of `packet_type`.
@@ -229,7 +240,11 @@ async fn a_phones_notifications_are_listed_answered_and_dismissed() {
 
     harness
         .client
-        .reply_to_notification(&harness.phone_id, id, "Yes!")
+        .call(ReplyToNotification {
+            device_id: harness.phone_id.clone(),
+            id: id.into(),
+            message: "Yes!".into(),
+        })
         .await
         .unwrap();
     eventually(|| async { !harness.received(REPLY_PACKET_TYPE).is_empty() }).await;
@@ -239,17 +254,24 @@ async fn a_phones_notifications_are_listed_answered_and_dismissed() {
 
     let unknown = harness
         .client
-        .run_notification_action(&harness.phone_id, id, "Delete")
+        .call(RunNotificationAction {
+            device_id: harness.phone_id.clone(),
+            id: id.into(),
+            action: "Delete".into(),
+        })
         .await
         .unwrap_err();
     assert!(matches!(
         unknown,
-        ClientError::OperationFailed { status: 409, ref code } if code == "unknown_notification_action"
+        ClientError::Rpc(ref error) if error.error_code() == "unknown_notification_action"
     ));
 
     harness
         .client
-        .dismiss_notification(&harness.phone_id, id)
+        .call(DismissNotification {
+            device_id: harness.phone_id.clone(),
+            id: id.into(),
+        })
         .await
         .unwrap();
     assert!(harness.notifications().await.is_empty());
@@ -289,7 +311,7 @@ async fn a_device_whose_notifications_are_off_isnt_listed_until_turned_on() {
     };
     eventually(|| async { requests() == 1 }).await;
     let enabled = || async {
-        let devices = harness.client.devices().await.unwrap();
+        let devices = harness.client.call(ListDevices {}).await.unwrap();
         let phone = devices
             .iter()
             .find(|device| device.device_id == harness.phone_id)
@@ -308,7 +330,10 @@ async fn a_device_whose_notifications_are_off_isnt_listed_until_turned_on() {
 
     harness
         .client
-        .set_notifications_enabled(&harness.phone_id, false)
+        .call(SetNotificationsEnabled {
+            device_id: harness.phone_id.clone(),
+            enabled: false,
+        })
         .await
         .unwrap();
     assert!(!enabled().await);
@@ -320,12 +345,30 @@ async fn a_device_whose_notifications_are_off_isnt_listed_until_turned_on() {
             None,
         )
         .await;
+    // A device's packets are handled in order: once the battery report that
+    // follows it shows, the notification has been handled (and dropped).
+    harness.phone.report_battery(42, false).await;
+    eventually(|| async {
+        harness
+            .client
+            .call(ListDevices {})
+            .await
+            .unwrap()
+            .iter()
+            .any(|device| {
+                device.device_id == harness.phone_id && device.plugins.contains_key("battery")
+            })
+    })
+    .await;
 
     // On again, the phone is asked for what it shows; what it sent while
     // off was dropped, and what it sends now is listed.
     harness
         .client
-        .set_notifications_enabled(&harness.phone_id, true)
+        .call(SetNotificationsEnabled {
+            device_id: harness.phone_id.clone(),
+            enabled: true,
+        })
         .await
         .unwrap();
     assert!(enabled().await);

@@ -293,6 +293,7 @@ impl Methods {
 
     /// Run the request `method(params)`, sending stream items for request
     /// `id` into `out`.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub(crate) fn call(
         &self,
         method: &str,
@@ -381,6 +382,7 @@ impl Message {
         }
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub fn answer(id: Value, reply: Reply) -> Self {
         let (result, error) = match reply {
             Ok(result) => (Some(result), None),

@@ -15,7 +15,7 @@ and deleted; its records are in
 ## Read first
 
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md): the core and its plugins, the
-   module map (§2), state machines, the full HTTP API, how the app embeds
+   module map (§2), state machines, the control socket's methods, how the app embeds
    the daemon (§9), testing (§10), known gaps (§11), browsing a device's
    files (§12), the app's languages (§13).
 2. [`adr/0001`](adr/0001-native-ui-in-iced.md): why the UI is Rust and
@@ -40,14 +40,14 @@ feature.
   cache of core snapshots. The one exception is starting on login: the
   system's login item is its state (ARCHITECTURE §7), so only the app can
   change it. The UI calls the same typed Rust functions of the core and
-  plugins that `http.rs` calls, in-process (`adr/0001`), so the CLI can do
+  plugins that `rpc.rs` calls, in-process (`adr/0001`), so the CLI can do
   anything the UI does. New behaviour goes into the plugin's or core's
-  Rust API first, then `http.rs` and `client.rs`/the CLI, then
-  `src/ui/features/<name>.rs`.
+  Rust API first, then a method for it in `rpc.rs` and the CLI's command,
+  then `src/ui/features/<name>.rs`.
 - **Every resource needs a snapshot and events.** The UI takes a
   snapshot, patches it from the event bus, and takes a fresh one after it
   lags (Flutter ADR 0003, carried over); the CLI does the same over
-  `/events`. Without both, a client can't recover after a gap.
+  `events.subscribe`. Without both, a client can't recover after a gap.
 - **The daemon's data is in its store** (`ferry.db`, `src/store/`,
   [`adr/0002`](adr/0002-store-the-daemons-data-in-sqlite.md)). A small
   value is a `ConfigKey` declared by its owner and named `<owner>.<name>`
@@ -64,11 +64,12 @@ feature.
   in `src/ui/features/mod.rs`, the one place in the UI that lists
   features. The core doesn't name features and plugins don't import each
   other: shared code belongs in the core (or, for UI helpers, `src/ui/`).
-- **Token auth is optional.** It is enforced only when the daemon was
-  started with a token. The app's API is off until Settings → Command line
-  access turns it on, and always has a token, kept in the store as
-  `core.api` (or `--api-token` for one run); `ferry-cli run` defaults to
-  none.
+- **The control socket is the only way in.** `ferry.sock` in the data
+  directory, JSON-RPC, only for the user running the daemon, no token
+  ([`adr/0005`](adr/0005-control-the-daemon-over-a-unix-socket.md)). The
+  app's is off until Settings → Command line access turns it on (or
+  `--cli-access` for one run); `ferry-cli run` always serves it. A local
+  file goes over it as an absolute path, never as bytes.
 - **`cargo build -p ferry` has no iced in it.** UI code and its
   dependencies stay behind the `gui` feature.
 - Use reputable dependencies and record new ones in `adr/0001`'s library
@@ -359,15 +360,15 @@ in the real app".
 ## Verifying in the real app
 
 Isolate every run as [`../CLAUDE.md`](../CLAUDE.md) describes: fresh
-temporary data and download dirs, a free port, loopback discovery, and a
-private display and D-Bus session. `$udp` is a free UDP port (CLAUDE.md,
+temporary data and download dirs, loopback discovery, and a private
+display and D-Bus session. `$udp` is a free UDP port (CLAUDE.md,
 "Network"), shared by the app and its peers so the owner's own Ferry or
 KDE Connect doesn't see them.
 
 ```sh
 dir=$(mktemp -d -p "$scratchpad")
 # peer
-cargo run -- --api-port "$port" run --discovery-loopback --discovery-port "$udp" \
+cargo run -- run --discovery-loopback --discovery-port "$udp" \
   --data-dir "$dir/peer" --download-dir "$dir/peer-downloads" \
   --device-name "CLI Peer"
 # app (separate identity, loopback only), on a private display and bus
@@ -375,13 +376,13 @@ env -u WAYLAND_DISPLAY \
   dbus-run-session -- xvfb-run --auto-servernum \
   cargo run -p ferry-gui -- --discovery-loopback --discovery-port "$udp" \
     --data-dir "$dir/app" --download-dir "$dir/app-downloads" \
-    --device-name "UI Desktop" --api-port "$app_port"
+    --device-name "UI Desktop" --cli-access
 ```
 
-The app's daemon serves the API on `--api-port` (with `--api-token`, or
-the token kept in its data dir's `ferry.db`, which `ferry-cli --data-dir
-"$dir/app"` reads by itself), so the CLI can drive it: `pair` with the peer,
-`send` to it, list its transfers. `--demo` fills the app with made-up
+With `--cli-access` the app's daemon serves its control socket in its
+data dir, so `ferry-cli --data-dir "$dir/app"` drives it: `pair` with the
+peer (`ferry-cli --data-dir "$dir/peer"` drives that one), `send` to it,
+list its transfers. `--demo` fills the app with made-up
 paired devices, for looking at the UI without a peer.
 
 To try file browsing without a phone, run

@@ -1148,8 +1148,6 @@ fn enum_name(value: impl serde::Serialize) -> String {
         .to_owned()
 }
 
-/// The app's API address, when it serves one and `FERRY_API_URL` doesn't
-/// name another.
 #[cfg(test)]
 mod tests {
     use super::*;

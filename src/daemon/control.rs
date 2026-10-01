@@ -21,7 +21,8 @@ use crate::{
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ControlMode {
     /// For the whole run, as `ferry-cli run` does: the socket is how it is
-    /// controlled, and failing to listen fails the start.
+    /// controlled, and failing to listen fails the start (except on Windows,
+    /// which has no socket yet).
     #[default]
     Always,
     /// As the store's [`COMMAND_LINE_ACCESS`] says, and switched with
@@ -126,7 +127,9 @@ impl ControlSwitch {
             if state.enabled()
                 && let Err(error) = switch.0.listen(&mut state).await
             {
-                if always {
+                // Where there is no socket to serve (Windows), a CLI daemon
+                // still runs, uncontrolled, as the app does.
+                if always && cfg!(unix) {
                     return Err(error);
                 }
                 warn!(error = %format!("{error:#}"), "command line access is off");
@@ -240,7 +243,7 @@ impl Inner {
 
     #[cfg(not(unix))]
     async fn listen(&self, _state: &mut State) -> Result<()> {
-        let _ = &self.core;
+        let _ = (&self.core, &self.shutdown);
         Err(anyhow::anyhow!(
             "command line access isn't available on this platform yet"
         ))

@@ -1,7 +1,7 @@
 //! Errors in words the user reads.
 //!
 //! Messages are keyed by the error's code ([`CoreError::code`]), the same
-//! code the HTTP API reports, so the UI and the CLI name a failure the same
+//! code the control socket reports, so the UI and the CLI name a failure the same
 //! way. A feature with its own error type words its own codes and hands the
 //! rest to [`describe_code`].
 
@@ -18,7 +18,6 @@ pub fn describe_error(error: &CoreError) -> String {
 pub fn describe_code(code: &str) -> String {
     match code {
         "daemon_unavailable" => fl!("error-daemon_unavailable"),
-        "unauthorized" => fl!("error-unauthorized"),
         "device_not_found" => fl!("error-device_not_found"),
         "device_not_connected" => fl!("error-device_not_connected"),
         "already_paired" => fl!("error-already_paired"),
@@ -33,7 +32,6 @@ pub fn describe_code(code: &str) -> String {
         "transfer_too_large" | "payload_too_large" => fl!("error-transfer_too_large"),
         "transfer_not_found" => fl!("error-transfer_not_found"),
         "invalid_transfer_state" => fl!("error-invalid_transfer_state"),
-        "request_timeout" => fl!("error-request_timeout"),
         "invalid_device_name" => fl!("error-invalid_device_name"),
         "invalid_download_dir" => fl!("error-invalid_download_dir"),
         "invalid_address" => fl!("error-invalid_address"),
@@ -111,7 +109,6 @@ mod tests {
     fn codes_read_like_the_flutter_app() {
         for (code, message) in [
             ("daemon_unavailable", "Ferry is not responding."),
-            ("unauthorized", "Ferry rejected this app’s access token."),
             ("device_not_found", "That device is no longer known."),
             (
                 "device_not_connected",
@@ -144,7 +141,6 @@ mod tests {
                 "invalid_transfer_state",
                 "That transfer has already finished.",
             ),
-            ("request_timeout", "Ferry took too long to respond."),
             (
                 "invalid_device_name",
                 "Use 1 to 32 characters, without . , : ; ! ? ( ) [ ] < > or quotes.",

@@ -20,17 +20,22 @@
 mod support;
 
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
 
 use ferry::{
-    client::ApiClient,
+    client::Client,
     core::{Core, DeviceReachability, EventData, PairingStatus, TransferDirection, TransferStatus},
-    daemon::{ApiMode, RunRequest, RunningService},
-    plugins::{self, ping::ReceivedPing, share},
+    daemon::{ControlMode, RunRequest, RunningService},
+    plugins::{
+        self,
+        clipboard::rpc::{GetClipboard, SetClipboard, SetClipboardSync},
+        ping::ReceivedPing,
+        share,
+    },
     transport::lan::LOOPBACK_BROADCAST,
     ui::{
         self, Desktop, Service, Started, UiOptions,
@@ -217,10 +222,27 @@ fn sends_the_clipboard_to_a_peer_that_missed_it() {
     // click below.
     let peer = &test.peer;
     test.runtime.block_on(async {
-        peer.client.set_clipboard("from the app").await.unwrap();
-        peer.client.set_clipboard_sync(false).await.unwrap();
-        peer.client.set_clipboard("only on the peer").await.unwrap();
-        peer.client.set_clipboard_sync(true).await.unwrap();
+        let client = &peer.client;
+        client
+            .call(SetClipboard {
+                text: "from the app".into(),
+            })
+            .await
+            .unwrap();
+        client
+            .call(SetClipboardSync { enabled: false })
+            .await
+            .unwrap();
+        client
+            .call(SetClipboard {
+                text: "only on the peer".into(),
+            })
+            .await
+            .unwrap();
+        client
+            .call(SetClipboardSync { enabled: true })
+            .await
+            .unwrap();
     });
 
     app.click(&peer.name);
@@ -230,7 +252,7 @@ fn sends_the_clipboard_to_a_peer_that_missed_it() {
     );
     test.eventually("the peer to receive the clipboard", || {
         test.runtime
-            .block_on(peer.client.clipboard())
+            .block_on(peer.client.call(GetClipboard {}))
             .is_ok_and(|clipboard| clipboard.text == "from the app")
     });
     test.stop(app);
@@ -447,10 +469,7 @@ impl Test {
         ui::i18n::use_test_language();
         let request = RunRequest {
             // Off, as the app starts by default.
-            api: ApiMode::Stored {
-                port: None,
-                token: None,
-            },
+            control: ControlMode::Stored { force: false },
             data_dir: Some(self.directory.path().join("data")),
             download_dir: Some(self.downloads()),
             device_name: Some(APP_NAME.into()),
@@ -803,7 +822,7 @@ where
 /// other instance on loopback has.
 struct Peer {
     service: RunningService,
-    client: ApiClient,
+    client: Client,
     name: String,
     directory: tempfile::TempDir,
 }
@@ -816,11 +835,7 @@ impl Peer {
             &uuid::Uuid::new_v4().simple().to_string()[..6]
         );
         let service = RunningService::start(RunRequest {
-            api: ApiMode::Always {
-                host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-                port: 0,
-                token: None,
-            },
+            control: ControlMode::Always,
             data_dir: Some(directory.path().join("data")),
             download_dir: Some(directory.path().join("downloads")),
             device_name: Some(name.clone()),
@@ -830,11 +845,9 @@ impl Peer {
         })
         .await
         .expect("the peer starts");
-        let client = ApiClient::new(
-            &format!("http://{}", service.api().address().await.unwrap()),
-            None,
-        )
-        .expect("a client for the peer");
+        let client = Client::for_data_dir(&directory.path().join("data"))
+            .await
+            .expect("a client for the peer");
         Self {
             service,
             client,

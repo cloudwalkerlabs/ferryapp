@@ -11,10 +11,10 @@ and Windows.
 The MVP is implemented: LAN discovery, protocol-v8 TLS connections with
 certificate pinning, user-confirmed pairing, persistent identity and trust,
 text clipboard sync, file transfer with progress and cancellation, browsing
-a phone's files, and a versioned local HTTP API that the CLI uses. The
-desktop app (`gui/`, Rust with [iced](https://iced.rs)) runs the daemon
-in-process and reads its core directly; the daemon still serves the API,
-so the CLI can drive it too. It has a tray, notifications and drag and
+a phone's files, and a control socket that the CLI uses. The desktop app
+(`gui/`, Rust with [iced](https://iced.rs)) runs the daemon in-process and
+reads its core directly; the daemon can serve the socket too, so the CLI
+can drive it. It has a tray, notifications and drag and
 drop, and is packaged for Linux (`.deb`, Arch), macOS (DMG) and Windows
 (installer).
 
@@ -103,11 +103,9 @@ Debian package, `Ferry.app/Contents/MacOS/ferry-cli` on macOS (link it onto
 your `PATH`), and next to `Ferry.exe` on Windows.
 
 `ferry-cli run` is a daemon of its own. To drive the desktop app instead,
-turn on **Settings → Command line access**: the app then serves its HTTP
-API on `127.0.0.1:24816` with a token kept in its database, and
-`ferry-cli` on the same computer finds both without flags. The setting
-shows the address and token, with a button to copy them as environment
-variables for a script run elsewhere.
+turn on **Settings → Command line access** (Linux and macOS): the app then
+listens on a Unix socket in its data directory, `ferry.sock`, which only
+your user can open, and `ferry-cli` run by you finds it without flags.
 
 #### Commands
 
@@ -151,17 +149,15 @@ variables for a script run elsewhere.
 - `ferry-cli clipboard get|set <text>|watch|send <device-id>` - Control text
   sync, or send the clipboard to one device now.
 
-Add `--json` for machine-readable output. The global `--api-host`/`--api-port`
-(default `127.0.0.1:24816`) set where `run` serves the control API and
-where every other command connects. `--api-token` (global, or
-`FERRY_API_TOKEN`; empty by default) makes `run` require that bearer token
-and every other command send it; with no token the API is
-unauthenticated. Prefer the environment variable, so the token doesn't
-show in process listings. For development, `FERRY_API_URL` overrides the
-API URL (`--api-host`/`--api-port` win when given). Given neither a token
-nor an address, the other commands use the app's, read from `ferry.db` in
-its data directory (`--data-dir` or `FERRY_DATA_DIR`, default the
-platform's configuration directory).
+Add `--json` for machine-readable output. `run` serves its control
+socket, `ferry.sock`, in its data directory, and every other command
+connects to the one in the data directory it is given (`--data-dir` or
+`FERRY_DATA_DIR`, default the platform's configuration directory, the
+app's). Only the user running the daemon can connect; there is no token.
+`run` refuses to start while another Ferry serves that data directory.
+The socket speaks newline-delimited JSON-RPC 2.0, so scripts can use it
+directly (`docs/ARCHITECTURE.md` §8 lists the methods). Command line
+access isn't available on Windows yet.
 
 ### Project structure
 
@@ -172,14 +168,14 @@ plus the desktop app:
 src/
 ├── lib.rs           # shared library
 ├── protocol/        # wire packet models and bounded framing
-├── config/          # the local identity, the API token, the app's API settings
+├── config/          # the local identity, whether the app serves its control socket
 ├── store/           # the SQLite store: configs, paired devices, migrations
 ├── transport/       # UDP discovery, TCP/TLS, auxiliary payload connections
 ├── core(.rs/*)      # devices, connections, pairing, transfers, settings, events, plugin API
 ├── plugins/         # features: ping, findmyphone, battery, connectivity, clipboard, share, browse, notifications, telephony
-├── daemon(.rs/*)    # composition root: core + built-in plugins + LAN + API switch
-├── api(.rs/*)       # local HTTP control plane (optional token auth)
-├── client.rs        # HTTP client used by the CLI
+├── daemon(.rs/*)    # composition root: core + built-in plugins + LAN + control socket
+├── rpc(.rs/*)       # the control protocol: JSON-RPC methods over a Unix socket
+├── client.rs        # the control socket's client, used by the CLI
 ├── ui/              # desktop UI in iced ("gui" feature)
 └── bin/
     └── ferry-cli/   # CLI binary
@@ -202,13 +198,13 @@ cargo run -- devices
 cargo run -- send <device-id> <file> --watch
 ```
 
-All commands except `run` talk to the daemon through its local HTTP API.
+All commands except `run` talk to the daemon through its control socket.
 Run the desktop app with `cargo run -p ferry-gui` (`--help` lists its
 flags, which mirror `ferry-cli run`; `--demo` fills it with made-up devices).
 `RUST_LOG` controls logging, e.g. `RUST_LOG=ferry=debug cargo run -- run`.
 
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) documents the module map,
-connection lifecycle, state machines and HTTP API. The original protocol
+connection lifecycle, state machines and control socket. The original protocol
 research and the plans used to build the MVP are kept in
 [`docs/archive/`](docs/archive/).
 ### Tech stack
