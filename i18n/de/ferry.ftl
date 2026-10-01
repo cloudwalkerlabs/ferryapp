@@ -256,15 +256,10 @@ settings-appearance-light = Hell
 settings-appearance-dark = Dunkel
 settings-cli = Zugriff über die Befehlszeile
 settings-cli-detail = ferry-cli darf diese App steuern
-settings-cli-setup-hint = ferry-cli auf diesem Computer findet die App von selbst. Anderswo, etwa in einem Skript unter einem anderen Benutzer, füge zuerst dies in dessen Shell ein:
-settings-cli-copy-setup = Einrichtung kopieren
-settings-cli-copy-token = Token kopieren
-settings-cli-new-token = Neues Token
+settings-cli-setup-hint = ferry-cli findet die App von selbst, wenn du es auf diesem Computer ausführst, über
 settings-cli-installed-at = ferry-cli ist installiert unter
 settings-cli-not-listening = ferry-cli kann die App nicht erreichen: { $error }
 settings-cli-change-failed = Der Zugriff über die Befehlszeile konnte nicht geändert werden: { $error }
-settings-cli-setup-copied = Einrichtung kopiert
-settings-cli-token-copied = Token kopiert
 settings-about = Über Ferry
 settings-version = Version { $version }
 

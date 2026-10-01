@@ -319,18 +319,14 @@ settings-appearance-light = Light
 settings-appearance-dark = Dark
 settings-cli = Command line access
 settings-cli-detail = Let ferry-cli control this app
-settings-cli-setup-hint = ferry-cli on this computer finds the app by itself. Elsewhere, such as a script run as another user, paste this into its shell first:
-settings-cli-copy-setup = Copy setup
-settings-cli-copy-token = Copy token
-settings-cli-new-token = New token
+# Under it, the path to the socket, which only this user can open.
+settings-cli-setup-hint = ferry-cli run by you on this computer finds the app by itself, through
 # Under it, the path to the `ferry-cli` program.
 settings-cli-installed-at = ferry-cli is installed at
-# `error` is the system's reason, in English, like "Address already in use".
+# `error` is the reason, in English, like "another Ferry is already serving /home/me/.config/ferry/ferry.sock".
 settings-cli-not-listening = ferry-cli can’t reach the app: { $error }
 # `error` is the reason, in English.
 settings-cli-change-failed = Couldn’t change command line access: { $error }
-settings-cli-setup-copied = Setup copied
-settings-cli-token-copied = Token copied
 settings-about = About Ferry
 # `version` is the app's, like "1.2.0".
 settings-version = Version { $version }

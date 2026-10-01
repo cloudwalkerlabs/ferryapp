@@ -233,15 +233,10 @@ settings-appearance-light = 浅色
 settings-appearance-dark = 深色
 settings-cli = 命令行访问
 settings-cli-detail = 允许 ferry-cli 控制此应用
-settings-cli-setup-hint = 此电脑上的 ferry-cli 会自动找到本应用。在其他地方（例如以其他用户身份运行的脚本），请先将以下内容粘贴到其 shell 中：
-settings-cli-copy-setup = 复制设置
-settings-cli-copy-token = 复制令牌
-settings-cli-new-token = 新令牌
+settings-cli-setup-hint = 你在此电脑上运行的 ferry-cli 会自动通过以下位置找到本应用：
 settings-cli-installed-at = ferry-cli 的安装位置
 settings-cli-not-listening = ferry-cli 无法访问本应用：{ $error }
 settings-cli-change-failed = 无法更改命令行访问：{ $error }
-settings-cli-setup-copied = 已复制设置
-settings-cli-token-copied = 已复制令牌
 settings-about = 关于 Ferry
 settings-version = 版本 { $version }
 

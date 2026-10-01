@@ -196,14 +196,9 @@ impl Core {
         self.events.subscribe()
     }
 
-    /// Every plugin's HTTP routes, merged, for the API server.
-    pub(crate) fn plugin_routes(&self) -> axum::Router {
-        self.plugins.routes(&self.plugin_context())
-    }
-
-    /// Every plugin's streaming (upload) routes, merged, for the API server.
-    pub(crate) fn plugin_streaming_routes(&self) -> axum::Router {
-        self.plugins.streaming_routes(&self.plugin_context())
+    /// Every plugin's control methods, added to `methods`.
+    pub(crate) fn plugin_methods(&self, methods: &mut crate::rpc::Methods) {
+        self.plugins.methods(&self.plugin_context(), methods);
     }
 
     /// Every file transfer, whichever feature started it.

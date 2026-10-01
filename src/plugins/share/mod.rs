@@ -22,8 +22,8 @@
 //!
 //! Never log a file name, file contents, or shared text or links.
 
-mod http;
 pub mod packet;
+pub mod rpc;
 
 use std::{
     io,
@@ -32,7 +32,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use axum::Router;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -95,12 +94,8 @@ impl Plugin for SharePlugin {
         }
     }
 
-    fn routes(self: Arc<Self>, ctx: PluginContext) -> Router {
-        http::routes(ctx)
-    }
-
-    fn streaming_routes(self: Arc<Self>, ctx: PluginContext) -> Router {
-        http::streaming_routes(ctx)
+    fn methods(self: Arc<Self>, ctx: PluginContext, methods: &mut crate::rpc::Methods) {
+        rpc::add(ctx, methods);
     }
 }
 

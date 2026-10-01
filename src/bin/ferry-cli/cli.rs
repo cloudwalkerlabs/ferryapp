@@ -1,31 +1,35 @@
-use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    path::PathBuf,
-};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Parser, Subcommand};
 use ferry::{
-    api::DEFAULT_API_PORT,
     client::{
-        API_TOKEN_ENV, API_URL_ENV, ApiClient, CallWatchUpdate, ClientError, ClipboardWatchUpdate,
-        DeviceWatchUpdate, NotificationWatchUpdate, TransferWatchUpdate,
+        CallWatchUpdate, Client, ClipboardWatchUpdate, DeviceWatchUpdate, Next,
+        NotificationWatchUpdate, TransferWatchUpdate,
     },
-    config::{ApiToken, StoredApi, default_config_dir},
+    config::default_config_dir,
     core::{
         Appearance, CoreEvent, DeviceSnapshot, EventData, Host, PairingSnapshot, SettingsPatch,
         SettingsSnapshot, TransferSnapshot,
     },
-    daemon::{ApiMode, RunRequest},
+    daemon::{ControlMode, RunRequest},
     plugins::{
         battery::BatteryStatus,
-        browse::{DirectoryListing, FileEntry, FileKind},
-        clipboard::ClipboardSnapshot,
+        browse::{DirectoryListing, FileEntry, FileKind, rpc as files},
+        clipboard::{ClipboardSnapshot, rpc as clipboard},
         connectivity::{Connectivity, MAX_STRENGTH},
-        notifications::{Notification, NotificationPosted, NotificationRemoved},
-        ping::ReceivedPing,
-        share::{ReceivedShare, SharedContent},
-        telephony::{Call, CallMissed, CallState},
+        findmyphone::rpc::Ring,
+        notifications::{
+            Notification, NotificationPosted, NotificationRemoved, rpc as notifications,
+        },
+        ping::{ReceivedPing, rpc::Ping},
+        share::{ReceivedShare, SharedContent, rpc as share},
+        telephony::{Call, CallMissed, CallState, rpc as telephony},
+    },
+    rpc::{
+        AcceptPairing, CancelPairing, Connect, ForgetDevice, GetDevice, GetSettings, ListDevices,
+        Scan, SetAddresses, StartPairing, UpdateSettings,
     },
     transport::lan::DISCOVERY_PORT,
 };
@@ -35,10 +39,9 @@ use uuid::Uuid;
 
 /// Connect and communicate with your devices.
 ///
-/// `run` is the daemon; every other command talks to a running one over its
-/// HTTP API: `ferry-cli run`'s, or the Ferry app's once "Command line
-/// access" is on in its Settings. The app's is found without flags: its
-/// port and token are read from its data directory.
+/// `run` is the daemon; every other command talks to a running one through
+/// the socket in its data directory (`ferry.sock`): `ferry-cli run`'s, or
+/// the Ferry app's once "Command line access" is on in its Settings.
 #[derive(Debug, Parser)]
 #[command(name = "ferry-cli", version, about)]
 pub struct Cli {
@@ -46,32 +49,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     json: bool,
     /// Directory holding the daemon's data (its identity, paired devices
-    /// and settings): the daemon's for
-    /// `run`; for every other command, where to find the app's API port
-    /// and token. Defaults to the platform's configuration directory.
+    /// and settings) and its control socket: the daemon's for `run`; for
+    /// every other command, the daemon to talk to. Defaults to the
+    /// platform's configuration directory, the app's.
     #[arg(long, global = true, env = "FERRY_DATA_DIR", value_name = "DIRECTORY")]
     data_dir: Option<PathBuf>,
-    /// Host of the local control API: listened on by `run`, connected to by
-    /// every other command. Defaults to 127.0.0.1.
-    #[arg(long, global = true, value_name = "HOST")]
-    api_host: Option<String>,
-    /// Port of the local control API: listened on by `run`, connected to by
-    /// every other command. Defaults to 24816.
-    #[arg(long, global = true, value_name = "PORT")]
-    api_port: Option<u16>,
-    /// Bearer token for the local control API: required from clients by
-    /// `run` when set, and sent by every other command. For `run`, empty
-    /// (the default) disables API authentication; other commands then send
-    /// the app's token, if it has one.
-    #[arg(
-        long,
-        global = true,
-        value_name = "TOKEN",
-        env = API_TOKEN_ENV,
-        hide_env_values = true,
-        default_value = ""
-    )]
-    api_token: String,
     #[command(subcommand)]
     command: Command,
 }
@@ -294,15 +276,8 @@ impl Cli {
         let Self {
             json,
             data_dir,
-            api_host,
-            api_port,
-            api_token,
             command,
         } = self;
-        let api_token = (!api_token.is_empty())
-            .then(|| ApiToken::from_secret(api_token))
-            .transpose()
-            .context("invalid --api-token")?;
         if let Command::Run {
             download_dir,
             device_name,
@@ -311,18 +286,8 @@ impl Cli {
             system_clipboard,
         } = command
         {
-            let host = match api_host {
-                Some(host) => host
-                    .parse::<IpAddr>()
-                    .with_context(|| format!("invalid --api-host address: {host}"))?,
-                None => IpAddr::V4(Ipv4Addr::LOCALHOST),
-            };
             let request = RunRequest {
-                api: ApiMode::Always {
-                    host,
-                    port: api_port.unwrap_or(DEFAULT_API_PORT),
-                    token: api_token,
-                },
+                control: ControlMode::Always,
                 download_dir,
                 data_dir,
                 device_name,
@@ -333,24 +298,15 @@ impl Cli {
             return ferry::daemon::run_service(request).await;
         }
 
-        // What the app stored, for what neither a flag nor the environment
-        // gives.
-        let stored = match data_dir.or_else(default_config_dir) {
-            Some(directory) => StoredApi::read(&directory).await.unwrap_or_default(),
-            None => Default::default(),
-        };
-        let base_url_override = if api_host.is_some() || api_port.is_some() {
-            let host = api_host.unwrap_or_else(|| "127.0.0.1".to_owned());
-            let port = api_port.unwrap_or(DEFAULT_API_PORT);
-            Some(format!("http://{}:{port}", format_host_for_url(&host)))
-        } else {
-            stored_api_url(&stored)
-        };
-        let client =
-            ApiClient::from_environment_with(base_url_override, api_token.or(stored.token()))?;
+        let data_dir = data_dir
+            .or_else(default_config_dir)
+            .context("could not determine the data directory; pass --data-dir")?;
+        let client = Client::for_data_dir(&data_dir).await?;
         match command {
             Command::Run { .. } => unreachable!("run handled before client configuration"),
-            Command::Devices { watch: false } => print_devices(&client.devices().await?, json),
+            Command::Devices { watch: false } => {
+                print_devices(&client.call(ListDevices {}).await?, json)
+            }
             Command::Devices { watch: true } => {
                 client
                     .watch_devices(cancellation_on_ctrl_c(), |update| match update {
@@ -364,7 +320,7 @@ impl Cli {
                 timeout,
                 watch,
             } => {
-                client.scan(address.as_ref()).await?;
+                client.call(Scan { address }).await?;
                 if watch {
                     client
                         .watch_devices(cancellation_on_ctrl_c(), |update| match update {
@@ -379,21 +335,22 @@ impl Cli {
                         .await?;
                 } else {
                     tokio::time::sleep(std::time::Duration::from_secs(timeout)).await;
-                    print_devices(&unpaired(client.devices().await?), json);
+                    print_devices(&unpaired(client.call(ListDevices {}).await?), json);
                 }
             }
-            Command::Connect { address } => print_devices(&[client.connect(&address).await?], json),
+            Command::Connect { address } => {
+                print_devices(&[client.call(Connect { address }).await?], json)
+            }
             Command::Addresses {
                 device_id,
                 add,
                 remove,
             } => {
                 let device = client
-                    .devices()
-                    .await?
-                    .into_iter()
-                    .find(|device| device.device_id == device_id)
-                    .ok_or(ClientError::NotFound("device"))?;
+                    .call(GetDevice {
+                        device_id: device_id.clone(),
+                    })
+                    .await?;
                 let mut addresses = device.addresses;
                 if !add.is_empty() || !remove.is_empty() {
                     addresses.retain(|address| !remove.contains(address));
@@ -402,7 +359,12 @@ impl Cli {
                             addresses.push(address);
                         }
                     }
-                    client.set_device_addresses(&device_id, &addresses).await?;
+                    addresses = client
+                        .call(SetAddresses {
+                            device_id: device_id.clone(),
+                            addresses,
+                        })
+                        .await?;
                 }
                 if json {
                     println!("{}", json!({"deviceId": device_id, "addresses": addresses}));
@@ -414,13 +376,13 @@ impl Cli {
             }
             Command::Pair { arguments } => match parse_pair_action(&arguments)? {
                 PairAction::Start(device_id) => {
-                    print_pairing(&client.start_pairing(&device_id).await?, json)
+                    print_pairing(&client.call(StartPairing { device_id }).await?, json)
                 }
                 PairAction::Accept(pairing_id) => {
-                    print_pairing(&client.accept_pairing(pairing_id).await?, json)
+                    print_pairing(&client.call(AcceptPairing { pairing_id }).await?, json)
                 }
                 PairAction::Reject(pairing_id) => {
-                    client.reject_pairing(pairing_id).await?;
+                    client.call(CancelPairing { pairing_id }).await?;
                     if json {
                         println!("{}", json!({"pairingId": pairing_id, "status": "rejected"}));
                     } else {
@@ -429,7 +391,11 @@ impl Cli {
                 }
             },
             Command::Unpair { device_id } => {
-                client.unpair(&device_id).await?;
+                client
+                    .call(ForgetDevice {
+                        device_id: device_id.clone(),
+                    })
+                    .await?;
                 if json {
                     println!("{}", json!({"deviceId": device_id, "status": "unpaired"}));
                 } else {
@@ -437,7 +403,12 @@ impl Cli {
                 }
             }
             Command::Ping { device_id, message } => {
-                client.ping(&device_id, message.as_deref()).await?;
+                client
+                    .call(Ping {
+                        device_id: device_id.clone(),
+                        message,
+                    })
+                    .await?;
                 if json {
                     println!("{}", json!({"deviceId": device_id, "status": "sent"}));
                 } else {
@@ -445,7 +416,11 @@ impl Cli {
                 }
             }
             Command::Ring { device_id } => {
-                client.ring(&device_id).await?;
+                client
+                    .call(Ring {
+                        device_id: device_id.clone(),
+                    })
+                    .await?;
                 if json {
                     println!("{}", json!({"deviceId": device_id, "status": "sent"}));
                 } else {
@@ -453,7 +428,12 @@ impl Cli {
                 }
             }
             Command::ShareText { device_id, text } => {
-                client.share_text(&device_id, &text).await?;
+                client
+                    .call(share::ShareText {
+                        device_id: device_id.clone(),
+                        text,
+                    })
+                    .await?;
                 if json {
                     println!("{}", json!({"deviceId": device_id, "status": "sent"}));
                 } else {
@@ -461,7 +441,12 @@ impl Cli {
                 }
             }
             Command::ShareUrl { device_id, url } => {
-                client.share_url(&device_id, &url).await?;
+                client
+                    .call(share::ShareUrl {
+                        device_id: device_id.clone(),
+                        url,
+                    })
+                    .await?;
                 if json {
                     println!("{}", json!({"deviceId": device_id, "status": "sent"}));
                 } else {
@@ -473,7 +458,12 @@ impl Cli {
                 file,
                 watch,
             } => {
-                let transfer = client.send_file(&device_id, &file).await?;
+                let transfer = client
+                    .call(share::ShareFile {
+                        device_id,
+                        path: local_file(&file)?,
+                    })
+                    .await?;
                 if watch {
                     client
                         .watch_transfer(
@@ -513,22 +503,25 @@ impl Cli {
                     }
                 };
                 match action {
-                    FilesAction::Ls { path } => {
-                        print_listing(&client.list_files(&device_id, path.as_deref()).await?, json)
-                    }
+                    FilesAction::Ls { path } => print_listing(
+                        &client.call(files::ListFiles { device_id, path }).await?,
+                        json,
+                    ),
                     FilesAction::Get { path, watch } => {
-                        let transfer = client.download_file(&device_id, &path).await?;
+                        let transfer = client.call(files::DownloadFile { device_id, path }).await?;
                         watch_transfer(transfer, watch).await?;
                     }
                     FilesAction::Cat { path } => {
                         use std::io::Write;
 
-                        use futures_util::StreamExt;
-
-                        let mut content = client.file_content(&device_id, &path).await?;
+                        let mut content =
+                            client.stream(files::ReadFile { device_id, path }).await?;
                         let mut stdout = std::io::stdout().lock();
-                        while let Some(chunk) = content.next().await {
-                            stdout.write_all(&chunk?)?;
+                        while let Next::Item(chunk) = content.next().await? {
+                            let chunk = STANDARD
+                                .decode(chunk)
+                                .context("Ferry sent invalid content")?;
+                            stdout.write_all(&chunk)?;
                         }
                         stdout.flush()?;
                     }
@@ -537,17 +530,38 @@ impl Cli {
                         directory,
                         watch,
                     } => {
-                        let transfer = client.upload_file(&device_id, &directory, &file).await?;
+                        let transfer = client
+                            .call(files::UploadFile {
+                                device_id,
+                                directory,
+                                path: local_file(&file)?,
+                            })
+                            .await?;
                         watch_transfer(transfer, watch).await?;
                     }
-                    FilesAction::Mkdir { path } => {
-                        print_entry(&client.create_directory(&device_id, &path).await?, json)
-                    }
-                    FilesAction::Mv { from, to } => {
-                        print_entry(&client.move_file(&device_id, &from, &to).await?, json)
-                    }
+                    FilesAction::Mkdir { path } => print_entry(
+                        &client
+                            .call(files::CreateDirectory { device_id, path })
+                            .await?,
+                        json,
+                    ),
+                    FilesAction::Mv { from, to } => print_entry(
+                        &client
+                            .call(files::MoveFile {
+                                device_id,
+                                from,
+                                to,
+                            })
+                            .await?,
+                        json,
+                    ),
                     FilesAction::Rm { path } => {
-                        client.delete_file(&device_id, &path).await?;
+                        client
+                            .call(files::DeleteFile {
+                                device_id,
+                                path: path.clone(),
+                            })
+                            .await?;
                         if !json {
                             println!("Deleted {path}");
                         }
@@ -563,9 +577,14 @@ impl Cli {
                     }
                 };
                 match action.unwrap_or(NotificationsAction::Ls { watch: false }) {
-                    NotificationsAction::Ls { watch: false } => {
-                        print_notifications(&client.notifications(&device_id).await?, json)
-                    }
+                    NotificationsAction::Ls { watch: false } => print_notifications(
+                        &client
+                            .call(notifications::ListNotifications {
+                                device_id: device_id.clone(),
+                            })
+                            .await?,
+                        json,
+                    ),
                     NotificationsAction::Ls { watch: true } => {
                         client
                             .watch_notifications(&device_id, cancellation_on_ctrl_c(), |update| {
@@ -582,26 +601,49 @@ impl Cli {
                     }
                     NotificationsAction::Reply { id, message } => {
                         client
-                            .reply_to_notification(&device_id, &id, &message)
+                            .call(notifications::ReplyToNotification {
+                                device_id: device_id.clone(),
+                                id,
+                                message,
+                            })
                             .await?;
                         done("sent", "Reply sent".into());
                     }
                     NotificationsAction::Action { id, action } => {
                         client
-                            .run_notification_action(&device_id, &id, &action)
+                            .call(notifications::RunNotificationAction {
+                                device_id: device_id.clone(),
+                                id,
+                                action: action.clone(),
+                            })
                             .await?;
                         done("sent", format!("Pressed {action}"));
                     }
                     NotificationsAction::Dismiss { id } => {
-                        client.dismiss_notification(&device_id, &id).await?;
+                        client
+                            .call(notifications::DismissNotification {
+                                device_id: device_id.clone(),
+                                id,
+                            })
+                            .await?;
                         done("dismissed", "Dismissed".into());
                     }
                     NotificationsAction::Enable => {
-                        client.set_notifications_enabled(&device_id, true).await?;
+                        client
+                            .call(notifications::SetNotificationsEnabled {
+                                device_id: device_id.clone(),
+                                enabled: true,
+                            })
+                            .await?;
                         done("enabled", "Notifications enabled".into());
                     }
                     NotificationsAction::Disable => {
-                        client.set_notifications_enabled(&device_id, false).await?;
+                        client
+                            .call(notifications::SetNotificationsEnabled {
+                                device_id: device_id.clone(),
+                                enabled: false,
+                            })
+                            .await?;
                         done("disabled", "Notifications disabled".into());
                     }
                 }
@@ -609,7 +651,13 @@ impl Cli {
             Command::Call {
                 device_id,
                 watch: false,
-            } => print_call(client.call(&device_id).await?.as_ref(), json),
+            } => print_call(
+                client
+                    .call(telephony::GetCall { device_id })
+                    .await?
+                    .as_ref(),
+                json,
+            ),
             Command::Call {
                 device_id,
                 watch: true,
@@ -626,7 +674,11 @@ impl Cli {
                     .await?
             }
             Command::Mute { device_id } => {
-                client.mute_ringer(&device_id).await?;
+                client
+                    .call(telephony::Mute {
+                        device_id: device_id.clone(),
+                    })
+                    .await?;
                 if json {
                     println!("{}", json!({"deviceId": device_id, "status": "sent"}));
                 } else {
@@ -635,14 +687,18 @@ impl Cli {
             }
             Command::Clipboard {
                 action: ClipboardAction::Get,
-            } => print_clipboard(&client.clipboard().await?, json),
+            } => print_clipboard(&client.call(clipboard::GetClipboard {}).await?, json),
             Command::Clipboard {
                 action: ClipboardAction::Set { text },
-            } => print_clipboard(&client.set_clipboard(&text).await?, json),
+            } => print_clipboard(&client.call(clipboard::SetClipboard { text }).await?, json),
             Command::Clipboard {
                 action: ClipboardAction::Send { device_id },
             } => {
-                client.send_clipboard(&device_id).await?;
+                client
+                    .call(clipboard::SendClipboard {
+                        device_id: device_id.clone(),
+                    })
+                    .await?;
                 if json {
                     println!("{}", json!({"deviceId": device_id, "status": "sent"}));
                 } else {
@@ -665,8 +721,8 @@ impl Cli {
                 action: ClipboardAction::Sync { enabled },
             } => {
                 let clipboard = match enabled {
-                    Some(enabled) => client.set_clipboard_sync(enabled).await?,
-                    None => client.clipboard().await?,
+                    Some(enabled) => client.call(clipboard::SetClipboardSync { enabled }).await?,
+                    None => client.call(clipboard::GetClipboard {}).await?,
                 };
                 if json {
                     print_clipboard(&clipboard, json);
@@ -693,9 +749,9 @@ impl Cli {
                     }),
                 };
                 let settings = if patch == SettingsPatch::default() {
-                    client.settings().await?
+                    client.call(GetSettings {}).await?
                 } else {
-                    client.update_settings(&patch).await?
+                    client.call(UpdateSettings(patch)).await?
                 };
                 print_settings(&settings, json);
             }
@@ -723,11 +779,10 @@ fn parse_pair_action(arguments: &[String]) -> Result<PairAction> {
 
 /// Bracket a bare IPv6 address so it forms a valid URL host, leaving IPv4
 /// addresses and hostnames unchanged.
-fn format_host_for_url(host: &str) -> String {
-    match host.parse::<Ipv6Addr>() {
-        Ok(address) => format!("[{address}]"),
-        Err(_) => host.to_owned(),
-    }
+/// `file` as the daemon needs it: absolute, as it doesn't share the CLI's
+/// working directory.
+fn local_file(file: &Path) -> Result<PathBuf> {
+    std::path::absolute(file).with_context(|| format!("invalid path {}", file.display()))
 }
 
 fn cancellation_on_ctrl_c() -> CancellationToken {
@@ -1095,15 +1150,6 @@ fn enum_name(value: impl serde::Serialize) -> String {
 
 /// The app's API address, when it serves one and `FERRY_API_URL` doesn't
 /// name another.
-fn stored_api_url(stored: &StoredApi) -> Option<String> {
-    (stored.enabled && std::env::var_os(API_URL_ENV).is_none()).then(|| {
-        format!(
-            "http://127.0.0.1:{}",
-            stored.port.unwrap_or(DEFAULT_API_PORT)
-        )
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1113,7 +1159,6 @@ mod tests {
     #[test]
     fn parses_every_command() {
         let cases = [
-            vec!["ferry-cli", "run", "--api-port", "25000"],
             vec!["ferry-cli", "run", "--data-dir", "/tmp/ferry"],
             vec!["ferry-cli", "--data-dir", "/tmp/ferry", "devices"],
             vec!["ferry-cli", "run", "--device-name", "My Desktop"],
@@ -1126,17 +1171,6 @@ mod tests {
                 "25123",
             ],
             vec!["ferry-cli", "run", "--system-clipboard"],
-            vec![
-                "ferry-cli",
-                "--api-host",
-                "0.0.0.0",
-                "--api-port",
-                "25000",
-                "run",
-            ],
-            vec!["ferry-cli", "--api-host", "192.168.1.5", "devices"],
-            vec!["ferry-cli", "--api-token", "secret", "run"],
-            vec!["ferry-cli", "--api-token", "secret", "devices"],
             vec!["ferry-cli", "devices"],
             vec!["ferry-cli", "devices", "--watch"],
             vec!["ferry-cli", "scan"],
@@ -1191,6 +1225,12 @@ mod tests {
             Cli::try_parse_from(&arguments)
                 .unwrap_or_else(|error| panic!("failed to parse {arguments:?}: {error}"));
         }
+    }
+
+    #[test]
+    fn the_http_apis_flags_are_gone() {
+        assert!(Cli::try_parse_from(["ferry-cli", "--api-port", "25000", "devices"]).is_err());
+        assert!(Cli::try_parse_from(["ferry-cli", "--api-token", "secret", "run"]).is_err());
     }
 
     #[test]

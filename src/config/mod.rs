@@ -1,16 +1,14 @@
-//! The local identity and the API token.
+//! The local identity, and whether the app serves its control socket.
 
-mod api;
+mod control;
 mod identity;
-mod token;
 
 use std::path::PathBuf;
 
 use directories::ProjectDirs;
 
-pub use api::{API, StoredApi};
+pub use control::{COMMAND_LINE_ACCESS, CommandLineAccess};
 pub use identity::{IDENTITY, IdentityError, LocalIdentity, StoredIdentity};
-pub use token::{ApiToken, ApiTokenError};
 
 /// Return the platform-specific directory used for Ferry configuration.
 pub fn default_config_dir() -> Option<PathBuf> {

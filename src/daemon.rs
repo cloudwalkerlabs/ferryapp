@@ -1,8 +1,8 @@
 //! The composition root: builds a whole daemon (core, plugins, LAN
-//! transport and control API) for the CLI and embedders, and is the one
+//! transport and control socket) for the CLI and embedders, and is the one
 //! place that names the built-in plugins.
 
-mod api_switch;
+mod control;
 
 use std::{net::Ipv4Addr, path::PathBuf, sync::Arc, time::Duration};
 
@@ -10,7 +10,7 @@ use anyhow::{Context, Result, bail};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-pub use api_switch::{ApiMode, ApiStatus, ApiSwitch};
+pub use control::{ControlMode, ControlStatus, ControlSwitch};
 
 use crate::{
     config::{LocalIdentity, default_config_dir},
@@ -30,9 +30,9 @@ use crate::{
 /// Options for starting the Ferry service.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RunRequest {
-    /// How the HTTP API is served: for the whole run, or as the app's
-    /// stored choice.
-    pub api: ApiMode,
+    /// How the control socket (`ferry.sock` in the data directory) is
+    /// served: for the whole run, or as the app's stored choice.
+    pub control: ControlMode,
     /// Directory in which received files should be stored. Overrides the
     /// stored setting for this run only.
     pub download_dir: Option<PathBuf>,
@@ -69,7 +69,7 @@ pub struct RunRequest {
 impl Default for RunRequest {
     fn default() -> Self {
         Self {
-            api: ApiMode::default(),
+            control: ControlMode::default(),
             download_dir: None,
             data_dir: None,
             device_name: None,
@@ -80,7 +80,7 @@ impl Default for RunRequest {
     }
 }
 
-/// A started daemon: LAN transport, core, and control API.
+/// A started daemon: LAN transport, core, and control socket.
 ///
 /// The CLI runs one until Ctrl-C; the desktop app (`ferry-gui`) starts
 /// one with [`RunningService::start_with`], hands its [`RunningService::core`]
@@ -88,7 +88,7 @@ impl Default for RunRequest {
 pub struct RunningService {
     core: Core,
     lan: LanService,
-    api: ApiSwitch,
+    control: ControlSwitch,
 }
 
 impl RunningService {
@@ -115,6 +115,12 @@ impl RunningService {
             .clone()
             .or_else(default_config_dir)
             .context("could not determine configuration directory")?;
+        // Before anything starts: a daemon already serving this data
+        // directory has its identity, which this one must not announce.
+        #[cfg(unix)]
+        if request.control == ControlMode::Always {
+            crate::rpc::claim_socket(&crate::rpc::socket_path(&config_dir)).await?;
+        }
         let store = Store::open(&config_dir).await?;
         let identity = Arc::new(LocalIdentity::load_or_create(&store).await?);
         let local_public_key_der = subject_public_key_info(identity.certificate_der())
@@ -193,33 +199,49 @@ impl RunningService {
         .await?;
         info!(tcp_address = %lan.tcp_addr(), "LAN transport listening");
 
-        let api = ApiSwitch::start(request.api, store, core.clone(), shutdown.clone()).await?;
+        let control = ControlSwitch::start(
+            request.control,
+            store,
+            core.clone(),
+            crate::rpc::socket_path(&config_dir),
+            shutdown.clone(),
+        )
+        .await;
+        let control = match control {
+            Ok(control) => control,
+            Err(error) => {
+                // Not started: the LAN transport and plugins are.
+                let _ = lan.shutdown().await;
+                core.shutdown_plugins().await;
+                return Err(error);
+            }
+        };
 
-        Ok(Self { core, lan, api })
+        Ok(Self { core, lan, control })
     }
 
-    /// The HTTP API: where it listens, and (in the app) turning it on and
-    /// off.
-    pub fn api(&self) -> &ApiSwitch {
-        &self.api
+    /// The control socket: where it listens, and (in the app) turning it
+    /// on and off.
+    pub fn control(&self) -> &ControlSwitch {
+        &self.control
     }
 
     /// The running core, for a frontend in the same process that reads
-    /// snapshots and subscribes to events directly instead of over HTTP.
+    /// snapshots and subscribes to events directly instead of over the
+    /// control socket.
     pub fn core(&self) -> &Core {
         &self.core
     }
 
-    /// Stop the control API and LAN transport, give in-flight transfers a
-    /// bounded window to clean up their partial files, then stop the
+    /// Stop the control socket and LAN transport, give in-flight transfers
+    /// a bounded window to clean up their partial files, then stop the
     /// plugins.
     pub async fn shutdown(self) -> Result<()> {
-        let Self { core, lan, api } = self;
-        let server_result = api.shutdown().await;
+        let Self { core, lan, control } = self;
+        control.shutdown().await;
         let lan_result = lan.shutdown().await;
         core.shutdown_transfers(Duration::from_secs(5)).await;
         core.shutdown_plugins().await;
-        server_result?;
         lan_result?;
         Ok(())
     }
