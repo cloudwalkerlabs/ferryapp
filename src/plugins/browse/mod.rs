@@ -14,8 +14,8 @@
 //! Never log a file name, a path, or the offer's password.
 
 pub(crate) mod files;
-mod http;
 pub mod packet;
+pub mod rpc;
 mod session;
 mod ssh;
 
@@ -26,7 +26,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use axum::Router;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use russh_sftp::{
@@ -95,12 +94,8 @@ impl Plugin for BrowsePlugin {
         }
     }
 
-    fn routes(self: Arc<Self>, ctx: PluginContext) -> Router {
-        http::routes(self, ctx)
-    }
-
-    fn streaming_routes(self: Arc<Self>, ctx: PluginContext) -> Router {
-        http::streaming_routes(self, ctx)
+    fn methods(self: Arc<Self>, ctx: PluginContext, methods: &mut crate::rpc::Methods) {
+        rpc::add(self, ctx, methods);
     }
 
     async fn disconnected(&self, _ctx: &PluginContext, device_id: &str) {

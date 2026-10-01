@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use crate::core::{DeviceSnapshot, Plugin, PluginContext};
 use crate::protocol::Packet;
-use axum::Router;
+use crate::rpc::Methods;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
 
@@ -52,11 +52,8 @@ macro_rules! builtin_plugins {
             pub async fn handle_packet(&self, ctx: &PluginContext, device: &DeviceSnapshot, packet: &Packet) {
                 match self { $(Self::$variant(p) => p.handle_packet(ctx, device, packet).await),* }
             }
-            pub fn routes(&self, ctx: PluginContext) -> Router {
-                match self { $(Self::$variant(p) => p.clone().routes(ctx)),* }
-            }
-            pub fn streaming_routes(&self, ctx: PluginContext) -> Router {
-                match self { $(Self::$variant(p) => p.clone().streaming_routes(ctx)),* }
+            pub fn methods(&self, ctx: PluginContext, methods: &mut Methods) {
+                match self { $(Self::$variant(p) => p.clone().methods(ctx, methods)),* }
             }
             pub fn device_state(&self, ctx: &PluginContext, device: &DeviceSnapshot) -> Option<Value> {
                 match self { $(Self::$variant(p) => p.device_state(ctx, device)),* }

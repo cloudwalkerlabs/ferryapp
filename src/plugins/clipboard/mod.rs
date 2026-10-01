@@ -23,8 +23,8 @@
 //! Never log clipboard text, only its length.
 
 mod backend;
-mod http;
 pub mod packet;
+pub mod rpc;
 
 use std::{
     collections::VecDeque,
@@ -32,7 +32,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use axum::Router;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -399,8 +398,8 @@ impl Plugin for ClipboardPlugin {
         self.apply_remote(ctx, device_id, content, timestamp).await;
     }
 
-    fn routes(self: Arc<Self>, ctx: PluginContext) -> Router {
-        http::routes(self, ctx)
+    fn methods(self: Arc<Self>, ctx: PluginContext, methods: &mut crate::rpc::Methods) {
+        rpc::add(self, ctx, methods);
     }
 
     /// Follow text copied on this machine, if the backend reports it.

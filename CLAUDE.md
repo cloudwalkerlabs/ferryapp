@@ -20,13 +20,12 @@ collide with another run. Always:
   - `tests/ui_e2e.rs` and the other integration tests make their own.
 
   Delete the directory when you are done.
-- **Ports.** Don't use the default API port 24816 or a port from the docs
-  (25011). Pick a free one, e.g.
-  `python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'`.
-  The app serves no API unless given `--api-port` (pass a free one) or
-  Settings → Command line access is on, which listens on 24816 unless
-  its store says otherwise: don't switch it on in a test run that
-  wasn't given `--api-port`.
+- **Control socket.** A daemon's control socket is `ferry.sock` in its
+  data directory, so your own `--data-dir` keeps it apart; never point the
+  CLI at the default data dir (the owner's app). The app serves it only
+  with `--cli-access` or Settings → Command line access on. A deep
+  scratchpad path can exceed a socket path's 107 bytes; keep the data dir
+  short (`mktemp -d` under `/tmp` is fine).
 - **Network.** Pass `--discovery-loopback` (CLI and app) so nothing
   announces on or listens to the LAN: discovery binds `127.255.255.255`
   and the control and payload ports bind `127.0.0.1`, so remote devices
@@ -61,9 +60,8 @@ collide with another run. Always:
       --data-dir "$dir/data" --download-dir "$dir/downloads"
   ```
 
-  Add `--demo` for made-up devices, and `--api-port`/`--api-token` to
-  drive the app's daemon from the CLI (`ferry-cli`; with `--data-dir
-  "$dir/data"` it reads the app's token from there).
+  Add `--demo` for made-up devices, and `--cli-access` to drive the app's
+  daemon from the CLI (`ferry-cli --data-dir "$dir/data" ...`).
 - **Processes.** Keep the PIDs you start and kill those, not
   `pkill -f <pattern>`, which can hit another session's processes.
 

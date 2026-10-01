@@ -12,9 +12,7 @@ use std::{path::PathBuf, time::Duration};
 use anyhow::{Context, Result};
 use clap::{Parser, builder::BoolishValueParser};
 use ferry::{
-    client::API_TOKEN_ENV,
-    config::ApiToken,
-    daemon::{ApiMode, RunRequest, RunningService},
+    daemon::{ControlMode, RunRequest, RunningService},
     plugins,
     transport::lan::DISCOVERY_PORT,
     ui::{self, UiOptions},
@@ -50,14 +48,11 @@ struct Args {
     /// Sync an in-memory clipboard instead of the desktop's.
     #[arg(long, env = "FERRY_NO_SYSTEM_CLIPBOARD", value_parser = BoolishValueParser::new())]
     no_system_clipboard: bool,
-    /// Serve the HTTP API the CLI uses on this port for this run, whether or
-    /// not "Command line access" is on in Settings; 0 picks a free one.
-    #[arg(long, env = "FERRY_API_PORT", value_name = "PORT")]
-    api_port: Option<u16>,
-    /// Token the CLI must present, for this run, instead of the one kept in
-    /// the data directory.
-    #[arg(long, env = API_TOKEN_ENV, value_name = "TOKEN", hide_env_values = true)]
-    api_token: Option<String>,
+    /// Serve the control socket the CLI uses (`ferry.sock` in the data
+    /// directory) for this run, whether or not "Command line access" is on
+    /// in Settings.
+    #[arg(long, env = "FERRY_CLI_ACCESS", value_parser = BoolishValueParser::new())]
+    cli_access: bool,
     /// Start in the tray without opening the window, as when started on
     /// login. The window opens anyway if there is no tray.
     #[arg(long)]
@@ -84,12 +79,10 @@ fn main() -> Result<()> {
         .thread_name("ferry")
         .build()
         .context("could not start async runtime")?;
-    let api_token = args.api_token.map(ApiToken::from_secret).transpose()?;
     let data_dir = args.data_dir.clone();
     let request = RunRequest {
-        api: ApiMode::Stored {
-            port: args.api_port,
-            token: api_token,
+        control: ControlMode::Stored {
+            force: args.cli_access,
         },
         data_dir: args.data_dir,
         download_dir: args.download_dir,
@@ -110,10 +103,12 @@ fn main() -> Result<()> {
             .await?;
             let (clipboard, browse, notifications) =
                 ui_plugins.expect("the daemon built its plugins");
-            let api = service.api().address().await;
+            let control = service.control().status().await;
             tracing::info!(
                 device_id = service.core().local_device_id(),
-                api = ?api,
+                control_socket = control
+                    .listening
+                    .then(|| control.path.display().to_string()),
                 "daemon started"
             );
             Ok(ui::Started {

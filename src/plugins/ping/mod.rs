@@ -3,15 +3,14 @@
 //! not a resource: there is no list endpoint, and a client that misses the
 //! event has simply missed the ping.
 
-mod http;
 pub mod packet;
+pub mod rpc;
 
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use axum::Router;
 use serde::{Deserialize, Serialize};
 
 pub use packet::{PACKET_TYPE, PingBody, build_packet};
@@ -57,8 +56,8 @@ impl Plugin for PingPlugin {
         });
     }
 
-    fn routes(self: Arc<Self>, ctx: PluginContext) -> Router {
-        http::routes(ctx)
+    fn methods(self: Arc<Self>, ctx: PluginContext, methods: &mut crate::rpc::Methods) {
+        rpc::add(ctx, methods);
     }
 }
 

@@ -48,7 +48,6 @@ incoming-accept = Annehmen
 ## Errors, keyed by the code the HTTP API reports (src/ui/error.rs)
 
 error-daemon_unavailable = Ferry antwortet nicht.
-error-unauthorized = Ferry hat das Zugriffstoken dieser App abgelehnt.
 error-device_not_found = Dieses Gerät ist nicht mehr bekannt.
 error-device_not_connected = Das Gerät ist gerade nicht verbunden.
 error-already_paired = Das Gerät ist bereits gekoppelt.
@@ -61,7 +60,6 @@ error-invalid_file_name = Eine Datei mit diesem Namen kann nicht gesendet werden
 error-transfer_too_large = Die Datei ist zu groß zum Senden.
 error-transfer_not_found = Diese Übertragung gibt es nicht mehr.
 error-invalid_transfer_state = Diese Übertragung ist bereits beendet.
-error-request_timeout = Ferry hat zu lange für eine Antwort gebraucht.
 error-invalid_device_name = Verwende 1 bis 32 Zeichen, ohne . , : ; ! ? ( ) [ ] < > oder Anführungszeichen.
 error-invalid_download_dir = Dieser Ordner kann nicht für Downloads verwendet werden.
 error-invalid_address = Gib eine IPv4-Adresse wie 192.168.1.20 oder einen Hostnamen wie phone.example.net ein.
@@ -256,15 +254,10 @@ settings-appearance-light = Hell
 settings-appearance-dark = Dunkel
 settings-cli = Zugriff über die Befehlszeile
 settings-cli-detail = ferry-cli darf diese App steuern
-settings-cli-setup-hint = ferry-cli auf diesem Computer findet die App von selbst. Anderswo, etwa in einem Skript unter einem anderen Benutzer, füge zuerst dies in dessen Shell ein:
-settings-cli-copy-setup = Einrichtung kopieren
-settings-cli-copy-token = Token kopieren
-settings-cli-new-token = Neues Token
+settings-cli-setup-hint = ferry-cli findet die App von selbst, wenn du es auf diesem Computer ausführst, über
 settings-cli-installed-at = ferry-cli ist installiert unter
 settings-cli-not-listening = ferry-cli kann die App nicht erreichen: { $error }
 settings-cli-change-failed = Der Zugriff über die Befehlszeile konnte nicht geändert werden: { $error }
-settings-cli-setup-copied = Einrichtung kopiert
-settings-cli-token-copied = Token kopiert
 settings-about = Über Ferry
 settings-version = Version { $version }
 

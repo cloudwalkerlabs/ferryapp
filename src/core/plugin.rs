@@ -1,8 +1,8 @@
 //! The seam between the core and the features built on it.
 //!
 //! A feature implements [`Plugin`]: it names the packet types it receives
-//! and sends, handles packets from paired devices, and brings its own HTTP
-//! routes. The core owns connections, pairing and the event bus, and gives
+//! and sends, handles packets from paired devices, and brings its own control
+//! methods. The core owns connections, pairing and the event bus, and gives
 //! plugins a [`PluginContext`] to reach them. The set of plugins is fixed at
 //! compile time: the composition root ([`crate::daemon`]) passes the
 //! built-in plugins to [`super::Core::new`]; nothing is loaded at runtime.
@@ -16,13 +16,12 @@ use std::{
     sync::Arc,
 };
 
-use axum::Router;
 use futures_util::future::{BoxFuture, join_all};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 use super::{Core, CoreError, DeviceSnapshot, EventData, PayloadPeer, Transfers};
-use crate::{plugins::BuiltinPlugin, protocol::Packet, store::Store};
+use crate::{plugins::BuiltinPlugin, protocol::Packet, rpc::Methods, store::Store};
 
 /// A feature of the daemon, plugged into the core.
 pub trait Plugin: Send + Sync + 'static {
@@ -53,21 +52,10 @@ pub trait Plugin: Send + Sync + 'static {
         async {}
     }
 
-    /// HTTP routes under `/api/v1`, with their state already applied. They
-    /// get the standard body limit, request deadline and authentication.
-    fn routes(self: Arc<Self>, _ctx: PluginContext) -> Router {
-        Router::new()
-    }
-
-    /// HTTP routes under `/api/v1` that take a large, streamed request body
-    /// (an upload), with their state already applied. They get the
-    /// transfer-sized body limit instead of the standard one and no overall
-    /// deadline; a handler bounds each step of the upload with the
-    /// [`crate::api::UploadIdleTimeout`] in its request's extensions.
-    /// Authentication applies as for [`Self::routes`].
-    fn streaming_routes(self: Arc<Self>, _ctx: PluginContext) -> Router {
-        Router::new()
-    }
+    /// The plugin's control methods ([`crate::rpc`]): a handler for each,
+    /// with the plugin's state captured, added to `methods`. None by
+    /// default.
+    fn methods(self: Arc<Self>, _ctx: PluginContext, _methods: &mut Methods) {}
 
     /// What this plugin adds to `device`'s snapshot, under its
     /// [`Self::id`] in `plugins`; `None` to add nothing. `device` is the
@@ -401,18 +389,11 @@ impl PluginRegistry {
         join_all(self.plugins.iter().map(|plugin| plugin.shutdown())).await;
     }
 
-    /// Every plugin's routes, merged.
-    pub fn routes(&self, ctx: &PluginContext) -> Router {
-        self.plugins.iter().fold(Router::new(), |router, plugin| {
-            router.merge(plugin.routes(ctx.clone()))
-        })
-    }
-
-    /// Every plugin's streaming routes, merged.
-    pub fn streaming_routes(&self, ctx: &PluginContext) -> Router {
-        self.plugins.iter().fold(Router::new(), |router, plugin| {
-            router.merge(plugin.streaming_routes(ctx.clone()))
-        })
+    /// Every plugin's control methods, added to `methods`.
+    pub fn methods(&self, ctx: &PluginContext, methods: &mut Methods) {
+        for plugin in &self.plugins {
+            plugin.methods(ctx.clone(), methods);
+        }
     }
 }
 

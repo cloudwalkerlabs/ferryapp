@@ -37,7 +37,6 @@ incoming-accept = 接受
 ## Errors, keyed by the code the HTTP API reports (src/ui/error.rs)
 
 error-daemon_unavailable = Ferry 没有响应。
-error-unauthorized = Ferry 拒绝了此应用的访问令牌。
 error-device_not_found = 该设备已不在设备列表中。
 error-device_not_connected = 该设备当前未连接。
 error-already_paired = 该设备已配对。
@@ -50,7 +49,6 @@ error-invalid_file_name = 无法发送使用该名称的文件。
 error-transfer_too_large = 文件太大，无法发送。
 error-transfer_not_found = 该传输已不存在。
 error-invalid_transfer_state = 该传输已经结束。
-error-request_timeout = Ferry 响应超时。
 error-invalid_device_name = 请使用 1 到 32 个字符，不含 . , : ; ! ? ( ) [ ] < > 或引号。
 error-invalid_download_dir = 该文件夹不能用于保存下载。
 error-invalid_address = 请输入 IPv4 地址（如 192.168.1.20）或主机名（如 phone.example.net）。
@@ -233,15 +231,10 @@ settings-appearance-light = 浅色
 settings-appearance-dark = 深色
 settings-cli = 命令行访问
 settings-cli-detail = 允许 ferry-cli 控制此应用
-settings-cli-setup-hint = 此电脑上的 ferry-cli 会自动找到本应用。在其他地方（例如以其他用户身份运行的脚本），请先将以下内容粘贴到其 shell 中：
-settings-cli-copy-setup = 复制设置
-settings-cli-copy-token = 复制令牌
-settings-cli-new-token = 新令牌
+settings-cli-setup-hint = 你在此电脑上运行的 ferry-cli 会自动通过以下位置找到本应用：
 settings-cli-installed-at = ferry-cli 的安装位置
 settings-cli-not-listening = ferry-cli 无法访问本应用：{ $error }
 settings-cli-change-failed = 无法更改命令行访问：{ $error }
-settings-cli-setup-copied = 已复制设置
-settings-cli-token-copied = 已复制令牌
 settings-about = 关于 Ferry
 settings-version = 版本 { $version }
 

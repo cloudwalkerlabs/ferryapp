@@ -1,5 +1,5 @@
 //! Sharing text and links end to end: two paired Ferry instances over
-//! loopback, one driven through its HTTP API, send each other text and a
+//! loopback, one driven through its control socket, send each other text and a
 //! link as `kdeconnect.share.request` without a payload, and the receiver
 //! publishes `share.received`.
 
@@ -10,15 +10,18 @@ use std::{
 };
 
 use ferry::{
-    api::{ApiServer, ApiServerConfig},
-    client::{ApiClient, ClientError},
+    client::{Client, ClientError},
     config::LocalIdentity,
     core::{Core, DeviceReachability, EventData, LanCommand, LocalDeviceSnapshot, TransferConfig},
     plugins::{
         clipboard::InMemoryClipboard,
-        share::{ReceivedShare, SharedContent},
+        share::{
+            ReceivedShare, SharedContent,
+            rpc::{ShareText, ShareUrl},
+        },
     },
     protocol::DeviceType,
+    rpc::RpcServer,
     store::Store,
     transport::{
         lan::{LanConfig, LanService, LocalDeviceInfo, TCP_PORT_RANGE},
@@ -149,20 +152,29 @@ async fn paired_ferry_peers_share_text_and_links() {
     };
     eventually(|| connected(&a, &b_id) && connected(&b, &a_id)).await;
 
-    let api = ApiServer::start(
-        ApiServerConfig::new(0).unwrap(),
-        a.clone(),
-        None,
+    let socket_dir = tempfile::tempdir().unwrap();
+    let socket = socket_dir.path().join("ferry.sock");
+    let _server = RpcServer::start(
+        socket.clone(),
+        ferry::rpc::all(&a),
         CancellationToken::new(),
     )
     .await
     .unwrap();
-    let client = ApiClient::new(&format!("http://{}", api.local_addr()), None).unwrap();
+    let client = Client::connect(&socket).await.unwrap();
+    let text = |text: &str| ShareText {
+        device_id: b_id.clone(),
+        text: text.into(),
+    };
+    let url = |url: &str| ShareUrl {
+        device_id: b_id.clone(),
+        url: url.into(),
+    };
 
     // Refused until paired.
-    let early = client.share_text(&b_id, "too early").await;
+    let early = client.call(text("too early")).await;
     assert!(
-        matches!(&early, Err(ClientError::OperationFailed { code, .. }) if code == "device_not_paired"),
+        matches!(&early, Err(error) if error.code() == Some("device_not_paired")),
         "unexpected result: {early:?}"
     );
 
@@ -185,7 +197,7 @@ async fn paired_ferry_peers_share_text_and_links() {
     })
     .await;
 
-    client.share_text(&b_id, "see you at 6").await.unwrap();
+    client.call(text("see you at 6")).await.unwrap();
     let received = next_share(&mut b_events).await;
     assert_eq!(
         (received.device_id.as_str(), received.device_name.as_str()),
@@ -198,7 +210,7 @@ async fn paired_ferry_peers_share_text_and_links() {
         }
     );
 
-    client.share_url(&b_id, "https://kde.org/").await.unwrap();
+    client.call(url("https://kde.org/")).await.unwrap();
     assert_eq!(
         next_share(&mut b_events).await.content,
         SharedContent::Link {
@@ -207,7 +219,7 @@ async fn paired_ferry_peers_share_text_and_links() {
     );
 
     // A link that isn't a web page arrives as text.
-    client.share_url(&b_id, "file:///etc/passwd").await.unwrap();
+    client.call(url("file:///etc/passwd")).await.unwrap();
     assert_eq!(
         next_share(&mut b_events).await.content,
         SharedContent::Text {
@@ -217,16 +229,16 @@ async fn paired_ferry_peers_share_text_and_links() {
 
     // Blank and oversized shares are refused before anything is sent.
     for (result, expected) in [
-        (client.share_text(&b_id, " ").await, (400, "share_empty")),
+        (client.call(text(" ")).await, "share_empty"),
         (
-            client.share_text(&b_id, &"a".repeat(40 * 1024)).await,
-            (413, "share_too_large"),
+            client.call(text(&"a".repeat(40 * 1024))).await,
+            "share_too_large",
         ),
     ] {
-        let Err(ClientError::OperationFailed { status, code }) = result else {
+        let Err(ClientError::Rpc(error)) = result else {
             panic!("unexpected result: {result:?}");
         };
-        assert_eq!((status, code.as_str()), expected);
+        assert_eq!(error.error_code(), expected);
     }
     // No files were involved.
     assert!(b.transfers().list().is_empty());

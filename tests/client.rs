@@ -1,4 +1,9 @@
+//! The control socket's client against fake daemons: each serves only the
+//! methods its test needs, through the real server.
+
 use std::{
+    future::pending,
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -6,119 +11,55 @@ use std::{
     time::Duration,
 };
 
-use axum::{
-    Json, Router,
-    body::{Body, Bytes},
-    extract::{Path, State},
-    http::{
-        HeaderMap, Request, StatusCode,
-        header::{AUTHORIZATION, CONTENT_TYPE},
-    },
-    middleware::{self, Next},
-    response::{IntoResponse, Response},
-    routing::{delete, get, post},
-};
 use ferry::{
     client::{
-        ApiClient, ClientError, ClipboardWatchUpdate, DeviceWatchUpdate, TransferWatchUpdate,
+        Client, ClientError, ClipboardWatchUpdate, DeviceWatchUpdate, Next, TransferWatchUpdate,
     },
-    config::ApiToken,
     core::{
-        CoreEvent, DeviceReachability, DeviceSnapshot, EventData, PairingDirection,
+        CoreError, CoreEvent, DeviceReachability, DeviceSnapshot, EventData, PairingDirection,
         PairingSnapshot, PairingStatus, PluginEvent, TransferDirection, TransferSnapshot,
         TransferStatus,
     },
-    plugins::clipboard::ClipboardSnapshot,
+    plugins::{
+        clipboard::{
+            ClipboardSnapshot,
+            rpc::{GetClipboard, SetClipboard},
+        },
+        ping::rpc::Ping,
+    },
     protocol::DeviceType,
+    rpc::{
+        ForgetDevice, GetPairing, GetTransfer, ListDevices, Methods, RpcError, RpcServer, Subscribe,
+    },
 };
-use futures_util::StreamExt;
-use serde::Deserialize;
-use serde_json::json;
 use tempfile::TempDir;
-use tokio::{net::TcpListener, task::JoinHandle, time::timeout};
+use tokio::{sync::broadcast, time::timeout};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-const TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-
-#[derive(Clone, Default)]
-struct MockState {
-    device_reads: Arc<AtomicUsize>,
-    transfer_reads: Arc<AtomicUsize>,
-    clipboard_reads: Arc<AtomicUsize>,
+/// A daemon serving `methods` on a socket of its own.
+struct FakeDaemon {
+    path: PathBuf,
+    server: RpcServer,
+    _directory: TempDir,
 }
 
-struct MockServer {
-    url: String,
-    state: MockState,
-    task: JoinHandle<()>,
-}
-
-impl Drop for MockServer {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-impl MockServer {
-    async fn start() -> Self {
-        let state = MockState::default();
-        let app = Router::new()
-            .route("/api/v1/devices", get(devices))
-            .route("/api/v1/devices/{device_id}", delete(unpair))
-            .route("/api/v1/devices/{device_id}/ping", post(ping))
-            .route("/api/v1/devices/{device_id}/ring", post(ring))
-            .route(
-                "/api/v1/devices/{device_id}/call",
-                get(|| async { Json(json!({"state": "ringing", "phoneNumber": "555"})) }),
-            )
-            .route("/api/v1/devices/{device_id}/call/mute", post(ring))
-            .route("/api/v1/pairings", post(start_pairing))
-            .route(
-                "/api/v1/pairings/{pairing_id}",
-                get(pairing).delete(reject_pairing),
-            )
-            .route("/api/v1/pairings/{pairing_id}/accept", post(accept_pairing))
-            .route("/api/v1/devices/{device_id}/share", post(start_transfer))
-            .route("/api/v1/transfers/{transfer_id}", get(transfer))
-            .route(
-                "/api/v1/clipboard",
-                get(clipboard).put(set_clipboard).patch(set_clipboard_sync),
-            )
-            .route("/api/v1/events", get(events))
-            .layer(middleware::from_fn(authorize))
-            .with_state(state.clone());
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let task = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
+impl FakeDaemon {
+    async fn start(methods: Methods) -> Self {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("ferry.sock");
+        let server = RpcServer::start(path.clone(), methods, CancellationToken::new())
+            .await
+            .unwrap();
         Self {
-            url: format!("http://{address}"),
-            state,
-            task,
+            path,
+            server,
+            _directory: directory,
         }
     }
 
-    fn client(&self) -> ApiClient {
-        ApiClient::new(&self.url, Some(ApiToken::from_secret(TOKEN).unwrap())).unwrap()
-    }
-}
-
-async fn authorize(request: Request<Body>, next: Next) -> Response {
-    if request
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        == Some(&format!("Bearer {TOKEN}"))
-    {
-        next.run(request).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"code": "unauthorized"})),
-        )
-            .into_response()
+    async fn client(&self) -> Client {
+        Client::connect(&self.path).await.unwrap()
     }
 }
 
@@ -170,277 +111,180 @@ fn transfer_snapshot() -> TransferSnapshot {
     }
 }
 
-async fn devices(State(state): State<MockState>) -> Json<Vec<DeviceSnapshot>> {
-    state.device_reads.fetch_add(1, Ordering::SeqCst);
-    Json(vec![device()])
-}
-
-async fn unpair(Path(device_id): Path<String>) -> Response {
-    if device_id == device().device_id {
-        StatusCode::NO_CONTENT.into_response()
-    } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({"code": "device_not_found"})),
-        )
-            .into_response()
-    }
-}
-
-#[derive(Deserialize)]
-struct Ping {
-    message: Option<String>,
-}
-
-async fn ping(Path(device_id): Path<String>, Json(request): Json<Ping>) -> Response {
-    if device_id != device().device_id {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"code": "device_not_found"})),
-        )
-            .into_response();
-    }
-    if request.message.as_deref() == Some("unsupported") {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"code": "unsupported_by_peer"})),
-        )
-            .into_response();
-    }
-    StatusCode::ACCEPTED.into_response()
-}
-
-async fn ring(Path(device_id): Path<String>) -> Response {
-    if device_id != device().device_id {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"code": "device_not_found"})),
-        )
-            .into_response();
-    }
-    StatusCode::ACCEPTED.into_response()
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StartPairing {
-    device_id: String,
-}
-
-async fn start_pairing(Json(request): Json<StartPairing>) -> (StatusCode, Json<PairingSnapshot>) {
-    assert_eq!(request.device_id, device().device_id);
-    (
-        StatusCode::ACCEPTED,
-        Json(pairing_snapshot(PairingStatus::Requested)),
-    )
-}
-
-async fn pairing(Path(pairing_id): Path<Uuid>) -> Response {
-    if pairing_id == Uuid::max() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"code": "pairing_not_found"})),
-        )
-            .into_response();
-    }
-    Json(pairing_snapshot(PairingStatus::AwaitingConfirmation)).into_response()
-}
-
-async fn accept_pairing(Path(pairing_id): Path<Uuid>) -> Json<PairingSnapshot> {
-    assert_eq!(pairing_id, Uuid::from_u128(1));
-    Json(pairing_snapshot(PairingStatus::Accepted))
-}
-
-async fn reject_pairing(Path(pairing_id): Path<Uuid>) -> StatusCode {
-    assert_eq!(pairing_id, Uuid::from_u128(1));
-    StatusCode::NO_CONTENT
-}
-
-async fn start_transfer(
-    Path(device_id): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> (StatusCode, Json<TransferSnapshot>) {
-    assert_eq!(device_id, device().device_id);
-    assert!(
-        headers[CONTENT_TYPE]
-            .to_str()
-            .unwrap()
-            .starts_with("multipart/form-data; boundary=")
-    );
-    assert!(
-        body.windows(b"streamed body".len())
-            .any(|window| window == b"streamed body")
-    );
-    // The daemon rejects a file part without its own Content-Length header.
-    let part_length = format!("content-length: {}\r\n", b"streamed body".len());
-    assert!(
-        body.to_ascii_lowercase()
-            .windows(part_length.len())
-            .any(|window| window == part_length.as_bytes())
-    );
-    (StatusCode::ACCEPTED, Json(transfer_snapshot()))
-}
-
-async fn transfer(State(state): State<MockState>, Path(transfer_id): Path<Uuid>) -> Response {
-    state.transfer_reads.fetch_add(1, Ordering::SeqCst);
-    if transfer_id == Uuid::max() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"code": "transfer_not_found"})),
-        )
-            .into_response();
-    }
-    Json(transfer_snapshot()).into_response()
-}
-
-async fn clipboard(State(state): State<MockState>) -> Json<ClipboardSnapshot> {
-    state.clipboard_reads.fetch_add(1, Ordering::SeqCst);
-    Json(ClipboardSnapshot {
-        text: "current".into(),
+fn clipboard(text: &str) -> ClipboardSnapshot {
+    ClipboardSnapshot {
+        text: text.into(),
         updated_at: 10,
         source_device_id: None,
         sync_enabled: true,
-    })
-}
-
-#[derive(Deserialize)]
-struct SetClipboard {
-    text: String,
-}
-
-async fn set_clipboard(Json(request): Json<SetClipboard>) -> Response {
-    if request.text == "fail" {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"code": "clipboard_unavailable"})),
-        )
-            .into_response();
     }
-    Json(ClipboardSnapshot {
-        text: request.text,
-        updated_at: 11,
-        source_device_id: None,
-        sync_enabled: true,
-    })
-    .into_response()
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SetClipboardSync {
-    sync_enabled: bool,
-}
-
-async fn set_clipboard_sync(Json(request): Json<SetClipboardSync>) -> Json<ClipboardSnapshot> {
-    Json(ClipboardSnapshot {
-        text: "current".into(),
-        updated_at: 10,
-        source_device_id: None,
-        sync_enabled: request.sync_enabled,
-    })
-}
-
-async fn events() -> Response {
-    let event = CoreEvent {
+fn core_event(event: EventData) -> CoreEvent {
+    CoreEvent {
         sequence: 1,
         timestamp: 12,
-        event: EventData::Plugin(
-            PluginEvent::new(&ClipboardSnapshot {
-                text: "changed".into(),
-                updated_at: 12,
-                source_device_id: None,
-                sync_enabled: true,
-            })
-            .unwrap(),
-        ),
-    };
-    let body = format!(
-        "event: clipboard.changed\ndata: {}\n\n",
-        serde_json::to_string(&event).unwrap()
-    );
-    ([(CONTENT_TYPE, "text/event-stream")], body).into_response()
+        event,
+    }
 }
 
 #[tokio::test]
-async fn every_client_operation_uses_the_expected_http_contract() {
-    let server = MockServer::start().await;
-    let client = server.client();
-    assert_eq!(client.devices().await.unwrap(), vec![device()]);
+async fn calls_and_streams_carry_typed_params_and_answers() {
+    let mut methods = Methods::new();
+    methods.add((), |(), ListDevices {}| async {
+        Ok::<_, RpcError>(vec![device()])
+    });
+    methods.add((), |(), Ping { device_id, message }| async move {
+        assert_eq!(device_id, device().device_id);
+        assert_eq!(message.as_deref(), Some("hello"));
+        Ok::<_, RpcError>(())
+    });
+    methods.add((), |(), GetPairing { pairing_id }| async move {
+        assert_eq!(pairing_id, Uuid::from_u128(1));
+        Ok::<_, RpcError>(pairing_snapshot(PairingStatus::AwaitingConfirmation))
+    });
+    methods.add((), |(), SetClipboard { text }| async move {
+        Ok::<_, RpcError>(clipboard(&text))
+    });
+    // A subscription that sends one event, then ends.
+    methods.add_stream((), |(), Subscribe {}, items| async move {
+        items.send(&None).await;
+        let changed = PluginEvent::new(&clipboard("changed")).unwrap();
+        items
+            .send(&Some(core_event(EventData::Plugin(changed))))
+            .await;
+        Ok::<_, RpcError>(())
+    });
+    let daemon = FakeDaemon::start(methods).await;
+    let client = daemon.client().await;
+
+    assert_eq!(client.call(ListDevices {}).await.unwrap(), vec![device()]);
+    client
+        .call(Ping {
+            device_id: device().device_id,
+            message: Some("hello".into()),
+        })
+        .await
+        .unwrap();
     assert_eq!(
         client
-            .start_pairing(&device().device_id)
+            .call(GetPairing {
+                pairing_id: Uuid::from_u128(1)
+            })
             .await
             .unwrap()
             .status,
-        PairingStatus::Requested
-    );
-    assert_eq!(
-        client.pairing(Uuid::from_u128(1)).await.unwrap().status,
         PairingStatus::AwaitingConfirmation
     );
     assert_eq!(
         client
-            .accept_pairing(Uuid::from_u128(1))
+            .call(SetClipboard {
+                text: "updated".into()
+            })
             .await
             .unwrap()
-            .status,
-        PairingStatus::Accepted
-    );
-    client.reject_pairing(Uuid::from_u128(1)).await.unwrap();
-    client.unpair(&device().device_id).await.unwrap();
-    client.ping(&device().device_id, None).await.unwrap();
-    client
-        .ping(&device().device_id, Some("hello"))
-        .await
-        .unwrap();
-    client.ring(&device().device_id).await.unwrap();
-    let call = client.call(&device().device_id).await.unwrap().unwrap();
-    assert_eq!(call.state, ferry::plugins::telephony::CallState::Ringing);
-    assert_eq!(call.caller(), Some("555"));
-    client.mute_ringer(&device().device_id).await.unwrap();
-
-    let directory = TempDir::new().unwrap();
-    let file = directory.path().join("payload.txt");
-    tokio::fs::write(&file, b"streamed body").await.unwrap();
-    assert_eq!(
-        client
-            .send_file(&device().device_id, &file)
-            .await
-            .unwrap()
-            .id,
-        Uuid::from_u128(2)
-    );
-    assert_eq!(
-        client.transfer(Uuid::from_u128(2)).await.unwrap().status,
-        TransferStatus::Transferring
-    );
-    assert_eq!(client.clipboard().await.unwrap().text, "current");
-    assert_eq!(
-        client.set_clipboard("updated").await.unwrap().text,
+            .text,
         "updated"
     );
-    assert!(!client.set_clipboard_sync(false).await.unwrap().sync_enabled);
-    let mut events = client.events().await.unwrap();
-    let EventData::Plugin(event) = events.next().await.unwrap().unwrap().event else {
+
+    let mut events = client.stream(Subscribe {}).await.unwrap();
+    assert!(matches!(events.next().await.unwrap(), Next::Item(None)));
+    let Next::Item(Some(event)) = events.next().await.unwrap() else {
+        panic!("expected an event");
+    };
+    let EventData::Plugin(event) = event.event else {
         panic!("expected a plugin event");
     };
     assert_eq!(event.decode::<ClipboardSnapshot>().unwrap().text, "changed");
+    assert!(matches!(events.next().await.unwrap(), Next::Done(())));
 }
 
 #[tokio::test]
-async fn watch_modes_refetch_snapshots_after_event_stream_disconnects() {
-    let server = MockServer::start().await;
-    let client = server.client();
+async fn requests_on_one_connection_are_answered_as_they_finish() {
+    let mut methods = Methods::new();
+    // Never answers until the daemon stops.
+    methods.add((), |(), GetTransfer { .. }| async {
+        pending::<Result<TransferSnapshot, RpcError>>().await
+    });
+    methods.add((), |(), ListDevices {}| async {
+        Ok::<_, RpcError>(vec![device()])
+    });
+    let daemon = FakeDaemon::start(methods).await;
+    let client = Arc::new(daemon.client().await);
 
-    let cancellation = CancellationToken::new();
-    let stop = cancellation.clone();
-    let state = server.state.clone();
+    let waiting = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .call(GetTransfer {
+                    transfer_id: Uuid::from_u128(2),
+                })
+                .await
+        }
+    });
+    // The slow request doesn't hold up a later one.
+    assert_eq!(
+        timeout(Duration::from_secs(2), client.call(ListDevices {}))
+            .await
+            .unwrap()
+            .unwrap(),
+        vec![device()]
+    );
+
+    // A daemon that stops fails what is still waiting.
+    daemon.server.shutdown().await;
+    let result = timeout(Duration::from_secs(2), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(result, Err(ClientError::Disconnected)),
+        "{result:?}"
+    );
+}
+
+/// Snapshots served, and a subscription that reports a gap right after it
+/// starts, as one that fell behind does.
+fn lagging_daemon(reads: Arc<AtomicUsize>) -> Methods {
+    let mut methods = Methods::new();
+    methods.add(reads.clone(), |reads, ListDevices {}| async move {
+        reads.fetch_add(1, Ordering::SeqCst);
+        Ok::<_, RpcError>(vec![device()])
+    });
+    methods.add(reads.clone(), |reads, GetClipboard {}| async move {
+        reads.fetch_add(1, Ordering::SeqCst);
+        Ok::<_, RpcError>(clipboard("current"))
+    });
+    methods.add(reads, |reads, GetTransfer { transfer_id }| async move {
+        assert_eq!(transfer_id, Uuid::from_u128(2));
+        reads.fetch_add(1, Ordering::SeqCst);
+        Ok::<_, RpcError>(transfer_snapshot())
+    });
+    methods.add_stream((), |(), Subscribe {}, items| async move {
+        items.send(&None).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        Err::<(), _>(RpcError::failed("events_lagged", "fell behind"))
+    });
+    methods
+}
+
+#[tokio::test]
+async fn watch_modes_refetch_snapshots_after_a_gap() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let daemon = FakeDaemon::start(lagging_daemon(reads.clone())).await;
+    let client = daemon.client().await;
+
+    let watched = |reads: &Arc<AtomicUsize>| {
+        reads.store(0, Ordering::SeqCst);
+        let cancellation = CancellationToken::new();
+        (cancellation.clone(), cancellation, reads.clone())
+    };
+
+    let (cancellation, stop, count) = watched(&reads);
     timeout(
         Duration::from_secs(2),
         client.watch_devices(cancellation, move |update| {
-            if matches!(update, DeviceWatchUpdate::Snapshot(_))
-                && state.device_reads.load(Ordering::SeqCst) >= 2
+            if matches!(update, DeviceWatchUpdate::Snapshot(_)) && count.load(Ordering::SeqCst) >= 2
             {
                 stop.cancel();
             }
@@ -450,14 +294,12 @@ async fn watch_modes_refetch_snapshots_after_event_stream_disconnects() {
     .unwrap()
     .unwrap();
 
-    let cancellation = CancellationToken::new();
-    let stop = cancellation.clone();
-    let state = server.state.clone();
+    let (cancellation, stop, count) = watched(&reads);
     timeout(
         Duration::from_secs(2),
         client.watch_clipboard(cancellation, move |update| {
             if matches!(update, ClipboardWatchUpdate::Snapshot(_))
-                && state.clipboard_reads.load(Ordering::SeqCst) >= 2
+                && count.load(Ordering::SeqCst) >= 2
             {
                 stop.cancel();
             }
@@ -467,14 +309,12 @@ async fn watch_modes_refetch_snapshots_after_event_stream_disconnects() {
     .unwrap()
     .unwrap();
 
-    let cancellation = CancellationToken::new();
-    let stop = cancellation.clone();
-    let state = server.state.clone();
+    let (cancellation, stop, count) = watched(&reads);
     timeout(
         Duration::from_secs(2),
         client.watch_transfer(Uuid::from_u128(2), cancellation, move |update| {
             if matches!(update, TransferWatchUpdate::Snapshot(_))
-                && state.transfer_reads.load(Ordering::SeqCst) >= 2
+                && count.load(Ordering::SeqCst) >= 2
             {
                 stop.cancel();
             }
@@ -487,185 +327,126 @@ async fn watch_modes_refetch_snapshots_after_event_stream_disconnects() {
 
 #[tokio::test]
 async fn errors_are_distinct_and_actionable() {
-    let server = MockServer::start().await;
-    let wrong = ApiClient::new(
-        &server.url,
-        Some(
-            ApiToken::from_secret(
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            )
-            .unwrap(),
-        ),
-    )
-    .unwrap();
-    assert!(matches!(
-        wrong.devices().await,
-        Err(ClientError::Unauthorized)
-    ));
-    let anonymous = ApiClient::new(&server.url, None).unwrap();
-    assert!(matches!(
-        anonymous.devices().await,
-        Err(ClientError::Unauthorized)
-    ));
+    let mut methods = Methods::new();
+    methods.add((), |(), GetPairing { .. }| async {
+        Err::<PairingSnapshot, _>(CoreError::UnknownPairing)
+    });
+    methods.add((), |(), Ping { message, .. }| async move {
+        match message.as_deref() {
+            Some("unsupported") => Err(CoreError::UnsupportedByPeer),
+            _ => Ok(()),
+        }
+    });
+    let daemon = FakeDaemon::start(methods).await;
+    let client = daemon.client().await;
 
-    let client = server.client();
-    assert!(matches!(
-        client.pairing(Uuid::max()).await,
-        Err(ClientError::NotFound("pairing"))
-    ));
-    assert!(matches!(
-        client.unpair("missing").await,
-        Err(ClientError::NotFound("device"))
-    ));
-    assert!(matches!(
-        client.ping("missing", None).await,
-        Err(ClientError::NotFound("device"))
-    ));
-    assert!(matches!(
-        client.ping(&device().device_id, Some("unsupported")).await,
-        Err(ClientError::OperationFailed { status: 409, .. })
-    ));
-    assert!(matches!(
-        client.set_clipboard("fail").await,
-        Err(ClientError::OperationFailed { status: 503, .. })
-    ));
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    drop(listener);
-    let absent = ApiClient::new(
-        &format!("http://{address}"),
-        Some(ApiToken::from_secret(TOKEN).unwrap()),
-    )
-    .unwrap();
-    assert!(matches!(
-        absent.devices().await,
-        Err(ClientError::DaemonUnavailable)
-    ));
-}
-
-#[test]
-fn client_allows_non_loopback_hosts() {
+    let missing = client
+        .call(GetPairing {
+            pairing_id: Uuid::max(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(missing.code(), Some("pairing_not_found"));
+    let refused = client
+        .call(Ping {
+            device_id: device().device_id,
+            message: Some("unsupported".into()),
+        })
+        .await
+        .unwrap_err();
+    let ClientError::Rpc(error) = &refused else {
+        panic!("expected the daemon's error, got {refused:?}");
+    };
+    assert_eq!(error.error_code(), "unsupported_by_peer");
+    assert_eq!(
+        refused.to_string(),
+        "peer has not advertised support for this packet type"
+    );
+    // A method the daemon doesn't have, as an older one wouldn't.
+    let unknown = client
+        .call(ForgetDevice {
+            device_id: device().device_id,
+        })
+        .await
+        .unwrap_err();
     assert!(
-        ApiClient::new(
-            "http://example.com",
-            Some(ApiToken::from_secret(TOKEN).unwrap())
-        )
-        .is_ok()
+        matches!(
+            unknown,
+            ClientError::UnknownMethod {
+                method: "devices.forget"
+            }
+        ),
+        "{unknown:?}"
+    );
+
+    // Nothing at the path, or a socket a crashed daemon left behind.
+    let directory = TempDir::new().unwrap();
+    let absent = directory.path().join("ferry.sock");
+    let error = Client::connect(&absent).await.err().unwrap();
+    assert!(
+        matches!(&error, ClientError::DaemonUnavailable { path } if *path == absent),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("ferry-cli run"), "{error}");
+    drop(std::os::unix::net::UnixListener::bind(&absent).unwrap());
+    let error = Client::connect(&absent).await.err().unwrap();
+    assert!(
+        matches!(error, ClientError::DaemonUnavailable { .. }),
+        "{error:?}"
     );
 }
 
-#[test]
-fn client_rejects_non_http_schemes() {
-    assert!(matches!(
-        ApiClient::new(
-            "https://127.0.0.1",
-            Some(ApiToken::from_secret(TOKEN).unwrap())
-        ),
-        Err(ClientError::UnsupportedScheme)
-    ));
-}
-
-/// A daemon whose resources change right after each snapshot is taken: every
-/// snapshot request publishes an event on `/events`, reaching only the
-/// clients already subscribed, as the real event bus does.
-async fn start_racing_daemon() -> (String, JoinHandle<()>) {
-    let (events, _) = tokio::sync::broadcast::channel::<CoreEvent>(16);
-
-    fn publish(events: &tokio::sync::broadcast::Sender<CoreEvent>, event: EventData) {
-        let _ = events.send(CoreEvent {
-            sequence: 1,
-            timestamp: 12,
-            event,
-        });
-    }
-
-    let app = Router::new()
-        .route(
-            "/api/v1/devices",
-            get(
-                |State(events): State<tokio::sync::broadcast::Sender<CoreEvent>>| async move {
-                    publish(&events, EventData::DeviceUpdated(device()));
-                    Json(vec![device()])
-                },
-            ),
-        )
-        .route(
-            "/api/v1/clipboard",
-            get(
-                |State(events): State<tokio::sync::broadcast::Sender<CoreEvent>>| async move {
-                    let changed = ClipboardSnapshot {
-                        text: "changed".into(),
-                        updated_at: 12,
-                        source_device_id: None,
-                        sync_enabled: true,
-                    };
-                    publish(
-                        &events,
-                        EventData::Plugin(PluginEvent::new(&changed).unwrap()),
-                    );
-                    Json(ClipboardSnapshot {
-                        text: "current".into(),
-                        updated_at: 10,
-                        source_device_id: None,
-                        sync_enabled: true,
-                    })
-                },
-            ),
-        )
-        .route(
-            "/api/v1/transfers/{transfer_id}",
-            get(
-                |State(events): State<tokio::sync::broadcast::Sender<CoreEvent>>| async move {
-                    // The transfer ends just after this snapshot of it is taken.
-                    let running = transfer_snapshot();
-                    let completed = TransferSnapshot {
-                        status: TransferStatus::Completed,
-                        transferred_bytes: running.total_bytes,
-                        ..running.clone()
-                    };
-                    publish(&events, EventData::TransferCompleted(completed));
-                    Json(running)
-                },
-            ),
-        )
-        .route(
-            "/api/v1/events",
-            get(
-                |State(events): State<tokio::sync::broadcast::Sender<CoreEvent>>| async move {
-                    let mut receiver = events.subscribe();
-                    let stream = async_stream::stream! {
-                        while let Ok(event) = receiver.recv().await {
-                            let frame = format!(
-                                "event: {}\ndata: {}\n\n",
-                                event.event.event_type(),
-                                serde_json::to_string(&event).unwrap()
-                            );
-                            yield Ok::<_, std::convert::Infallible>(frame);
-                        }
-                    };
-                    (
-                        [(CONTENT_TYPE, "text/event-stream")],
-                        Body::from_stream(stream),
-                    )
-                },
-            ),
-        )
-        .with_state(events);
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let task = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+/// A daemon whose resources change right after each snapshot is taken:
+/// every snapshot publishes an event, reaching only the subscriptions
+/// already made, as the real event bus does.
+fn racing_daemon() -> Methods {
+    let (events, _) = broadcast::channel::<CoreEvent>(16);
+    let publish = |events: &broadcast::Sender<CoreEvent>, event: EventData| {
+        let _ = events.send(core_event(event));
+    };
+    let mut methods = Methods::new();
+    methods.add(events.clone(), move |events, ListDevices {}| async move {
+        publish(&events, EventData::DeviceUpdated(device()));
+        Ok::<_, RpcError>(vec![device()])
     });
-    (format!("http://{address}"), task)
+    methods.add(events.clone(), move |events, GetClipboard {}| async move {
+        let changed = PluginEvent::new(&clipboard("changed")).unwrap();
+        publish(&events, EventData::Plugin(changed));
+        Ok::<_, RpcError>(clipboard("current"))
+    });
+    methods.add(
+        events.clone(),
+        move |events, GetTransfer { .. }| async move {
+            // The transfer ends just after this snapshot of it is taken.
+            let running = transfer_snapshot();
+            let completed = TransferSnapshot {
+                status: TransferStatus::Completed,
+                transferred_bytes: running.total_bytes,
+                ..running.clone()
+            };
+            publish(&events, EventData::TransferCompleted(completed));
+            Ok::<_, RpcError>(running)
+        },
+    );
+    methods.add_stream(events, |events, Subscribe {}, items| async move {
+        let mut receiver = events.subscribe();
+        items.send(&None).await;
+        while let Ok(event) = receiver.recv().await {
+            if !items.send(&Some(event)).await {
+                break;
+            }
+        }
+        Ok::<_, RpcError>(())
+    });
+    methods
 }
 
 #[tokio::test]
 async fn watch_modes_see_changes_made_right_after_their_snapshot() {
-    let (url, task) = start_racing_daemon().await;
-    let client = ApiClient::new(&url, None).unwrap();
+    let daemon = FakeDaemon::start(racing_daemon()).await;
+    let client = daemon.client().await;
 
-    // A transfer that ends between the snapshot and the subscription must
+    // A transfer that ends between the snapshot and the next event must
     // still end the watch, rather than leave it waiting forever.
     let mut updates = Vec::new();
     timeout(
@@ -715,6 +496,4 @@ async fn watch_modes_see_changes_made_right_after_their_snapshot() {
     .await
     .expect("the watch missed a clipboard change")
     .unwrap();
-
-    task.abort();
 }

@@ -2,10 +2,10 @@
 //!
 //! The UI runs in the daemon's process and talks to the core directly:
 //! snapshots from [`Core`], events from [`Core::subscribe`], and actions
-//! through typed Rust functions, never the HTTP API. The daemon serves that
-//! API only when the user turns on command line access in Settings
-//! ([`ApiSwitch`](crate::daemon::ApiSwitch)), so the CLI can drive and
-//! inspect the instance the UI shows.
+//! through typed Rust functions, never the control socket. The daemon
+//! serves that socket only when the user turns on command line access in
+//! Settings ([`ControlSwitch`](crate::daemon::ControlSwitch)), so the CLI can
+//! drive and inspect the instance the UI shows.
 //!
 //! This module is the shell: the window, the tray, the pages it owns, and
 //! what features share. Each feature's UI lives in [`features`], which the
@@ -60,7 +60,7 @@ use uuid::Uuid;
 
 use crate::{
     core::{Appearance, DeviceSnapshot, Host, PairingSnapshot, SettingsPatch, SettingsSnapshot},
-    daemon::{ApiStatus, ApiSwitch},
+    daemon::{ControlStatus, ControlSwitch},
 };
 use context::UiContext;
 use desktop::{
@@ -291,15 +291,11 @@ pub(crate) enum Message {
     StartOnLoginSet(bool, Option<String>),
     /// A settings change finished: the settings now, or why it failed.
     SettingsSaved(Result<SettingsSnapshot, String>),
-    /// Turn command line access (the daemon's HTTP API) on or off.
-    SetApiEnabled(bool),
-    /// Replace the HTTP API's token.
-    NewApiToken,
+    /// Turn command line access (the daemon's control socket) on or off.
+    SetCliAccess(bool),
     /// Command line access as it is now, read at start or after a change,
     /// or why the change failed.
-    ApiChanged(Result<ApiStatus, String>),
-    /// Copy what Settings shows for setting up the CLI.
-    CopyCli(CliCopy),
+    CliAccessChanged(Result<ControlStatus, String>),
     /// The wait for the rest of this drag's dropped files is over.
     DropSettled(u64),
     /// Send the dropped files to this device, chosen in the chooser.
@@ -314,14 +310,6 @@ pub(crate) enum Message {
     Window(window::Id, window::Event),
     /// The system's light or dark mode, at start and when it changes.
     SystemTheme(iced::theme::Mode),
-}
-
-/// What Settings' command line access copies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CliCopy {
-    /// The environment variables, address and token.
-    Setup,
-    Token,
 }
 
 /// Keyboard shortcuts the shell handles.
@@ -401,11 +389,11 @@ struct Running {
     ctx: UiContext,
     features: Features,
     /// Turns command line access on and off.
-    api: ApiSwitch,
+    control: ControlSwitch,
     /// Command line access as last read; `None` until then.
-    api_status: Option<ApiStatus>,
+    cli_status: Option<ControlStatus>,
     /// A change to command line access is under way.
-    api_busy: bool,
+    cli_busy: bool,
 }
 
 impl App {
@@ -770,10 +758,8 @@ impl App {
                 Task::none()
             }
             Message::SettingsSaved(Err(error)) => self.toast(error, None),
-            Message::SetApiEnabled(enabled) => self.set_api_enabled(enabled),
-            Message::NewApiToken => self.new_api_token(),
-            Message::ApiChanged(result) => self.api_changed(result),
-            Message::CopyCli(what) => self.copy_cli(what),
+            Message::SetCliAccess(enabled) => self.set_cli_access(enabled),
+            Message::CliAccessChanged(result) => self.cli_access_changed(result),
             Message::DropSettled(gesture) => match self.drag.settled(gesture) {
                 Some(paths) => self.dropped(paths),
                 None => Task::none(),
@@ -1014,7 +1000,7 @@ impl App {
                 &self.options.version,
                 self.start_on_login,
                 settings::CommandLine {
-                    status: running.api_status.as_ref(),
+                    status: running.cli_status.as_ref(),
                     cli_path: self.cli_path.as_deref(),
                 },
                 settings::Actions {
@@ -1026,10 +1012,7 @@ impl App {
                     set_start_on_login: Message::SetStartOnLogin,
                     set_language: Message::SetLanguage,
                     set_appearance: Message::SetAppearance,
-                    set_api_enabled: Message::SetApiEnabled,
-                    copy_cli_setup: Message::CopyCli(CliCopy::Setup),
-                    copy_api_token: Message::CopyCli(CliCopy::Token),
-                    new_api_token: Message::NewApiToken,
+                    set_cli_access: Message::SetCliAccess,
                     about: navigate(Route::About),
                 },
             ),

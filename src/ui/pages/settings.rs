@@ -3,7 +3,7 @@
 //! login, which the system keeps, the app's language (which the daemon
 //! keeps too, and [`i18n::follow_setting`] applies), its appearance, and
 //! command line access (the daemon's
-//! HTTP API, [`ApiSwitch`](crate::daemon::ApiSwitch)). Features add their
+//! control socket, [`ControlSwitch`](crate::daemon::ControlSwitch)). Features add their
 //! own sections (clipboard: "Sync clipboard", which the plugin keeps)
 //! through
 //! [`settings_sections`](crate::ui::features::Features::settings_sections).
@@ -11,15 +11,14 @@
 use std::path::Path;
 
 use iced::{
-    Background, Border, Element, Font, Length, Theme,
-    widget::{button, column, container, pick_list, row, scrollable, text},
+    Element, Length, Theme,
+    widget::{column, pick_list, scrollable, text},
 };
 use iced_fonts::lucide;
 
 use crate::{
-    client::{API_TOKEN_ENV, API_URL_ENV},
     core::{Appearance, SettingsSnapshot},
-    daemon::ApiStatus,
+    daemon::ControlStatus,
     ui::{
         i18n::{self, Language, fl},
         store::{Load, Store},
@@ -30,29 +29,10 @@ use crate::{
 /// Command line access as the page shows it.
 #[derive(Clone, Copy, Default)]
 pub struct CommandLine<'a> {
-    /// The API now; `None` until it has been read.
-    pub status: Option<&'a ApiStatus>,
+    /// The control socket now; `None` until it has been read.
+    pub status: Option<&'a ControlStatus>,
     /// Where `ferry-cli` is, when it was installed next to the app.
     pub cli_path: Option<&'a Path>,
-}
-
-/// What a shell needs to reach the app's API: its address and token as
-/// environment variables, in PowerShell's syntax on Windows. With `reveal`
-/// off the token is masked, for showing. `None` while it doesn't listen.
-pub fn cli_setup(status: &ApiStatus, reveal: bool) -> Option<String> {
-    let address = status.address?;
-    let token = status.token.as_ref()?;
-    let token = if reveal {
-        token.expose_secret().to_owned()
-    } else {
-        "•".repeat(12)
-    };
-    let url = format!("http://{address}");
-    Some(if cfg!(windows) {
-        format!("$env:{API_URL_ENV} = \"{url}\"\n$env:{API_TOKEN_ENV} = \"{token}\"")
-    } else {
-        format!("export {API_URL_ENV}={url}\nexport {API_TOKEN_ENV}={token}")
-    })
 }
 
 /// What the page's controls ask for.
@@ -71,13 +51,7 @@ pub struct Actions<M> {
     /// Make the app light or dark, or `None` follow the system.
     pub set_appearance: fn(Option<Appearance>) -> M,
     /// Turn command line access on or off.
-    pub set_api_enabled: fn(bool) -> M,
-    /// Copy [`cli_setup`], token and all.
-    pub copy_cli_setup: M,
-    /// Copy only the token.
-    pub copy_api_token: M,
-    /// Replace the token.
-    pub new_api_token: M,
+    pub set_cli_access: fn(bool) -> M,
     /// Open the About page.
     pub about: M,
 }
@@ -150,20 +124,22 @@ fn list<'a, M: Clone + 'a>(
             actions.set_start_on_login,
         ))
         .push(language(settings.language.as_deref(), actions.set_language))
-        .push(appearance(settings.appearance, actions.set_appearance))
-        .push(command_line)
-        .push(widgets::setting(
-            lucide::info,
-            fl!("settings-about"),
-            fl!("settings-version", version = version),
-            Some(
-                lucide::chevron_right()
-                    .size(16)
-                    .style(text::secondary)
-                    .into(),
-            ),
-            Some(actions.about),
-        ));
+        .push(appearance(settings.appearance, actions.set_appearance));
+    if cfg!(unix) {
+        items = items.push(command_line);
+    }
+    items = items.push(widgets::setting(
+        lucide::info,
+        fl!("settings-about"),
+        fl!("settings-version", version = version),
+        Some(
+            lucide::chevron_right()
+                .size(16)
+                .style(text::secondary)
+                .into(),
+        ),
+        Some(actions.about),
+    ));
     scrollable(items).spacing(6).height(Length::Fill).into()
 }
 
@@ -295,9 +271,9 @@ where
         })
 }
 
-/// The switch, and while it is on, how to set up `ferry-cli`: what to paste
-/// into a shell, with buttons to copy it or the token, or why the API isn't
-/// listening.
+/// The switch, and while it is on, where `ferry-cli` finds the app, or why
+/// it can't. Only on systems with Unix sockets: elsewhere the app has no
+/// command line access yet.
 fn command_line<'a, M: Clone + 'a>(cli: CommandLine<'a>, actions: &Actions<M>) -> Element<'a, M> {
     let status = cli.status.filter(|status| status.enabled);
     let switch = widgets::switch_setting(
@@ -305,7 +281,7 @@ fn command_line<'a, M: Clone + 'a>(cli: CommandLine<'a>, actions: &Actions<M>) -
         fl!("settings-cli"),
         fl!("settings-cli-detail"),
         status.is_some(),
-        actions.set_api_enabled,
+        actions.set_cli_access,
     );
     let Some(status) = status else {
         return switch;
@@ -318,42 +294,16 @@ fn command_line<'a, M: Clone + 'a>(cli: CommandLine<'a>, actions: &Actions<M>) -
                 .style(text::danger),
         );
     }
-    if let Some(setup) = cli_setup(status, false) {
-        let code = container(text(setup).size(13).font(Font::MONOSPACE))
-            .padding([8, 10])
-            .width(Length::Fill)
-            .style(|theme: &Theme| {
-                let palette = theme.extended_palette();
-                container::Style {
-                    background: Some(Background::Color(palette.background.weak.color)),
-                    text_color: Some(palette.background.weak.text),
-                    border: Border::default().rounded(8),
-                    ..container::Style::default()
-                }
-            });
-        let buttons = row![
-            button(text(fl!("settings-cli-copy-setup")).size(13))
-                .padding([6, 12])
-                .style(widgets::tonal)
-                .on_press(actions.copy_cli_setup.clone()),
-            button(text(fl!("settings-cli-copy-token")).size(13))
-                .padding([6, 12])
-                .style(widgets::outlined)
-                .on_press(actions.copy_api_token.clone()),
-            button(text(fl!("settings-cli-new-token")).size(13))
-                .padding([6, 12])
-                .style(widgets::outlined)
-                .on_press(actions.new_api_token.clone()),
-        ]
-        .spacing(8);
-        details = details
-            .push(
+    if status.listening {
+        details = details.push(
+            column![
                 text(fl!("settings-cli-setup-hint"))
                     .size(13)
                     .style(text::secondary),
-            )
-            .push(code)
-            .push(buttons);
+                widgets::selectable_text(&status.path.display().to_string()),
+            ]
+            .spacing(2),
+        );
     }
     if let Some(path) = cli.cli_path {
         details = details.push(
@@ -386,10 +336,7 @@ mod tests {
         StartOnLogin(bool),
         Language(Option<String>),
         Appearance(Option<Appearance>),
-        Api(bool),
-        CopySetup,
-        CopyToken,
-        NewToken,
+        CliAccess(bool),
         Section(bool),
         About,
     }
@@ -404,21 +351,17 @@ mod tests {
             set_start_on_login: Message::StartOnLogin,
             set_language: Message::Language,
             set_appearance: Message::Appearance,
-            set_api_enabled: Message::Api,
-            copy_cli_setup: Message::CopySetup,
-            copy_api_token: Message::CopyToken,
-            new_api_token: Message::NewToken,
+            set_cli_access: Message::CliAccess,
             about: Message::About,
         }
     }
 
-    fn listening() -> ApiStatus {
-        ApiStatus {
+    fn listening() -> ControlStatus {
+        ControlStatus {
             enabled: true,
             switchable: true,
-            port: 24_816,
-            address: Some("127.0.0.1:24816".parse().unwrap()),
-            token: Some(crate::config::ApiToken::from_secret("s3cret-token").unwrap()),
+            path: "/home/me/.config/ferry/ferry.sock".into(),
+            listening: true,
             error: None,
         }
     }
@@ -469,7 +412,7 @@ mod tests {
             CommandLine::default(),
             actions(),
         ));
-        for shown in [
+        let mut shown = vec![
             "Device name",
             "Desktop",
             "Save received files in",
@@ -479,20 +422,24 @@ mod tests {
             "Start when you log in",
             "Language",
             "Appearance",
-            "Command line access",
             "About Ferry",
             "Version 1.2.3 (dev)",
-        ] {
+        ];
+        if cfg!(unix) {
+            shown.push("Command line access");
+        }
+        for shown in shown {
             assert!(ui.find(shown).is_ok(), "{shown}");
         }
         assert!(
-            ui.find("Copy setup").is_err(),
-            "nothing to set up while off"
+            ui.find("/home/me/.config/ferry/ferry.sock").is_err(),
+            "nothing to show while off"
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn command_line_access_shows_the_setup_with_the_token_masked() {
+    fn command_line_access_shows_where_the_cli_finds_the_app() {
         let store = store();
         let status = listening();
         let path = Path::new("/Applications/Ferry.app/Contents/MacOS/ferry-cli");
@@ -507,19 +454,14 @@ mod tests {
             },
             actions(),
         ));
-        let shown = cli_setup(&status, false).unwrap();
-        assert!(ui.find(shown.as_str()).is_ok());
-        assert!(!shown.contains("s3cret-token"));
-        assert!(shown.contains("http://127.0.0.1:24816"));
+        assert!(ui.find("/home/me/.config/ferry/ferry.sock").is_ok());
         assert!(ui.find("ferry-cli is installed at").is_ok());
 
-        let copied = cli_setup(&status, true).unwrap();
-        assert!(copied.contains("FERRY_API_TOKEN") && copied.contains("s3cret-token"));
-        assert!(copied.contains("FERRY_API_URL"));
-
-        let broken = ApiStatus {
-            address: None,
-            error: Some("couldn’t listen on port 24816".into()),
+        let refused = ControlStatus {
+            listening: false,
+            error: Some(
+                "another Ferry is already serving /home/me/.config/ferry/ferry.sock".into(),
+            ),
             ..listening()
         };
         let mut ui = Simulator::new(view(
@@ -528,16 +470,18 @@ mod tests {
             "",
             false,
             CommandLine {
-                status: Some(&broken),
+                status: Some(&refused),
                 cli_path: None,
             },
             actions(),
         ));
         assert!(
-            ui.find("ferry-cli can’t reach the app: couldn’t listen on port 24816")
-                .is_ok()
+            ui.find(
+                "ferry-cli can’t reach the app: another Ferry is already serving \
+                 /home/me/.config/ferry/ferry.sock"
+            )
+            .is_ok()
         );
-        assert!(ui.find("Copy setup").is_err());
     }
 
     #[test]
@@ -555,13 +499,12 @@ mod tests {
             [Message::StartOnLogin(true)]
         );
         assert_eq!(clicked(&store, "Sync clipboard"), [Message::Section(false)]);
-        assert_eq!(
-            clicked(&store, "Command line access"),
-            [Message::Api(false)]
-        );
-        assert_eq!(clicked(&store, "Copy setup"), [Message::CopySetup]);
-        assert_eq!(clicked(&store, "Copy token"), [Message::CopyToken]);
-        assert_eq!(clicked(&store, "New token"), [Message::NewToken]);
+        if cfg!(unix) {
+            assert_eq!(
+                clicked(&store, "Command line access"),
+                [Message::CliAccess(false)]
+            );
+        }
         assert_eq!(clicked(&store, "About Ferry"), [Message::About]);
         assert_eq!(
             clicked(&store, iced::widget::Id::from("Back")),

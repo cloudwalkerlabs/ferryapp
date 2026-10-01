@@ -262,25 +262,25 @@ impl App {
 
     pub(super) fn started(&mut self, started: Started) -> Task<Message> {
         let core = started.service.core().clone();
-        let api = started.service.api().clone();
+        let control = started.service.control().clone();
         self.service.set(started.service);
         let mut ctx = UiContext::new(core, self.options.runtime.clone());
         ctx.set_window_focused(self.focused());
         self.phase = Phase::Running(Box::new(Running {
             ctx,
             features: Features::new(started.clipboard, started.browse, started.notifications),
-            api,
-            api_status: None,
-            api_busy: false,
+            control,
+            cli_status: None,
+            cli_busy: false,
         }));
-        let api = self.read_api_status();
+        let cli = self.read_cli_status();
         if self.options.demo
             && let Phase::Running(running) = &self.phase
         {
             demo::start(running.ctx.core());
-            return Task::batch([api, Task::done(Message::DemoTick(0))]);
+            return Task::batch([cli, Task::done(Message::DemoTick(0))]);
         }
-        api
+        cli
     }
 }
 

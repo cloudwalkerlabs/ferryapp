@@ -2,15 +2,13 @@
 //! (`POST /devices/{id}/ring`). This build only sends the request; it
 //! doesn't ring when asked, so it handles no packets.
 
-mod http;
 pub mod packet;
+pub mod rpc;
 
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
-
-use axum::Router;
 
 pub use packet::{REQUEST_PACKET_TYPE, build_request_packet};
 
@@ -30,8 +28,8 @@ impl Plugin for FindMyPhonePlugin {
         &[REQUEST_PACKET_TYPE]
     }
 
-    fn routes(self: Arc<Self>, ctx: PluginContext) -> Router {
-        http::routes(ctx)
+    fn methods(self: Arc<Self>, ctx: PluginContext, methods: &mut crate::rpc::Methods) {
+        rpc::add(ctx, methods);
     }
 }
 

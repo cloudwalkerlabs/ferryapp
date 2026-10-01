@@ -16,8 +16,8 @@
 //!
 //! Callers' names and numbers are personal data: they are never logged.
 
-mod http;
 pub mod packet;
+pub mod rpc;
 
 use std::{
     collections::HashMap,
@@ -25,7 +25,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use axum::Router;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -213,8 +212,8 @@ impl Plugin for TelephonyPlugin {
         }
     }
 
-    fn routes(self: Arc<Self>, ctx: PluginContext) -> Router {
-        http::routes(ctx)
+    fn methods(self: Arc<Self>, ctx: PluginContext, methods: &mut crate::rpc::Methods) {
+        rpc::add(ctx, methods);
     }
 
     fn device_state(&self, _ctx: &PluginContext, device: &DeviceSnapshot) -> Option<Value> {

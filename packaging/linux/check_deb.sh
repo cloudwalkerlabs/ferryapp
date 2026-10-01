@@ -38,18 +38,17 @@ ferry-cli --version
 
 run=$(mktemp -d)
 trap 'rm -rf "$run"' EXIT
-port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
 
 cat >"$run/session.sh" <<SESSION
 set -eu
 ferry-gui --data-dir "$run/data" --download-dir "$run/downloads" \
   --discovery-loopback --no-system-clipboard --device-name "Package check" \
-  --api-port $port --api-token check >"$run/app.log" 2>&1 &
+  --cli-access >"$run/app.log" 2>&1 &
 app=\$!
 trap 'kill \$app 2>/dev/null || true' EXIT
 for _ in \$(seq 60); do
   if xwininfo -root -tree 2>/dev/null | grep -q '"Ferry"' &&
-    FERRY_API_TOKEN=check ferry-cli --api-port $port settings >/dev/null 2>&1; then
+    ferry-cli --data-dir "$run/data" settings >/dev/null 2>&1; then
     break
   fi
   if ! kill -0 \$app 2>/dev/null; then
@@ -61,7 +60,7 @@ done
 xwininfo -root -tree | grep '"Ferry"'
 xprop -name Ferry WM_CLASS | tee /dev/stderr | grep -q '"dev.fanchao.Ferry"'
 xprop -name Ferry _NET_WM_ICON | grep -q 'Icon'
-FERRY_API_TOKEN=check ferry-cli --api-port $port settings
+ferry-cli --data-dir "$run/data" settings
 kill \$app
 wait \$app || true
 SESSION

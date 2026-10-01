@@ -1,7 +1,7 @@
 //! End-to-end file browsing: a real daemon (LAN transport, application core
-//! and HTTP API) pairs with a fake KDE Connect for Android over loopback,
-//! asks it to serve its files, and lists, downloads, uploads, creates,
-//! moves and deletes them over SFTP through the API client.
+//! and control socket) pairs with a fake KDE Connect for Android over
+//! loopback, asks it to serve its files, and lists, downloads, uploads,
+//! creates, moves and deletes them over SFTP through the client.
 //!
 //! The fake phone is `tests/support/fake_phone.rs`. It follows Android's
 //! server as read from its source; the real thing has not been exercised
@@ -16,9 +16,9 @@ use std::{
     time::Duration,
 };
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use ferry::{
-    api::{ApiServer, ApiServerConfig},
-    client::{ApiClient, ClientError},
+    client::{Client, ClientError, Next},
     config::LocalIdentity,
     core::{
         Core, DeviceReachability, LocalDeviceSnapshot, Plugin, TransferConfig, TransferDirection,
@@ -27,17 +27,23 @@ use ferry::{
     plugins::clipboard::InMemoryClipboard,
     plugins::{
         battery::BatteryStatus,
-        browse::{BrowseError, BrowsePlugin, FileKind, UploadPathError},
+        browse::{
+            BrowseError, BrowsePlugin, DirectoryListing, FileEntry, FileKind, UploadPathError,
+            rpc::{
+                CreateDirectory, DeleteFile, DownloadFile, ListFiles, MoveFile, ReadFile,
+                UploadFile,
+            },
+        },
         connectivity::Connectivity,
     },
     protocol::DeviceType,
+    rpc::{GetTransfer, ListDevices, RpcServer},
     store::Store,
     transport::{
         lan::{LanConfig, LanService, LocalDeviceInfo, TCP_PORT_RANGE},
         tls::subject_public_key_info,
     },
 };
-use futures_util::StreamExt;
 use support::fake_phone::{
     BrowseReply, FakePhone, FakePhoneConfig, PHONE_BATTERY, PHONE_NAME, PHONE_NETWORK, PHONE_SIGNAL,
 };
@@ -52,12 +58,14 @@ struct Harness {
     browse: Arc<BrowsePlugin>,
     phone: FakePhone,
     phone_id: String,
-    client: ApiClient,
+    client: Client,
+    /// Where the daemon's control socket listens.
+    socket: PathBuf,
     download_dir: PathBuf,
     /// The phone's storage on disk; `INTERNAL` is `storage.join(&INTERNAL[1..])`.
     storage: PathBuf,
     _lan: LanService,
-    _api: ApiServer,
+    _server: RpcServer,
     _desktop_dir: tempfile::TempDir,
     _phone_dir: tempfile::TempDir,
 }
@@ -70,7 +78,103 @@ fn builtin_with(browse: Arc<BrowsePlugin>) -> Vec<ferry::plugins::BuiltinPlugin>
     plugins
 }
 
+/// The browse methods, for one device.
+struct Files<'a> {
+    client: &'a Client,
+    phone: &'a str,
+}
+
+impl Files<'_> {
+    async fn list(&self, path: Option<&str>) -> Result<DirectoryListing, ClientError> {
+        self.client
+            .call(ListFiles {
+                device_id: self.phone.into(),
+                path: path.map(Into::into),
+            })
+            .await
+    }
+
+    async fn download(&self, path: &str) -> Result<TransferSnapshot, ClientError> {
+        self.client
+            .call(DownloadFile {
+                device_id: self.phone.into(),
+                path: path.into(),
+            })
+            .await
+    }
+
+    async fn upload(
+        &self,
+        directory: &str,
+        path: &std::path::Path,
+    ) -> Result<TransferSnapshot, ClientError> {
+        self.client
+            .call(UploadFile {
+                device_id: self.phone.into(),
+                directory: directory.into(),
+                path: path.into(),
+            })
+            .await
+    }
+
+    async fn mkdir(&self, path: &str) -> Result<FileEntry, ClientError> {
+        self.client
+            .call(CreateDirectory {
+                device_id: self.phone.into(),
+                path: path.into(),
+            })
+            .await
+    }
+
+    async fn mv(&self, from: &str, to: &str) -> Result<FileEntry, ClientError> {
+        self.client
+            .call(MoveFile {
+                device_id: self.phone.into(),
+                from: from.into(),
+                to: to.into(),
+            })
+            .await
+    }
+
+    async fn delete(&self, path: &str) -> Result<(), ClientError> {
+        self.client
+            .call(DeleteFile {
+                device_id: self.phone.into(),
+                path: path.into(),
+            })
+            .await
+    }
+
+    /// A file's content, read through `files.read`.
+    async fn read(&self, path: &str) -> Result<Vec<u8>, ClientError> {
+        let mut content = self
+            .client
+            .stream(ReadFile {
+                device_id: self.phone.into(),
+                path: path.into(),
+            })
+            .await?;
+        let mut bytes = Vec::new();
+        loop {
+            match content.next().await? {
+                Next::Item(chunk) => bytes.extend(STANDARD.decode(chunk).unwrap()),
+                Next::Done(size) => {
+                    assert_eq!(size, bytes.len() as u64);
+                    return Ok(bytes);
+                }
+            }
+        }
+    }
+}
+
 impl Harness {
+    fn files(&self) -> Files<'_> {
+        Files {
+            client: &self.client,
+            phone: &self.phone_id,
+        }
+    }
+
     fn phone_path(&self, path: &str) -> PathBuf {
         self.storage.join(path.trim_start_matches('/'))
     }
@@ -78,7 +182,7 @@ impl Harness {
     async fn wait_for_transfer(&self, transfer_id: Uuid) -> TransferSnapshot {
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let transfer = self.client.transfer(transfer_id).await.unwrap();
+                let transfer = self.client.call(GetTransfer { transfer_id }).await.unwrap();
                 if matches!(
                     transfer.status,
                     TransferStatus::Completed | TransferStatus::Failed | TransferStatus::Cancelled
@@ -206,15 +310,15 @@ async fn harness(reply: BrowseReply, wrong_host_key: bool) -> Harness {
     desktop.start_outgoing_pairing(&phone_id).await.unwrap();
     wait_for_device(&desktop, &phone_id, |device| device.paired).await;
 
-    let api = ApiServer::start(
-        ApiServerConfig::new(0).unwrap(),
-        desktop.clone(),
-        None,
+    let socket = desktop_dir.path().join("ferry.sock");
+    let server = RpcServer::start(
+        socket.clone(),
+        ferry::rpc::all(&desktop),
         CancellationToken::new(),
     )
     .await
     .unwrap();
-    let client = ApiClient::new(&format!("http://{}", api.local_addr()), None).unwrap();
+    let client = Client::connect(&socket).await.unwrap();
 
     Harness {
         desktop,
@@ -222,10 +326,11 @@ async fn harness(reply: BrowseReply, wrong_host_key: bool) -> Harness {
         phone,
         phone_id,
         client,
+        socket,
         download_dir,
         storage,
         _lan: lan,
-        _api: api,
+        _server: server,
         _desktop_dir: desktop_dir,
         _phone_dir: phone_dir,
     }
@@ -245,8 +350,8 @@ fn pattern(length: usize) -> Vec<u8> {
 
 fn failure_code(error: ClientError) -> String {
     match error {
-        ClientError::OperationFailed { code, .. } => code,
-        other => panic!("expected an API problem, got {other:?}"),
+        ClientError::Rpc(error) => error.error_code().to_owned(),
+        other => panic!("expected the daemon's error, got {other:?}"),
     }
 }
 
@@ -254,11 +359,7 @@ fn failure_code(error: ClientError) -> String {
 async fn roots_and_directories_are_listed_over_one_key_authenticated_session() {
     let harness = harness(android_roots(), false).await;
 
-    let roots = harness
-        .client
-        .list_files(&harness.phone_id, None)
-        .await
-        .unwrap();
+    let roots = harness.files().list(None).await.unwrap();
     assert_eq!(roots.path, None);
     let names: Vec<_> = roots
         .entries
@@ -274,8 +375,8 @@ async fn roots_and_directories_are_listed_over_one_key_authenticated_session() {
     );
 
     let internal = harness
-        .client
-        .list_files(&harness.phone_id, Some(&format!("{INTERNAL}/")))
+        .files()
+        .list(Some(&format!("{INTERNAL}/")))
         .await
         .unwrap();
     assert_eq!(internal.path.as_deref(), Some(INTERNAL));
@@ -294,8 +395,8 @@ async fn roots_and_directories_are_listed_over_one_key_authenticated_session() {
     assert!(internal.entries[1].modified_at.is_some());
 
     let dcim = harness
-        .client
-        .list_files(&harness.phone_id, Some(&format!("{INTERNAL}/DCIM")))
+        .files()
+        .list(Some(&format!("{INTERNAL}/DCIM")))
         .await
         .unwrap();
     assert_eq!(dcim.entries[0].path, format!("{INTERNAL}/DCIM/photo.jpg"));
@@ -314,11 +415,7 @@ async fn files_are_downloaded_as_transfers_and_streamed_as_content() {
     let harness = harness(android_roots(), false).await;
     let photo = format!("{INTERNAL}/DCIM/photo.jpg");
 
-    let started = harness
-        .client
-        .download_file(&harness.phone_id, &photo)
-        .await
-        .unwrap();
+    let started = harness.files().download(&photo).await.unwrap();
     assert_eq!(started.direction, TransferDirection::Incoming);
     assert_eq!(started.file_name, "photo.jpg");
     assert_eq!(started.total_bytes, 3 * 1024 * 1024 + 17);
@@ -332,27 +429,22 @@ async fn files_are_downloaded_as_transfers_and_streamed_as_content() {
     );
 
     // A second copy doesn't replace the first.
-    let again = harness
-        .client
-        .download_file(&harness.phone_id, &photo)
-        .await
-        .unwrap();
+    let again = harness.files().download(&photo).await.unwrap();
     let again = harness.wait_for_transfer(again.id).await;
     assert_eq!(
         again.saved_path.unwrap(),
         harness.download_dir.join("photo (1).jpg")
     );
 
-    let mut content = harness
-        .client
-        .file_content(&harness.phone_id, &format!("{INTERNAL}/notes.txt"))
+    let bytes = harness
+        .files()
+        .read(&format!("{INTERNAL}/notes.txt"))
         .await
         .unwrap();
-    let mut bytes = Vec::new();
-    while let Some(chunk) = content.next().await {
-        bytes.extend_from_slice(&chunk.unwrap());
-    }
     assert_eq!(bytes, b"hello phone");
+    // Larger than one item.
+    let photo = harness.files().read(&photo).await.unwrap();
+    assert_eq!(photo, pattern(3 * 1024 * 1024 + 17));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -361,11 +453,7 @@ async fn uploads_never_replace_an_existing_file() {
     let local = harness._desktop_dir.path().join("notes.txt");
     std::fs::write(&local, pattern(200_000)).unwrap();
 
-    let upload = harness
-        .client
-        .upload_file(&harness.phone_id, INTERNAL, &local)
-        .await
-        .unwrap();
+    let upload = harness.files().upload(INTERNAL, &local).await.unwrap();
     assert_eq!(upload.direction, TransferDirection::Outgoing);
     // `notes.txt` already exists on the phone.
     assert_eq!(upload.file_name, "notes (1).txt");
@@ -382,11 +470,7 @@ async fn uploads_never_replace_an_existing_file() {
 
     let empty = harness._desktop_dir.path().join("empty.bin");
     std::fs::write(&empty, b"").unwrap();
-    let upload = harness
-        .client
-        .upload_file(&harness.phone_id, SD_CARD, &empty)
-        .await
-        .unwrap();
+    let upload = harness.files().upload(SD_CARD, &empty).await.unwrap();
     assert_eq!(
         harness.wait_for_transfer(upload.id).await.status,
         TransferStatus::Completed
@@ -396,13 +480,19 @@ async fn uploads_never_replace_an_existing_file() {
         b""
     );
 
-    // A small file, so the whole request is sent before the daemon answers.
     let into_file = harness
-        .client
-        .upload_file(&harness.phone_id, &format!("{INTERNAL}/notes.txt"), &empty)
+        .files()
+        .upload(&format!("{INTERNAL}/notes.txt"), &empty)
         .await
         .unwrap_err();
     assert_eq!(failure_code(into_file), "not_a_directory");
+    // The daemon doesn't share the client's working directory.
+    let relative = harness
+        .files()
+        .upload(INTERNAL, std::path::Path::new("empty.bin"))
+        .await
+        .unwrap_err();
+    assert_eq!(failure_code(relative), "file_unreadable");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -460,21 +550,19 @@ async fn a_local_file_uploads_from_its_path() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn directories_are_created_moved_and_deleted_without_clobbering() {
     let harness = harness(android_roots(), false).await;
-    let client = &harness.client;
-    let phone = harness.phone_id.as_str();
+    let files = harness.files();
     let trip = format!("{INTERNAL}/Trip");
 
-    let created = client.create_directory(phone, &trip).await.unwrap();
+    let created = files.mkdir(&trip).await.unwrap();
     assert_eq!(created.name, "Trip");
     assert_eq!(created.kind, FileKind::Directory);
     assert_eq!(
-        failure_code(client.create_directory(phone, &trip).await.unwrap_err()),
+        failure_code(files.mkdir(&trip).await.unwrap_err()),
         "file_exists"
     );
 
-    let moved = client
-        .move_file(
-            phone,
+    let moved = files
+        .mv(
             &format!("{INTERNAL}/notes.txt"),
             &format!("{trip}/notes.txt"),
         )
@@ -485,9 +573,8 @@ async fn directories_are_created_moved_and_deleted_without_clobbering() {
     std::fs::write(harness.phone_path(&format!("{INTERNAL}/other.txt")), b"x").unwrap();
     assert_eq!(
         failure_code(
-            client
-                .move_file(
-                    phone,
+            files
+                .mv(
                     &format!("{INTERNAL}/other.txt"),
                     &format!("{trip}/notes.txt")
                 )
@@ -497,15 +584,12 @@ async fn directories_are_created_moved_and_deleted_without_clobbering() {
         "file_exists"
     );
 
-    client
-        .create_directory(phone, &format!("{trip}/Day 1"))
-        .await
-        .unwrap();
+    files.mkdir(&format!("{trip}/Day 1")).await.unwrap();
     std::fs::write(harness.phone_path(&format!("{trip}/Day 1/a.jpg")), b"a").unwrap();
-    client.delete_file(phone, &trip).await.unwrap();
+    files.delete(&trip).await.unwrap();
     assert!(!harness.phone_path(&trip).exists());
-    client
-        .delete_file(phone, &format!("{INTERNAL}/other.txt"))
+    files
+        .delete(&format!("{INTERNAL}/other.txt"))
         .await
         .unwrap();
     assert!(
@@ -516,16 +600,11 @@ async fn directories_are_created_moved_and_deleted_without_clobbering() {
 
     // The storage roots stay put.
     assert_eq!(
-        failure_code(client.delete_file(phone, INTERNAL).await.unwrap_err()),
+        failure_code(files.delete(INTERNAL).await.unwrap_err()),
         "invalid_path"
     );
     assert_eq!(
-        failure_code(
-            client
-                .move_file(phone, SD_CARD, "/elsewhere")
-                .await
-                .unwrap_err()
-        ),
+        failure_code(files.mv(SD_CARD, "/elsewhere").await.unwrap_err()),
         "invalid_path"
     );
     assert!(harness.phone_path(INTERNAL).is_dir());
@@ -534,27 +613,28 @@ async fn directories_are_created_moved_and_deleted_without_clobbering() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bad_paths_are_rejected_with_specific_errors() {
     let harness = harness(android_roots(), false).await;
-    let client = &harness.client;
-    let phone = harness.phone_id.as_str();
+    let files = harness.files();
 
     for path in ["relative", "/storage/emulated/0/../../etc"] {
         assert_eq!(
-            failure_code(client.list_files(phone, Some(path)).await.unwrap_err()),
+            failure_code(files.list(Some(path)).await.unwrap_err()),
             "invalid_path",
             "{path}"
         );
     }
-    assert!(matches!(
-        client
-            .list_files(phone, Some(&format!("{INTERNAL}/missing")))
-            .await
-            .unwrap_err(),
-        ClientError::NotFound(_)
-    ));
     assert_eq!(
         failure_code(
-            client
-                .list_files(phone, Some(&format!("{INTERNAL}/notes.txt")))
+            files
+                .list(Some(&format!("{INTERNAL}/missing")))
+                .await
+                .unwrap_err()
+        ),
+        "file_not_found"
+    );
+    assert_eq!(
+        failure_code(
+            files
+                .list(Some(&format!("{INTERNAL}/notes.txt")))
                 .await
                 .unwrap_err()
         ),
@@ -562,11 +642,15 @@ async fn bad_paths_are_rejected_with_specific_errors() {
     );
     assert_eq!(
         failure_code(
-            client
-                .download_file(phone, &format!("{INTERNAL}/DCIM"))
+            files
+                .download(&format!("{INTERNAL}/DCIM"))
                 .await
                 .unwrap_err()
         ),
+        "is_a_directory"
+    );
+    assert_eq!(
+        failure_code(files.read(&format!("{INTERNAL}/DCIM")).await.unwrap_err()),
         "is_a_directory"
     );
 }
@@ -579,33 +663,20 @@ async fn a_phone_that_refuses_reports_why() {
     )
     .await;
 
-    let error = harness
-        .client
-        .list_files(&harness.phone_id, None)
-        .await
-        .unwrap_err();
-    assert_eq!(failure_code(error), "files_unavailable");
-    // The reason reaches the API response too.
-    let response = reqwest::get(format!(
-        "http://{}/api/v1/devices/{}/files",
-        harness._api.local_addr(),
-        harness.phone_id
-    ))
-    .await
-    .unwrap();
-    let problem: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(problem["detail"], "No storage locations configured");
+    let error = harness.files().list(None).await.unwrap_err();
+    // The reason reaches the client too.
+    let ClientError::Rpc(error) = error else {
+        panic!("expected the daemon's error, got {error:?}");
+    };
+    assert_eq!(error.error_code(), "files_unavailable");
+    assert_eq!(error.detail(), Some("No storage locations configured"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_server_without_the_paired_key_is_refused() {
     let harness = harness(android_roots(), true).await;
 
-    let error = harness
-        .client
-        .list_files(&harness.phone_id, Some(INTERNAL))
-        .await
-        .unwrap_err();
+    let error = harness.files().list(Some(INTERNAL)).await.unwrap_err();
     assert_eq!(failure_code(error), "files_host_key_mismatch");
     // Nothing was sent to the impostor: no login was attempted.
     let log = &harness.phone.log;
@@ -617,22 +688,14 @@ async fn a_server_without_the_paired_key_is_refused() {
 async fn a_stopped_server_or_a_lost_device_ends_the_session() {
     let harness = harness(android_roots(), false).await;
     let log = harness.phone.log.clone();
-    harness
-        .client
-        .list_files(&harness.phone_id, Some(INTERNAL))
-        .await
-        .unwrap();
+    harness.files().list(Some(INTERNAL)).await.unwrap();
 
     // Android restarts its server when the plugin reloads; the next request
     // asks for a new offer and opens a new session.
     harness.phone.announce_server_stopped().await;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            harness
-                .client
-                .list_files(&harness.phone_id, Some(INTERNAL))
-                .await
-                .unwrap();
+            harness.files().list(Some(INTERNAL)).await.unwrap();
             if log.browse_requests.load(Ordering::SeqCst) == 2 {
                 break;
             }
@@ -663,8 +726,12 @@ async fn a_stopped_server_or_a_lost_device_ends_the_session() {
         device.reachability != DeviceReachability::Connected
     })
     .await;
+    let files = Files {
+        client: &client,
+        phone: &phone_id,
+    };
     assert_eq!(
-        failure_code(client.list_files(&phone_id, None).await.unwrap_err()),
+        failure_code(files.list(None).await.unwrap_err()),
         "device_not_connected"
     );
 }
@@ -673,11 +740,7 @@ async fn a_stopped_server_or_a_lost_device_ends_the_session() {
 async fn shutting_down_closes_open_sessions() {
     let harness = harness(android_roots(), false).await;
     let log = harness.phone.log.clone();
-    harness
-        .client
-        .list_files(&harness.phone_id, None)
-        .await
-        .unwrap();
+    harness.files().list(None).await.unwrap();
     assert_eq!(log.open_connections.load(Ordering::SeqCst), 1);
 
     harness
@@ -740,9 +803,17 @@ async fn cancelling_an_upload_answers_its_request_at_once() {
         .unwrap()
         .set_len(1024 * 1024 * 1024)
         .unwrap();
-    let client = ApiClient::new(&format!("http://{}", harness._api.local_addr()), None).unwrap();
+    let client = Client::connect(&harness.socket).await.unwrap();
     let phone_id = harness.phone_id.clone();
-    let upload = tokio::spawn(async move { client.upload_file(&phone_id, INTERNAL, &local).await });
+    let upload = tokio::spawn(async move {
+        client
+            .call(UploadFile {
+                device_id: phone_id,
+                directory: INTERNAL.into(),
+                path: local,
+            })
+            .await
+    });
 
     let transfer_id = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -756,7 +827,6 @@ async fn cancelling_an_upload_answers_its_request_at_once() {
     .expect("the upload starts a transfer");
     harness.desktop.cancel_transfer(transfer_id).unwrap();
 
-    // Well within the 15-second idle timeout the request used to run into.
     let transfer = tokio::time::timeout(Duration::from_secs(5), upload)
         .await
         .expect("the upload's request ends once its transfer is cancelled")
@@ -787,7 +857,7 @@ async fn the_phones_battery_is_shown_while_it_is_connected() {
 
     let battery_over_api = async || {
         client
-            .devices()
+            .call(ListDevices {})
             .await
             .unwrap()
             .into_iter()
@@ -821,7 +891,7 @@ async fn the_phones_battery_is_shown_while_it_is_connected() {
         device.reachability != DeviceReachability::Connected
     })
     .await;
-    let device = client.devices().await.unwrap();
+    let device = client.call(ListDevices {}).await.unwrap();
     assert_eq!(
         device
             .iter()
@@ -852,7 +922,7 @@ async fn the_phones_signal_is_shown_while_it_is_connected() {
         network_of(device) == Some(("5G".into(), 4))
     })
     .await;
-    let devices = client.devices().await.unwrap();
+    let devices = client.call(ListDevices {}).await.unwrap();
     let phone = devices
         .iter()
         .find(|device| &device.device_id == phone_id)
@@ -871,7 +941,7 @@ async fn the_phones_signal_is_shown_while_it_is_connected() {
         device.reachability != DeviceReachability::Connected
     })
     .await;
-    let devices = client.devices().await.unwrap();
+    let devices = client.call(ListDevices {}).await.unwrap();
     assert_eq!(
         devices
             .iter()

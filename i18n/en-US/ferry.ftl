@@ -61,7 +61,6 @@ incoming-accept = Accept
 ## Errors, keyed by the code the HTTP API reports (src/ui/error.rs)
 
 error-daemon_unavailable = Ferry is not responding.
-error-unauthorized = Ferry rejected this app’s access token.
 error-device_not_found = That device is no longer known.
 error-device_not_connected = The device is not connected right now.
 error-already_paired = The device is already paired.
@@ -76,7 +75,6 @@ error-invalid_file_name = That file name can’t be sent.
 error-transfer_too_large = The file is too large to send.
 error-transfer_not_found = That transfer no longer exists.
 error-invalid_transfer_state = That transfer has already finished.
-error-request_timeout = Ferry took too long to respond.
 error-invalid_device_name = Use 1 to 32 characters, without . , : ; ! ? ( ) [ ] < > or quotes.
 error-invalid_download_dir = That folder can’t be used for downloads.
 error-invalid_address = Enter an IPv4 address like 192.168.1.20, or a hostname like phone.example.net.
@@ -319,18 +317,14 @@ settings-appearance-light = Light
 settings-appearance-dark = Dark
 settings-cli = Command line access
 settings-cli-detail = Let ferry-cli control this app
-settings-cli-setup-hint = ferry-cli on this computer finds the app by itself. Elsewhere, such as a script run as another user, paste this into its shell first:
-settings-cli-copy-setup = Copy setup
-settings-cli-copy-token = Copy token
-settings-cli-new-token = New token
+# Under it, the path to the socket, which only this user can open.
+settings-cli-setup-hint = ferry-cli run by you on this computer finds the app by itself, through
 # Under it, the path to the `ferry-cli` program.
 settings-cli-installed-at = ferry-cli is installed at
-# `error` is the system's reason, in English, like "Address already in use".
+# `error` is the reason, in English, like "another Ferry is already serving /home/me/.config/ferry/ferry.sock".
 settings-cli-not-listening = ferry-cli can’t reach the app: { $error }
 # `error` is the reason, in English.
 settings-cli-change-failed = Couldn’t change command line access: { $error }
-settings-cli-setup-copied = Setup copied
-settings-cli-token-copied = Token copied
 settings-about = About Ferry
 # `version` is the app's, like "1.2.0".
 settings-version = Version { $version }

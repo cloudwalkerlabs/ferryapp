@@ -27,8 +27,8 @@
 //! never asked for. Each paired device's snapshot says whether it is on,
 //! as `plugins.notifications.enabled`.
 
-mod http;
 pub mod packet;
+pub mod rpc;
 
 use std::{
     collections::HashMap,
@@ -36,7 +36,6 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use axum::Router;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -280,8 +279,8 @@ impl Plugin for NotificationsPlugin {
         }
     }
 
-    fn routes(self: Arc<Self>, ctx: PluginContext) -> Router {
-        http::routes(self, ctx)
+    fn methods(self: Arc<Self>, ctx: PluginContext, methods: &mut crate::rpc::Methods) {
+        rpc::add(self, ctx, methods);
     }
 
     fn device_state(&self, ctx: &PluginContext, device: &DeviceSnapshot) -> Option<Value> {
