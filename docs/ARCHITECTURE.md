@@ -339,10 +339,11 @@ States: `queued → connecting → transferring → completed | cancelled | fail
 - Clipboard is a plugin (`src/plugins/clipboard/`): it holds the synced
   text behind its own lock, reads its `clipboard.syncEnabled` key (default
   `true`) from the store when it acts, offers its text to a device from the `connected`
-  hook, and sends to all other devices with `PluginContext::broadcast`.
-- A feedback-loop guard tracks the last-applied content and source, so
-  content just received from a peer is never sent back to it, and
-  identical content is never resent.
+  hook, and sends a change made here (`PUT /clipboard` or a local copy)
+  to every device with `PluginContext::broadcast`.
+- Text received from a peer is applied but sent to no one, as in KDE
+  Connect: forwarding it would let devices pass text around in a loop.
+  Identical content is never resent.
 - Text is capped at `MAX_CLIPBOARD_TEXT_BYTES` (32 KiB); an oversized
   `PUT` gets a typed `413`, not silent truncation.
 - Clipboard contents are never logged, only lengths.
@@ -358,8 +359,12 @@ States: `queued → connecting → transferring → completed | cancelled | fail
   copied by other applications, reporting it through a `watch` channel
   that `ClipboardPlugin::follow_local_changes` feeds into `set_text`, the
   same path as `PUT /clipboard`. Text it wrote itself (e.g. from a peer)
-  isn't reported, and `set_text` ignores unchanged text anyway, so nothing
-  bounces back. Text already on the clipboard at start, empty text and
+  isn't reported. The follower also drops, as an echo, a change to text
+  the clipboard holds or held within the last 5 s (`ECHO_WINDOW`),
+  ignoring `\r\n` against `\n`: writing a peer's text can bring the text
+  it replaced back (a clipboard manager restoring its entry), and syncing
+  that would send old text out for each new one, which with a phone
+  connected to two machines alternates their texts on it forever. Text already on the clipboard at start, empty text and
   non-text content (images) aren't reported, and copies made while sync
   is off are dropped.
 - Sync is turned on or off with `ClipboardPlugin::set_sync_enabled`
