@@ -96,7 +96,7 @@ iced = { version = "0.14", default-features = false, features = [
     "image-without-codecs",
 ], optional = true }
 iced_fonts = { version = "0.3", features = ["lucide"], optional = true }
-opener = { version = "0.8", features = ["reveal"], optional = true }
+opener = { version = "0.9", features = ["reveal"], optional = true }
 rfd = { version = "0.17", optional = true }
 # Decodes previews, so one that can't be shown says so. iced renders
 # images through the same crate; only the codecs the preview offers are on.
