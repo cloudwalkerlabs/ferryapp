@@ -232,8 +232,8 @@ self-signed certificate (ADR 0001, "Packaging"), and the Homebrew cask
 clears the quarantine so Gatekeeper lets it open; the Windows installer is
 unsigned. CI built the macOS and Windows apps, installed the Windows
 installer and the cask, but neither has been used on a real desktop. Check
-on a Mac that `brew install simophin/tap/ferry` opens without a prompt,
-and that the Downloads folder permission survives a `brew upgrade`.
+on a Mac that `brew install cloudwalkerlabs/tap/ferry` opens without a
+prompt, and that the Downloads folder permission survives a `brew upgrade`.
 
 **Browsing a device's files** (ARCHITECTURE §12, ADR 0008):
 

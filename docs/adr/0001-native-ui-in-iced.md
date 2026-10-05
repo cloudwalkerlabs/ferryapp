@@ -270,25 +270,34 @@ Decisions for steps 11 and 13:
     `packaging/linux/apt_repo.sh`): one `stable` suite holding only the
     release's `.deb`s, checked by `check_apt_repo.sh` on Debian 12 and 13;
   - the **Homebrew cask** (`packaging/macos/ferry.rb.in`) in
-    `simophin/homebrew-tap`, checked by installing it in the macOS job;
+    `cloudwalkerlabs/homebrew-tap`, checked by installing it in the macOS
+    job;
   - the **AUR package** `ferry-app-bin`, the release's PKGBUILD, checked by
     `makepkg` and `pacman -U` in the Arch job.
 - **Signing.** Two keys, kept apart so a leak of one doesn't touch the
-  other; the owner holds both offline, CI has what it needs as secrets
-  (listed at the top of `build.yml`):
-  - The **release key**, OpenPGP, ed25519
+  other. Both are Cloudwalker Labs' and shared by all its apps, not
+  Ferry's own; the owner holds both offline, and CI has what it needs as
+  organization secrets of cloudwalkerlabs (listed at the top of
+  `build.yml`), which a repository secret of the same name overrides:
+  - The **release key** ("Cloudwalker Labs Releases"), OpenPGP, ed25519
     (`packaging/release-key.asc`, fingerprint
-    `ECD3B4C2913BF64B1664F19F074DA8D02070102E`), signs the apt repository
+    `28FBE823E55F0E1B03C8429837F080921B1E4AF7`), signs the apt repository
     and each release's `SHA256SUMS`. The primary key only certifies; CI
     has only its signing subkey, so a leaked subkey can be revoked and
     replaced without users changing the key they trust. It doesn't
     expire: apt refuses a repository whose key has.
-  - A **self-signed code signing certificate** ("Ferry Code Signing",
-    SHA-256 `7130536B…830B5B`, the full value in `build.yml`) signs the
-    macOS app. Gatekeeper trusts only Apple's Developer ID, so it doesn't
-    help there (the cask clears the quarantine); what it gives is one
-    identity across releases, so the permissions users grant survive
-    updates. A new certificate changes that identity once.
+  - A **self-signed code signing certificate** ("Cloudwalker Labs Code
+    Signing", SHA-256 `D36C2948…BDA164`, the full value in
+    `build.yml`) signs the macOS app. Gatekeeper trusts only Apple's
+    Developer ID, so it doesn't help there (the cask clears the
+    quarantine); what it gives is one identity across releases, so the
+    permissions users grant survive updates. A new certificate changes
+    that identity once.
+  - Both replaced Ferry's own ("Ferry Releases" and "Ferry Code Signing")
+    when the repository moved to cloudwalkerlabs. The new certificate
+    changed the macOS app's identity once, so users grant its permissions
+    again, and apt users need the new key; Ferry wasn't advertised yet,
+    so the owner accepted that.
   - Windows stays unsigned: SmartScreen treats a self-signed Authenticode
     signature like none.
   - Apple's Developer ID and notarization ($99 a year) would make the DMG

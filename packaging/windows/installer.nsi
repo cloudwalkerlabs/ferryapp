@@ -69,7 +69,7 @@ Section "Ferry"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\Ferry.exe"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "Fanchao"
-  WriteRegStr HKCU "${UNINSTALL_KEY}" "URLInfoAbout" "https://github.com/simophin/ferryapp"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "URLInfoAbout" "https://github.com/cloudwalkerlabs/ferryapp"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify" 1

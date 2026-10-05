@@ -47,7 +47,7 @@
   <nav>
     <ul>
       <li><a href="#download">Download</a></li>
-      <li><a href="https://github.com/simophin/ferryapp">Source</a></li>
+      <li><a href="https://github.com/cloudwalkerlabs/ferryapp">Source</a></li>
       <li><a href="https://github.com/sponsors/simophin">Sponsor</a></li>
     </ul>
   </nav>
@@ -95,15 +95,15 @@
     </tbody>
   </table>
   <h3>macOS, with Homebrew</h3>
-  <pre><code>brew install simophin/tap/ferry</code></pre>
+  <pre><code>brew install cloudwalkerlabs/tap/ferry</code></pre>
   <p>
     This installs Ferry into Applications and <code>ferry-cli</code> on your
     PATH, and <code>brew upgrade</code> keeps them up to date.
   </p>
   <h3>Debian and Ubuntu</h3>
   <p>Add Ferry's apt repository, then install it and get updates with the rest of your system:</p>
-  <pre><code>sudo curl -fsSLo /etc/apt/keyrings/ferry.gpg https://simophin.github.io/ferryapp/apt/ferry.gpg
-sudo curl -fsSLo /etc/apt/sources.list.d/ferry.sources https://simophin.github.io/ferryapp/apt/ferry.sources
+  <pre><code>sudo curl -fsSLo /etc/apt/keyrings/ferry.gpg https://cloudwalkerlabs.github.io/ferryapp/apt/ferry.gpg
+sudo curl -fsSLo /etc/apt/sources.list.d/ferry.sources https://cloudwalkerlabs.github.io/ferryapp/apt/ferry.sources
 sudo apt update
 sudo apt install ferry</code></pre>
   <p>Debian 12, Ubuntu 22.04 and later, on x86_64 and arm64.</p>
@@ -115,23 +115,23 @@ sudo apt install ferry</code></pre>
   <h3>Verifying downloads</h3>
   <p>
     Each release has a <code>SHA256SUMS</code> file listing its packages,
-    signed with Ferry's <a href="ferry-release.asc">release key</a>, which
-    also signs the apt repository. Its fingerprint is
-    <code>ECD3 B4C2 913B F64B 1664 F19F 074D A8D0 2070 102E</code>:
+    signed with the Cloudwalker Labs <a href="ferry-release.asc">release key</a>,
+    which also signs the apt repository. Its fingerprint is
+    <code>28FB E823 E55F 0E1B 03C8  4298 37F0 8092 1B1E 4AF7</code>:
   </p>
   <pre><code>gpg --import ferry-release.asc
 gpg --verify SHA256SUMS.asc SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS</code></pre>
   <p>
-    The macOS app is signed with Ferry's own certificate, whose SHA-256
-    fingerprint is
-    <code>71:30:53:6B:23:05:DB:1C:00:FB:00:C7:6C:8C:20:8A:34:BA:31:6B:F7:A8:F2:B6:3D:EF:32:24:4F:83:0B:5B</code>
+    The macOS app is signed with the Cloudwalker Labs certificate, whose
+    SHA-256 fingerprint is
+    <code>D3:6C:29:48:61:7F:14:77:88:4B:9E:CB:F4:7D:A9:38:5A:F0:F4:7E:97:94:E2:DB:D6:89:80:B5:FD:BD:A1:64</code>
     (<code>codesign -dvvv /Applications/Ferry.app</code> shows it as
-    "Ferry Code Signing").
+    "Cloudwalker Labs Code Signing").
   </p>
   <p>
     Older versions and release notes are on
-    <a href="https://github.com/simophin/ferryapp/releases">GitHub Releases</a>.
+    <a href="https://github.com/cloudwalkerlabs/ferryapp/releases">GitHub Releases</a>.
   </p>
 </section>
 
@@ -205,8 +205,8 @@ sha256sum --check --ignore-missing SHA256SUMS</code></pre>
     Ferry is young. Pairing, clipboard sync and file transfer have been
     tested with KDE Connect for Android, but not yet with KDE Connect on
     other desktops. Known gaps are listed in
-    <a href="https://github.com/simophin/ferryapp/blob/main/docs/ARCHITECTURE.md">ARCHITECTURE.md</a>.
-    Please report bugs on <a href="https://github.com/simophin/ferryapp/issues">GitHub</a>;
+    <a href="https://github.com/cloudwalkerlabs/ferryapp/blob/main/docs/ARCHITECTURE.md">ARCHITECTURE.md</a>.
+    Please report bugs on <a href="https://github.com/cloudwalkerlabs/ferryapp/issues">GitHub</a>;
     pull requests are welcome.
   </p>
 </section>
@@ -222,7 +222,7 @@ sha256sum --check --ignore-missing SHA256SUMS</code></pre>
 
 <footer>
   <small>Ferry is open source. Not affiliated with KDE. ·
-  <a href="https://github.com/simophin/ferryapp">github.com/simophin/ferryapp</a></small>
+  <a href="https://github.com/cloudwalkerlabs/ferryapp">github.com/cloudwalkerlabs/ferryapp</a></small>
 </footer>
 </body>
 </html>

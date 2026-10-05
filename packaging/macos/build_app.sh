@@ -17,9 +17,9 @@
 # from its i18n/<lang>/ferry.ftl (packaging/i18n.sh).
 #
 # The bundle is signed with FERRY_CODESIGN_IDENTITY, an identity in the
-# keychain (the Build workflow's self-signed "Ferry Code Signing"
-# certificate), or ad hoc without it. The certificate gives every release
-# the same identity, so macOS keeps what the user allowed it (the
+# keychain (the Build workflow's self-signed "Cloudwalker Labs Code
+# Signing" certificate), or ad hoc without it. The certificate gives every
+# release the same identity, so macOS keeps what the user allowed it (the
 # Downloads folder) across updates; an ad-hoc signature is a new identity
 # each build. It isn't notarized or sandboxed (docs/adr/0001, "Deliberate
 # differences"), so Gatekeeper blocks a DMG a browser downloaded until the
