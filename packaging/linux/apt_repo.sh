@@ -17,7 +17,7 @@
 # installs from the result.
 set -eu
 
-URL=https://simophin.github.io/ferryapp/apt
+URL=https://cloudwalkerlabs.github.io/ferryapp/apt
 
 if [ $# -lt 2 ]; then
   echo "usage: $0 OUT_DIR DEB..." >&2

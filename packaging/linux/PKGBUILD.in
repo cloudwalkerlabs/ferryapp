@@ -9,7 +9,7 @@ pkgver=@PKGVER@
 pkgrel=1
 pkgdesc='Pair with your devices and share files and the clipboard over the local network'
 arch=(x86_64 aarch64)
-url='https://github.com/simophin/ferryapp'
+url='https://github.com/cloudwalkerlabs/ferryapp'
 license=(MIT)
 # The .deb's Depends under Arch's names: glibc and libgcc from the ELF files,
 # and the libraries winit and display-info load at runtime. The app draws in
@@ -28,7 +28,7 @@ conflicts=(ferry)
 options=(!strip !debug)
 _tag=@TAG@
 _release=$url/releases/download/$_tag
-source=("LICENSE-$pkgver::https://raw.githubusercontent.com/simophin/ferryapp/$_tag/LICENSE")
+source=("LICENSE-$pkgver::https://raw.githubusercontent.com/cloudwalkerlabs/ferryapp/$_tag/LICENSE")
 source_x86_64=("$_release/ferry_@DEBVER@_amd64.deb")
 source_aarch64=("$_release/ferry_@DEBVER@_arm64.deb")
 sha256sums=('@SHA256_LICENSE@')

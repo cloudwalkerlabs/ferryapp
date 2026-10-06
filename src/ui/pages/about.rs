@@ -17,7 +17,7 @@ use crate::ui::{i18n::fl, widgets};
 /// The app's name, which isn't translated.
 pub const NAME: &str = "Ferry";
 pub const AUTHOR_URL: &str = "https://fanchao.dev";
-pub const SOURCE_URL: &str = "https://github.com/simophin/ferryapp";
+pub const SOURCE_URL: &str = "https://github.com/cloudwalkerlabs/ferryapp";
 pub const SPONSOR_URL: &str = "https://github.com/sponsors/simophin";
 
 /// The app's icon, the one its window has, decoded once.
@@ -72,7 +72,7 @@ pub fn view<'a, M: Clone + 'a>(version: &'a str, actions: Actions<M>) -> Element
         link(
             lucide::code,
             fl!("about-source"),
-            "github.com/simophin/ferryapp".to_owned(),
+            "github.com/cloudwalkerlabs/ferryapp".to_owned(),
             SOURCE_URL,
         ),
         link(

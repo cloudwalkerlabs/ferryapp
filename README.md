@@ -26,26 +26,25 @@ gaps and [`docs/HANDOFF.md`](docs/HANDOFF.md) for what to build next.
 ### Install
 
 Packages for each release are on the
-[website](https://simophin.github.io/ferryapp/#download) and
-[GitHub Releases](https://github.com/simophin/ferryapp/releases).
+[website](https://cloudwalkerlabs.github.io/ferryapp/#download) and
+[GitHub Releases](https://github.com/cloudwalkerlabs/ferryapp/releases).
 
-- **macOS:** `brew install simophin/tap/ferry` (the app, and `ferry-cli`
-  on your PATH).
+- **macOS:** `brew install cloudwalkerlabs/tap/ferry` (the app, and
+  `ferry-cli` on your PATH).
 - **Debian and Ubuntu:** add the apt repository, then `apt install ferry`:
 
   ```sh
-  sudo curl -fsSLo /etc/apt/keyrings/ferry.gpg https://simophin.github.io/ferryapp/apt/ferry.gpg
-  sudo curl -fsSLo /etc/apt/sources.list.d/ferry.sources https://simophin.github.io/ferryapp/apt/ferry.sources
+  sudo curl -fsSLo /etc/apt/keyrings/ferry.gpg https://cloudwalkerlabs.github.io/ferryapp/apt/ferry.gpg
+  sudo curl -fsSLo /etc/apt/sources.list.d/ferry.sources https://cloudwalkerlabs.github.io/ferryapp/apt/ferry.sources
   sudo apt update && sudo apt install ferry
   ```
 - **Arch Linux:** [`ferry-app-bin`](https://aur.archlinux.org/packages/ferry-app-bin)
   from the AUR.
 - **Windows:** the installer from the website.
 
-Each release's `SHA256SUMS` is signed with the release key
-([`packaging/release-key.asc`](packaging/release-key.asc), fingerprint
-`ECD3 B4C2 913B F64B 1664 F19F 074D A8D0 2070 102E`), which also signs the
-apt repository.
+Each release's `SHA256SUMS` is signed with the Cloudwalker Labs release
+key ([`packaging/release-key.asc`](packaging/release-key.asc), fingerprint
+`28FB E823 E55F 0E1B 03C8  4298 37F0 8092 1B1E 4AF7`), which also signs the apt repository.
 
 ### License
 

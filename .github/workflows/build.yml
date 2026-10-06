@@ -5,17 +5,20 @@
 # signed with the release key. It can also be run by hand (Actions → Build →
 # Run workflow), leaving the packages as run artifacts.
 # After a full release it also publishes the website (site/) with the apt
-# repository, the Homebrew cask (simophin/homebrew-tap) and the AUR package
-# (ferry-app-bin). The scripts it runs are in packaging/.
+# repository, the Homebrew cask (cloudwalkerlabs/homebrew-tap) and the AUR
+# package (ferry-app-bin). The scripts it runs are in packaging/.
 #
 # Secrets (docs/adr/0001, "Packaging"; without them a run by hand still
-# builds, with an ad-hoc signed app):
-#   MACOS_CERT_P12, MACOS_CERT_PASSWORD  the self-signed "Ferry Code
-#       Signing" certificate, base64, and its password
+# builds, with an ad-hoc signed app). They are organization secrets of
+# cloudwalkerlabs, shared by all its apps; a repository secret of the same
+# name overrides one:
+#   MACOS_CERT_P12, MACOS_CERT_PASSWORD  the self-signed "Cloudwalker Labs
+#       Code Signing" certificate, base64, and its password
 #   RELEASE_GPG_KEY, RELEASE_GPG_PASSPHRASE  the release key's signing
 #       subkey (packaging/release_key.sh) and its passphrase
 #   AUR_SSH_KEY  an SSH key of the AUR account that maintains ferry-app-bin
-#   TAP_DEPLOY_KEY  a deploy key of simophin/homebrew-tap, with write access
+#   TAP_DEPLOY_KEY  a deploy key of cloudwalkerlabs/homebrew-tap, with
+#       write access
 name: Build
 
 on:
@@ -102,7 +105,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "12.0"
       # The code signing certificate's, as the website publishes it; a
       # MACOS_CERT_P12 with any other certificate fails the build.
-      MACOS_CERT_SHA256: 7130536B2305DB1C00FB00C76C8C208A34BA316BF7A8F2B63DEF32244F830B5B
+      MACOS_CERT_SHA256: D36C2948617F1477884B9ECBF47DA9385AF0F47E9794E2DBD68980B5FDBDA164
     steps:
       - uses: actions/checkout@v7
         with:
@@ -562,7 +565,7 @@ jobs:
           git push origin HEAD:master
 
   # Pushes the cask for the release's DMG to the tap
-  # (brew install simophin/tap/ferry). The macOS job checked that it
+  # (brew install cloudwalkerlabs/tap/ferry). The macOS job checked that it
   # installs.
   homebrew:
     name: Publish to the Homebrew tap
@@ -587,7 +590,7 @@ jobs:
           # GitHub's, as https://api.github.com/meta lists it.
           echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >"$ssh/known_hosts"
           export GIT_SSH_COMMAND="ssh -i $ssh/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh/known_hosts -o StrictHostKeyChecking=yes"
-          git clone git@github.com:simophin/homebrew-tap.git "$RUNNER_TEMP/tap"
+          git clone git@github.com:cloudwalkerlabs/homebrew-tap.git "$RUNNER_TEMP/tap"
           dmg=$(ls dist/*.dmg)
           mkdir -p "$RUNNER_TEMP/tap/Casks"
           packaging/macos/cask.sh "$VERSION" \

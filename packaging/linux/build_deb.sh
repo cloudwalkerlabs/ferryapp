@@ -55,7 +55,7 @@ install -m 644 "$licenses" "$root/usr/share/doc/ferry/THIRD_PARTY_LICENSES.html"
 # line) as the license: indented, blank lines as " .".
 {
   printf 'Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/\n'
-  printf 'Upstream-Name: ferry\nSource: https://github.com/simophin/ferryapp\n\n'
+  printf 'Upstream-Name: ferry\nSource: https://github.com/cloudwalkerlabs/ferryapp\n\n'
   printf 'Files: *\n'
   printf 'Copyright: %s\n' "$(sed -n 's/^Copyright (c) //p' "$packaging/../../LICENSE")"
   printf 'License: MIT\n'
@@ -98,7 +98,7 @@ Depends: $depends
 Recommends: $recommends
 Section: net
 Priority: optional
-Homepage: https://github.com/simophin/ferryapp
+Homepage: https://github.com/cloudwalkerlabs/ferryapp
 Description: Pair with your devices and share files and the clipboard
  Ferry connects your computer with your phone and other devices on the
  local network, using the KDE Connect protocol: send files, share the
