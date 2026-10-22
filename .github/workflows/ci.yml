@@ -37,6 +37,23 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all --check
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2
+      - name: Dependency security
+        run: |
+          # lru is locked through iced's optional wgpu renderer, which we
+          # don't build. Fail if it becomes selected on ANY platform.
+          cargo tree --workspace --target all --locked -e normal,build,dev --prefix none > "$RUNNER_TEMP/ferry-dependencies.txt"
+          if grep -q '^lru ' "$RUNNER_TEMP/ferry-dependencies.txt"; then
+            echo "lru is now selected; revisit RUSTSEC-2026-0253 before shipping"
+            exit 1
+          fi
+          # RSA public-key verification is needed for older Android peers;
+          # core::payload rejects RSA private-key authentication, with a
+          # regression test. Details and removal criteria for both narrowly
+          # scoped exceptions: docs/DEPENDENCY_SECURITY.md.
+          cargo audit --deny unsound --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0253
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --all-targets --locked
       - name: The CLI builds without the UI
