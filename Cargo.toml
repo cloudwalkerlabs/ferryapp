@@ -68,6 +68,8 @@ gethostname = "1"
 arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 # `ring` rather than the default aws-lc-rs: rustls already uses ring, and
 # aws-lc-rs needs cmake and NASM to build on Windows.
+# `rsa` verifies older Android peers' host keys. Local RSA signing is
+# rejected in core::payload (RUSTSEC-2023-0071); see docs/DEPENDENCY_SECURITY.md.
 russh = { version = "0.63", default-features = false, features = ["ring", "rsa"] }
 russh-sftp = "3"
 # The daemon's data (`store`), with SQLite built in so no platform needs

@@ -20,7 +20,7 @@ use std::{
 
 use russh::{
     client::{AuthResult, Handle, Handler},
-    keys::{PrivateKeyWithHashAlg, pkcs8::decode_pkcs8},
+    keys::{PrivateKey, PrivateKeyWithHashAlg, pkcs8::decode_pkcs8},
 };
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
@@ -95,15 +95,9 @@ impl PayloadPeer {
         ssh: &mut Handle<H>,
         user: &str,
     ) -> Result<bool, SshAuthError> {
-        let key = decode_pkcs8(self.identity.private_key_der(), None)
-            .map_err(|_| SshAuthError::InvalidLocalKey)?;
-        let hash_alg = if key.algorithm().is_rsa() {
-            ssh.best_supported_rsa_hash().await?.flatten()
-        } else {
-            None
-        };
+        let key = ssh_authentication_key(self.identity.private_key_der())?;
         let result = ssh
-            .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg))
+            .authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
             .await?;
         Ok(matches!(result, AuthResult::Success))
     }
@@ -172,6 +166,17 @@ impl PayloadListener {
     }
 }
 
+/// RSA stays enabled in russh to verify older peers' public host keys, but
+/// must never sign with a local RSA private key (RUSTSEC-2023-0071).
+/// Generated identities use ECDSA; also guard identities loaded from disk.
+fn ssh_authentication_key(der: &[u8]) -> Result<PrivateKey, SshAuthError> {
+    let key = decode_pkcs8(der, None).map_err(|_| SshAuthError::InvalidLocalKey)?;
+    if key.algorithm().is_rsa() {
+        return Err(SshAuthError::InvalidLocalKey);
+    }
+    Ok(key)
+}
+
 /// Why [`PayloadPeer::authenticate_ssh`] couldn't try the key.
 #[derive(Debug, Error)]
 pub enum SshAuthError {
@@ -179,4 +184,27 @@ pub enum SshAuthError {
     InvalidLocalKey,
     #[error("SSH connection failed")]
     Ssh(#[from] russh::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ssh_authentication_accepts_generated_identities() {
+        let key = rcgen::KeyPair::generate().unwrap();
+        assert!(ssh_authentication_key(&key.serialize_der()).is_ok());
+    }
+
+    #[test]
+    fn ssh_authentication_rejects_rsa_private_keys() {
+        // The public half of this fixture still works as a peer host key
+        // (plugins::browse::ssh tests that compatibility separately).
+        let der = include_bytes!("../plugins/browse/testdata/rsa_private_key.der");
+        assert!(decode_pkcs8(der, None).unwrap().algorithm().is_rsa());
+        assert!(matches!(
+            ssh_authentication_key(der),
+            Err(SshAuthError::InvalidLocalKey)
+        ));
+    }
 }

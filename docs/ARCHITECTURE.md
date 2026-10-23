@@ -654,7 +654,12 @@ which [`adr/0001`](adr/0001-native-ui-in-iced.md) carries over.
   daemon signs in with its own TLS key, which Android accepts from the
   paired device, and falls back to the one-off password. The plugin never
   holds the key: the core signs in for it
-  (`PayloadPeer::authenticate_ssh`).
+  (`PayloadPeer::authenticate_ssh`). The core refuses local RSA private
+  keys for SSH authentication while retaining RSA public host-key
+  verification for older Android peers (RUSTSEC-2023-0071;
+  [`DEPENDENCY_SECURITY.md`](DEPENDENCY_SECURITY.md)). Generated local
+  identities use ECDSA. A stored RSA identity gets `files_failed`
+  when browsing; its identity is never silently replaced.
 - **Session.** One session per device, opened on demand, shared by
   concurrent requests (opening is serialized per device) and reused. It
   is dropped when the device disconnects, is unpaired or forgotten, when
