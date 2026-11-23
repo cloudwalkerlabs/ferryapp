@@ -138,7 +138,8 @@ mod macos {
 
         unsafe impl UNUserNotificationCenterDelegate for NotificationDelegate {
             /// Without this, macOS silently drops banners while the app is in
-            /// the foreground.
+            /// the foreground. `List` keeps them in Notification Center too,
+            /// so one that arrives while Ferry is active can be clicked later.
             #[unsafe(method(userNotificationCenter:willPresentNotification:withCompletionHandler:))]
             fn will_present_notification(
                 &self,
@@ -147,6 +148,7 @@ mod macos {
                 completion_handler: &DynBlock<dyn Fn(UNNotificationPresentationOptions)>,
             ) {
                 completion_handler.call((UNNotificationPresentationOptions::Banner
+                    | UNNotificationPresentationOptions::List
                     | UNNotificationPresentationOptions::Sound,));
             }
 
@@ -216,32 +218,49 @@ mod macos {
         Some(DesktopEvent::NotificationAction { id, action })
     }
 
-    /// Categories registered with `UNUserNotificationCenter`, keyed by their
-    /// button labels so different labels never collide and repeated labels
-    /// avoid redundant XPC registrations.
+    /// The category identifier for a set of button labels. It is derived from
+    /// the labels alone (FNV-1a, stable across runs and Rust releases), so a
+    /// notification left over from an earlier launch never shows another
+    /// set's buttons under a reused id.
+    fn category_id(actions: &[String]) -> String {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut feed = |bytes: &[u8]| {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        for label in actions {
+            // Length-prefixed, so ["a", "bc"] and ["ab", "c"] differ.
+            feed(&(label.len() as u64).to_le_bytes());
+            feed(label.as_bytes());
+        }
+        format!("ferry-actions-{hash:016x}")
+    }
+
+    /// Categories registered with `UNUserNotificationCenter`, by identifier,
+    /// so repeated labels avoid redundant XPC registrations.
     #[derive(Default)]
     struct CategoryRegistry {
-        by_actions: HashMap<Vec<String>, String>,
-        ordered: Vec<(String, Vec<String>)>,
+        by_id: HashMap<String, Vec<String>>,
     }
 
     impl CategoryRegistry {
         /// Returns the category identifier for `actions` and whether it was
         /// newly added (meaning `setNotificationCategories:` should be called).
-        fn ensure(&mut self, actions: Vec<String>) -> (&str, bool) {
-            if self.by_actions.contains_key(&actions) {
-                let id = self.by_actions[&actions].as_str();
-                return (id, false);
+        fn ensure(&mut self, actions: Vec<String>) -> (String, bool) {
+            let id = category_id(&actions);
+            let added = !self.by_id.contains_key(&id);
+            if added {
+                self.by_id.insert(id.clone(), actions);
             }
-            let id = format!("ferry-actions-{}", self.ordered.len());
-            self.ordered.push((id.clone(), actions.clone()));
-            self.by_actions.insert(actions, id);
-            let (id, _) = self.ordered.last().expect("just pushed");
-            (id.as_str(), true)
+            (id, added)
         }
 
-        fn entries(&self) -> &[(String, Vec<String>)] {
-            &self.ordered
+        fn entries(&self) -> impl Iterator<Item = (&str, &[String])> {
+            self.by_id
+                .iter()
+                .map(|(id, labels)| (id.as_str(), labels.as_slice()))
         }
     }
 
@@ -290,10 +309,19 @@ mod macos {
         rx
     }
 
-    fn sync_categories(entries: &[(String, Vec<String>)]) {
+    /// Registers `entries` as the app's whole set of categories. The returned
+    /// receiver fires once the center has stored them:
+    /// `setNotificationCategories:` applies asynchronously and has no
+    /// completion handler, so a notification posted right after it could
+    /// show without its buttons. Reading the categories back is answered only
+    /// after the earlier write, so awaiting it orders the two.
+    fn sync_categories<'a>(
+        entries: impl Iterator<Item = (&'a str, &'a [String])>,
+    ) -> oneshot::Receiver<()> {
+        let (tx, rx) = oneshot::channel();
+        let tx = Mutex::new(Some(tx));
         autoreleasepool(|_| {
             let built: Vec<Retained<UNNotificationCategory>> = entries
-                .iter()
                 .map(|(category_id, labels)| {
                     let actions: Vec<Retained<UNNotificationAction>> = labels
                         .iter()
@@ -316,7 +344,27 @@ mod macos {
                 })
                 .collect();
             let set = NSSet::from_retained_slice(&built);
-            UNUserNotificationCenter::currentNotificationCenter().setNotificationCategories(&set);
+            let center = UNUserNotificationCenter::currentNotificationCenter();
+            center.setNotificationCategories(&set);
+            let block = RcBlock::new(move |_: NonNull<NSSet<UNNotificationCategory>>| {
+                if let Some(tx) = tx.lock().unwrap_or_else(PoisonError::into_inner).take() {
+                    let _ = tx.send(());
+                }
+            });
+            center.getNotificationCategoriesWithCompletionHandler(&block);
+        });
+        rx
+    }
+
+    /// Clears what earlier launches left in Notification Center. Their ids
+    /// carry another session's prefix, so this run could never withdraw them,
+    /// and a stale prompt (a pairing request, say) would otherwise linger and
+    /// open the window for something that no longer exists.
+    fn clear_leftovers() {
+        autoreleasepool(|_| {
+            let center = UNUserNotificationCenter::currentNotificationCenter();
+            center.removeAllPendingNotificationRequests();
+            center.removeAllDeliveredNotifications();
         });
     }
 
@@ -374,14 +422,17 @@ mod macos {
             return;
         }
         let session_prefix = format!("{}:", Uuid::new_v4());
+        clear_leftovers();
         // Held alive for the lifetime of `serve`, since `setDelegate:` keeps
         // only a weak reference.
         let _delegate = install_delegate(events, session_prefix.clone());
         // Asks the user the first time; after that, it answers at once.
-        match request_auth().await {
-            Ok(Ok(true)) => {}
-            Ok(Ok(false)) => {
-                tracing::info!("notifications are turned off for Ferry in System Settings");
+        let mut authorized = match request_auth().await {
+            Ok(Ok(granted)) => {
+                if !granted {
+                    tracing::info!("notifications are turned off for Ferry in System Settings");
+                }
+                granted
             }
             Ok(Err(error)) => {
                 tracing::warn!(%error, "desktop notifications unavailable");
@@ -393,7 +444,7 @@ mod macos {
                 uninstall_delegate();
                 return;
             }
-        }
+        };
         let mut categories = CategoryRegistry::default();
         while let Some(request) = requests.recv().await {
             match request {
@@ -403,21 +454,33 @@ mod macos {
                     body,
                     actions,
                 } => {
+                    if !authorized {
+                        // The user may turn them on while Ferry runs; this
+                        // answers at once without asking again.
+                        authorized = matches!(request_auth().await, Ok(Ok(true)));
+                        if !authorized {
+                            tracing::debug!("notification not shown: turned off for Ferry");
+                            continue;
+                        }
+                    }
                     let category_id = if actions.is_empty() {
                         None
                     } else {
                         let (category_id, added) = categories.ensure(actions);
-                        let category_id = category_id.to_owned();
-                        if added {
-                            sync_categories(categories.entries());
+                        if added && sync_categories(categories.entries()).await.is_err() {
+                            tracing::debug!("notification categories not confirmed");
                         }
                         Some(category_id)
                     };
                     let identifier = request_id(&session_prefix, id);
-                    if let Ok(Err(error)) =
-                        post_notification(&identifier, &title, &body, category_id.as_deref()).await
+                    match post_notification(&identifier, &title, &body, category_id.as_deref())
+                        .await
                     {
-                        tracing::warn!(%error, "notification not shown");
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => tracing::warn!(%error, "notification not shown"),
+                        Err(_) => {
+                            tracing::warn!("notification not confirmed: its handler never ran");
+                        }
                     }
                 }
                 Request::Withdraw(id) => {
@@ -465,7 +528,6 @@ mod macos {
             let mut registry = CategoryRegistry::default();
             let (first, added) = registry.ensure(vec!["Mute".into()]);
             assert!(added);
-            let first = first.to_owned();
 
             let (again, added) = registry.ensure(vec!["Mute".into()]);
             assert!(!added);
@@ -474,7 +536,21 @@ mod macos {
             let (german, added) = registry.ensure(vec!["Stummschalten".into()]);
             assert!(added);
             assert_ne!(german, first);
-            assert_eq!(registry.entries().len(), 2);
+            assert_eq!(registry.entries().count(), 2);
+        }
+
+        #[test]
+        fn category_ids_depend_only_on_the_labels() {
+            // The same labels give the same id in every run, so a leftover
+            // notification never shows another set's buttons.
+            assert_eq!(
+                category_id(&["Mute".into()]),
+                "ferry-actions-907f369d40a510d0"
+            );
+            assert_ne!(
+                category_id(&["a".into(), "bc".into()]),
+                category_id(&["ab".into(), "c".into()])
+            );
         }
     }
 }
