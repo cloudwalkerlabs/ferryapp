@@ -13,6 +13,7 @@ publish = false
 # The desktop UI: `src/ui/`. Off by default so the
 # CLI and daemon build without iced; the `gui` crate turns it on.
 gui = [
+    "dep:block2",
     "dep:chrono",
     "dep:display-info",
     "dep:fluent-bundle",
@@ -29,11 +30,11 @@ gui = [
     "dep:interprocess",
     "dep:ksni",
     "dep:libc",
-    "dep:mac-usernotifications",
     "dep:mundy",
     "dep:objc2",
     "dep:objc2-app-kit",
     "dep:objc2-foundation",
+    "dep:objc2-user-notifications",
     "dep:opener",
     "dep:rfd",
     "dep:rust-embed",
@@ -157,15 +158,16 @@ tray-icon = { version = "0.26", default-features = false, optional = true }
 mundy = { version = "0.2", default-features = false, features = ["color-scheme"], optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# Notifications (`gui`), through `UNUserNotificationCenter`: the crate
-# `notify-rust` builds its macOS backend on, used directly for its async
-# API, so a click and a withdrawal need no thread per notification.
-mac-usernotifications = { version = "0.3.1", optional = true }
+# Notifications (`gui`), directly through `UNUserNotificationCenter`, so clicks
+# and action buttons reach one delegate without per-notification tasks or
+# polling. `block2` wraps the completion handlers.
+block2 = { version = "0.6", optional = true }
+objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "bitflags", "block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter"], optional = true }
 # The Dock icon (`gui`), shown only while the window is open, and files
 # dropped on the menu bar icon. Already in the tree through `tray-icon`.
 objc2 = { version = "0.6", optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSDragging", "NSMenu", "NSPasteboard", "NSResponder", "NSRunningApplication", "NSStatusBarButton", "NSStatusItem", "NSView", "NSWindow"], optional = true }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSObject", "NSString", "NSURL", "NSValue"], optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSObject", "NSSet", "NSString", "NSURL", "NSValue"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
 # Starting on login (`gui`): a value under `HKCU\...\Run`. From windows-rs;
