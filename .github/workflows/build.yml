@@ -536,7 +536,7 @@ jobs:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           VERSION: ${{ needs.version.outputs.deb }}
         run: |
-          pacman -Sy --noconfirm --needed git openssh
+          pacman -Syu --noconfirm --needed git openssh
           ssh=$RUNNER_TEMP/ssh
           install -d -m 700 "$ssh"
           printf '%s\n' "$AUR_SSH_KEY" >"$ssh/key"
