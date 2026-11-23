@@ -1,6 +1,6 @@
 # Dependency security review
 
-Last reviewed: 2026-10-22, using cargo-audit 0.22.2 and the current
+Last reviewed: 2026-11-23, using cargo-audit 0.22.2 and the current
 RustSec database. The workspace lockfile contains one vulnerability and
 six informational warnings. `cargo update --dry-run` found no compatible
 updates; none of these findings can currently be fixed by a compatible
@@ -14,10 +14,10 @@ Maintenance warnings remain visible.
 
 ## RSA: RUSTSEC-2023-0071
 
-`ferry -> russh 0.63.3 -> rsa 0.10.0-rc.18` (also through `ssh-key`).
+`ferry -> russh 0.65.4 -> rsa 0.10.0` (also through `ssh-key`).
 [The advisory](https://rustsec.org/advisories/RUSTSEC-2023-0071) describes
 private-key recovery through network-observable timing and lists no fixed
-release, including for the release candidate already in this lockfile.
+release.
 
 Ferry generates ECDSA identities. It uses russh only as an SSH/SFTP
 client, and needs RSA to verify the public host keys of older Android

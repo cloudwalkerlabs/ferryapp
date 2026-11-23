@@ -11,12 +11,19 @@ mod schema;
 
 use std::{
     collections::{BTreeMap, HashMap},
-    path::Path,
-    sync::{Arc, Mutex, PoisonError},
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicIsize, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use deadpool_sqlite::{Config, Pool, Runtime};
+use deadpool::{
+    Runtime,
+    managed::{self, Metrics, RecycleError, RecycleResult},
+};
+use deadpool_sync::SyncWrapper;
 use rusqlite::{Connection, TransactionBehavior};
 use thiserror::Error;
 use tokio::sync::{broadcast, watch};
@@ -43,6 +50,44 @@ pub struct Store {
     state: Arc<Mutex<State>>,
     writer: Connections,
     readers: Connections,
+}
+
+type Pool = managed::Pool<SqliteManager>;
+type PoolError = managed::PoolError<rusqlite::Error>;
+
+struct SqliteManager {
+    path: PathBuf,
+    recycle_count: AtomicIsize,
+}
+
+impl managed::Manager for SqliteManager {
+    type Type = SyncWrapper<Connection>;
+    type Error = rusqlite::Error;
+
+    async fn create(&self) -> Result<Self::Type, Self::Error> {
+        let path = self.path.clone();
+        SyncWrapper::new(Runtime::Tokio1, move || Connection::open(path)).await
+    }
+
+    async fn recycle(
+        &self,
+        connection: &mut Self::Type,
+        _: &Metrics,
+    ) -> RecycleResult<Self::Error> {
+        if connection.is_mutex_poisoned() {
+            return Err(RecycleError::message("SQLite connection mutex is poisoned"));
+        }
+        let n = self.recycle_count.fetch_add(1, Ordering::Relaxed);
+        let echoed: isize = connection
+            .interact(move |connection| connection.query_row("SELECT $1", [n], |row| row.get(0)))
+            .await
+            .map_err(|error| RecycleError::message(error.to_string()))??;
+        if echoed == n {
+            Ok(())
+        } else {
+            Err(RecycleError::message("SQLite recycle check mismatch"))
+        }
+    }
 }
 
 /// deadpool closes SQLite connections on blocking workers when its pool
@@ -98,12 +143,15 @@ impl Store {
         Self::open_path(":memory:".into(), true).await
     }
 
-    async fn open_path(path: std::path::PathBuf, memory: bool) -> Result<Self, StoreError> {
+    async fn open_path(path: PathBuf, memory: bool) -> Result<Self, StoreError> {
         fn pool(path: &Path, size: usize) -> Result<Connections, StoreError> {
-            let manager =
-                deadpool_sqlite::Manager::from_config(&Config::new(path), Runtime::Tokio1);
+            let manager = SqliteManager {
+                path: path.to_owned(),
+                recycle_count: AtomicIsize::new(0),
+            };
             let pool = Pool::builder(manager)
                 .max_size(size)
+                .runtime(Runtime::Tokio1)
                 .build()
                 .map_err(|error| StoreError::Worker(error.to_string()))?;
             Ok(Connections {
@@ -231,7 +279,7 @@ fn now_millis() -> i64 {
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("database pool operation failed")]
-    Pool(#[source] deadpool_sqlite::PoolError),
+    Pool(#[source] PoolError),
     #[error("database worker failed: {0}")]
     Worker(String),
     #[error("the data directory could not be created")]

@@ -546,11 +546,11 @@ impl russh::server::Handler for SshHandler {
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &ssh_key::PublicKey,
+        public_key: russh::server::VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
         let paired = self.shared.desktop_certificate.lock().unwrap().clone();
         let matches = paired.is_some_and(|certificate| {
-            certificate_public_key(&certificate).as_ref() == Some(public_key.key_data())
+            certificate_public_key(&certificate).as_ref() == Some(public_key.public_key.key_data())
         });
         if user == "kdeconnect" && matches {
             self.shared.log.key_logins.fetch_add(1, Ordering::SeqCst);

@@ -71,14 +71,14 @@ arboard = { version = "3.6", default-features = false, features = ["wayland-data
 # aws-lc-rs needs cmake and NASM to build on Windows.
 # `rsa` verifies older Android peers' host keys. Local RSA signing is
 # rejected in core::payload (RUSTSEC-2023-0071); see docs/DEPENDENCY_SECURITY.md.
-russh = { version = "0.63", default-features = false, features = ["ring", "rsa"] }
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa"] }
 russh-sftp = "3"
 # The daemon's data (`store`), with SQLite built in so no platform needs
 # a system library.
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # Its schema migrations (`src/store/migrations/`), embedded in the binary
 # and versioned by `PRAGMA user_version`.
-rusqlite_migration = { version = "2.6", features = ["from-directory"] }
+rusqlite_migration = { version = "2.7", features = ["from-directory"] }
 include_dir = "0.7"
 # The identity's certificate and key in its stored JSON; already in the tree.
 base64 = "0.23"
@@ -100,7 +100,7 @@ iced = { version = "0.14", default-features = false, features = [
 ], optional = true }
 iced_fonts = { version = "0.3", features = ["lucide"], optional = true }
 opener = { version = "0.9", features = ["reveal"], optional = true }
-rfd = { version = "0.17", optional = true }
+rfd = { version = "0.18", optional = true }
 # Decodes previews, so one that can't be shown says so. iced renders
 # images through the same crate; only the codecs the preview offers are on.
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"], optional = true }
@@ -129,7 +129,11 @@ fluent-bundle = { version = "0.16", optional = true }
 # Reads and writes `.ftl` files: the en-XA pseudo-locale is made from
 # en-US's (`ui::i18n::pseudo`); already in the tree through `i18n-embed`.
 fluent-syntax = { version = "0.12", optional = true }
-deadpool-sqlite = { version = "0.14", features = ["tracing"] }
+# Async pooling for `rusqlite` connections (`src/store/`). Uses `deadpool`
+# and `deadpool-sync` directly so `rusqlite` isn't held back by
+# `deadpool-sqlite`'s slower release cadence.
+deadpool = { version = "0.13", default-features = false, features = ["managed", "rt_tokio_1"] }
+deadpool-sync = { version = "0.2", features = ["tracing"] }
 
 [target.'cfg(unix)'.dependencies]
 # The uid in the single-instance socket's name (`gui`).
@@ -147,7 +151,7 @@ xcb = { version = "1.7", features = ["dl"], optional = true }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 # The tray (`gui`), with `muda` menus (re-exported as `tray_icon::menu`).
-tray-icon = { version = "0.25", default-features = false, optional = true }
+tray-icon = { version = "0.26", default-features = false, optional = true }
 # The system's light or dark mode (`gui`), as it changes: iced hears of a
 # change only through the window, whose appearance it pins to the app's
 # theme. iced uses it on Linux; there iced's own detection works.
