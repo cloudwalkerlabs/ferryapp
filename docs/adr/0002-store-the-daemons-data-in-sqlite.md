@@ -57,5 +57,5 @@ steps.
 | Concern | Choice | Why |
 | --- | --- | --- |
 | Database | `rusqlite` (feature `bundled`) | The standard SQLite binding: synchronous, which the trust checks in the TLS verifier need, and thin. `bundled` builds SQLite into the binary, so no platform needs a system library. `sqlx` is async and brings its own runtime integration and macros for no gain here. |
-| Schema migrations | `rusqlite_migration` 2.6 (feature `from-directory`), with `include_dir` 0.7 | Built on `rusqlite` and `user_version`, with no table of its own: it runs the pending SQL files in one transaction and refuses a database newer than it knows. `refinery` keeps a history table and targets several databases, which Ferry doesn't need. `include_dir` is the macro it loads the directory with. |
+| Schema migrations | `rusqlite_migration` 2.7 (feature `from-directory`), with `include_dir` 0.7 | Built on `rusqlite` and `user_version`, with no table of its own: it runs the pending SQL files in one transaction and refuses a database newer than it knows. `refinery` keeps a history table and targets several databases, which Ferry doesn't need. `include_dir` is the macro it loads the directory with. |
 | Bytes in JSON values | `base64` 0.22 | Already in the tree. Keeps the identity's certificate and key readable in `sqlite3`, where serde would write a list of numbers. |

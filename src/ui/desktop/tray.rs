@@ -294,10 +294,16 @@ mod native {
             let mut builder = TrayIconBuilder::new()
                 .with_tooltip("Ferry")
                 .with_menu(Box::new(self.build(&menu)))
-                .with_menu_on_left_click(cfg!(target_os = "macos"))
-                .with_icon_as_template(cfg!(target_os = "macos"));
+                .with_menu_on_left_click(cfg!(target_os = "macos"));
             if let Some(icon) = icon() {
-                builder = builder.with_icon(icon);
+                #[cfg(target_os = "macos")]
+                {
+                    builder = builder.with_icon_templated(icon);
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    builder = builder.with_icon(icon);
+                }
             }
             match builder.build() {
                 Ok(tray) => {
